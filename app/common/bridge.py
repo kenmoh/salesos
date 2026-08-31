@@ -430,6 +430,7 @@ async def create_user(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+@cached(prefix="roles:list", ttl=3600, key_func=lambda tenant_id=None, **kw: str(tenant_id or "all"))
 async def list_assignable_roles(tenant_id: str | None = None) -> list[dict]:
     """List all roles that can be assigned to users, optionally filtered by tenant.
 
@@ -467,6 +468,7 @@ async def list_assignable_roles(tenant_id: str | None = None) -> list[dict]:
         return result
 
 
+@cached(prefix="roles:all", ttl=3600, key_func=lambda tenant_id=None, **kw: str(tenant_id or "all"))
 async def list_all_roles(tenant_id: str | None = None) -> list[dict]:
     """List all roles (assignable and system) for a tenant.
 
@@ -503,6 +505,7 @@ async def list_all_roles(tenant_id: str | None = None) -> list[dict]:
         return result
 
 
+@cached(prefix="permissions:all", ttl=86400, key_func=lambda: "all")
 async def list_all_permissions() -> list[dict]:
     """List all available permissions in the identity system.
 
@@ -616,6 +619,7 @@ async def assign_role(
         for write in outbox:
             session.add(write.to_model())
         await session.commit()
+        await cache.delete_pattern(f"sf:cache:roles:*:{tenant_id}*")
 
         return {"user_id": user_id, "role": role_name}
 
@@ -658,6 +662,7 @@ async def remove_role(tenant_id: str, user_id: str, role_name: str) -> dict:
 
         await remove_role_from_user(session, UUID(user_id), role.id)
         await session.commit()
+        await cache.delete_pattern(f"sf:cache:roles:*:{tenant_id}*")
 
         return {"user_id": user_id, "role": role_name, "removed": True}
 
@@ -1901,6 +1906,7 @@ async def create_store(
         await repo_create_store(session, store_model)
         await session.commit()
 
+    await cache.delete_pattern(f"sf:cache:stores:list:{tenant_id}*")
     return result.model_dump(mode="json")
 
 
@@ -2069,6 +2075,11 @@ async def sync_store_products(tenant_id: str, store_id: str) -> dict:
     return {"synced": synced, "skipped": skipped}
 
 
+@cached(
+    prefix="store_products:list",
+    ttl=30,
+    key_func=lambda tenant_id, store_id, search=None, page=1, page_size=50, **kw: f"{store_id}:{search or ''}:{page}:{page_size}",
+)
 async def get_store_products(
     tenant_id: str,
     store_id: str,
@@ -2293,6 +2304,7 @@ async def create_product_for_store(
         session.add(balance)
         await session.commit()
 
+    await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{store_id}*")
     return {
         "product_id": str(product.id),
         "store_id": store_id,
@@ -2352,6 +2364,7 @@ async def update_store(
             store.address = address
 
         await session.commit()
+        await cache.delete_pattern(f"sf:cache:stores:list:{tenant_id}*")
         return {
             "id": str(store.id),
             "name": store.name,
@@ -2385,6 +2398,7 @@ async def delete_store(tenant_id: str, store_id: str) -> dict | None:
         store.status = "deleted"
         store.is_warehouse = False
         await session.commit()
+        await cache.delete_pattern(f"sf:cache:stores:list:{tenant_id}*")
         return {"ok": True}
 
 
@@ -2527,6 +2541,7 @@ async def update_store_product(
 
         result = await repo_update(session, existing.id, **kwargs)
         await session.commit()
+        await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{store_id}*")
 
     return {
         "id": str(result.id),
@@ -2592,6 +2607,7 @@ async def delete_store_product(
             await session.delete(sp)
             await session.commit()
 
+    await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{store_id}*")
     return True
 
 
@@ -4319,6 +4335,7 @@ async def create_category(
     return result.model_dump(mode="json")
 
 
+@cached(prefix="categories:list", ttl=300, key_func=lambda store_id, **kw: store_id)
 async def list_categories(store_id: str) -> list[dict]:
     """List all product categories belonging to a store.
 
@@ -6505,6 +6522,11 @@ def _customer_to_dict(c) -> dict:
     }
 
 
+@cached(
+    prefix="customers:list",
+    ttl=300,
+    key_func=lambda tenant_id, page=1, page_size=50, search=None, **kw: f"{page}:{page_size}:{search or ''}",
+)
 async def list_customers(
     tenant_id: str,
     page: int = 1,
@@ -6638,6 +6660,7 @@ async def create_customer(
         await session.flush()
         result = _customer_to_dict(customer)
         await session.commit()
+        await cache.delete_pattern(f"sf:cache:customers:list:{tenant_id}*")
         return result
 
 
@@ -6684,6 +6707,7 @@ async def update_customer(
         await session.flush()
         result = _customer_to_dict(row)
         await session.commit()
+        await cache.delete_pattern(f"sf:cache:customers:list:{tenant_id}*")
         return result
 
 

@@ -27,7 +27,38 @@ logger = logging.getLogger("salesos")
 async def lifespan(app: FastAPI):
     logger.info("SalesOS %s starting [env=%s]", settings.app_version, settings.env)
     settings.validate_production_secrets()
+
+    # Start celery worker subprocess
+    import subprocess
+    import sys
+    import os
+
+    celery_proc = None
+    try:
+        celery_proc = subprocess.Popen(
+            [sys.executable, "-m", "celery", "-A", "app.worker.celery_app", "worker",
+             "--loglevel=info", "--pool=solo", "--concurrency=1"],
+            cwd=os.getcwd(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        logger.info("Celery worker started (pid=%s)", celery_proc.pid)
+    except Exception as e:
+        logger.warning("Failed to start celery worker: %s", e)
+
     yield
+
+    # Shutdown celery worker
+    if celery_proc and celery_proc.poll() is None:
+        logger.info("Stopping celery worker (pid=%s)", celery_proc.pid)
+        celery_proc.terminate()
+        try:
+            celery_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            celery_proc.kill()
+            celery_proc.wait()
+        logger.info("Celery worker stopped")
+
     logger.info("SalesOS shutting down")
     await close_redis()
 

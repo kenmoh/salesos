@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -350,11 +351,32 @@ def _analytics_kwargs():
 
 @pytest.fixture(autouse=True)
 def patch_services():
+    mock_sdb = MagicMock()
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=None)
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = MagicMock(
+        id=uuid4(), tenant_id=uuid4(), user_id=uuid4(),
+        title="test", conversation_id=uuid4(), role="user",
+        content="hi", tool_calls=None,
+        created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc),
+    )
+    mock_result.scalars.return_value.all.return_value = []
+    mock_result.all.return_value = []
+    mock_session.execute.return_value = mock_result
+    mock_sdb.session.return_value = mock_session
+
     with (
         patch.multiple("app.common.bridge", **_bridge_kwargs()),
         patch.multiple("app.common.services", **_services_kwargs()),
         patch("app.core.redis_client.cache_get", new_callable=AsyncMock, return_value=None),
         patch("app.core.redis_client.cache_set", new_callable=AsyncMock),
+        patch("app.common.cache.cache.get", new_callable=AsyncMock, return_value=None),
+        patch("app.common.cache.cache.set", new_callable=AsyncMock),
+        patch("app.common.cache.cache.delete", new_callable=AsyncMock),
+        patch("app.common.cache.cache.delete_pattern", new_callable=AsyncMock),
+        patch("app.ai.routes._ai_db", return_value=mock_sdb),
         patch.multiple(
             "app.common.flutterwave_service",
             create_payment_link=AsyncMock(

@@ -1,19 +1,16 @@
 """Analytics service module.
 
 This module provides analytics queries for dashboards and reporting.
-Results are cached in-memory with a 120-second TTL.
-
-IMPORTANT: Cache keys must include tenant_id to prevent cross-tenant
-data leakage in multi-tenant deployments.
+Results are cached in Redis with short TTLs for near-real-time updates.
 """
 
 from datetime import date, datetime, timedelta, timezone
-from time import monotonic
 from uuid import UUID
 
 from sqlalchemy import Date, cast, desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.cache import cache, cached
 from app.accounting.models import CommissionLedger, JournalEntry
 from app.catalog.models import Product
 from app.documents.models import Document
@@ -33,34 +30,6 @@ from app.reporting.models import (
 from app.sales.models import Sale, SaleItem
 
 
-_cache: dict[str, tuple[float, object]] = {}
-_CACHE_TTL = 120
-
-
-def _cached(key_func, ttl: int = _CACHE_TTL):
-    """Cache decorator with tenant-aware key generation.
-
-    Args:
-        key_func: Function that generates cache key from function args.
-        ttl: Time-to-live in seconds (default: 120).
-    """
-    def decorator(func):
-        async def wrapper(*args, **kwargs):
-            now = monotonic()
-            cache_key = f"{func.__name__}:{key_func(*args, **kwargs)}"
-            if cache_key in _cache:
-                ts, val = _cache[cache_key]
-                if now - ts < ttl:
-                    return val
-            result = await func(*args, **kwargs)
-            _cache[cache_key] = (monotonic(), result)
-            return result
-
-        return wrapper
-
-    return decorator
-
-
 def _today() -> date:
     return datetime.now(timezone.utc).date()
 
@@ -75,6 +44,7 @@ def _pct(curr: float, prev: float) -> float:
     return round((curr - prev) / prev * 100, 1)
 
 
+@cached(prefix="analytics:dashboard", ttl=60, key_func=lambda *, session, tenant_id, days=30, **kw: f"{tenant_id}:{days}")
 async def dashboard_summary(*, session: AsyncSession, tenant_id: str, days: int = 30) -> dict:
     tid = UUID(tenant_id)
     current_start = _days_ago(days)
@@ -208,6 +178,7 @@ async def dashboard_summary(*, session: AsyncSession, tenant_id: str, days: int 
     }
 
 
+@cached(prefix="analytics:sales", ttl=60, key_func=lambda *, session, tenant_id, from_date, to_date, group_by="day", **kw: f"{tenant_id}:{from_date}:{to_date}:{group_by}")
 async def sales_summary(
     *,
     session: AsyncSession,
@@ -267,6 +238,7 @@ async def sales_summary(
     }
 
 
+@cached(prefix="analytics:top_products", ttl=60, key_func=lambda *, session, tenant_id, from_date, to_date, limit=10, **kw: f"{tenant_id}:{from_date}:{to_date}:{limit}")
 async def top_products(
     *,
     session: AsyncSession,
@@ -323,6 +295,7 @@ async def top_products(
     return items
 
 
+@cached(prefix="analytics:payments", ttl=60, key_func=lambda *, session, tenant_id, from_date, to_date, **kw: f"{tenant_id}:{from_date}:{to_date}")
 async def payment_breakdown(
     *,
     session: AsyncSession,
@@ -411,6 +384,7 @@ async def cashier_performance(
     return items
 
 
+@cached(prefix="analytics:inventory", ttl=60, key_func=lambda *, session, tenant_id, alert_type=None, **kw: f"{tenant_id}:{alert_type or 'all'}")
 async def inventory_alerts(
     *,
     session: AsyncSession,

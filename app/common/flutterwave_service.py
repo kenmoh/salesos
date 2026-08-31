@@ -583,13 +583,21 @@ async def list_banks(country: str = "NG") -> list:
     Returns:
         List of dicts containing bank codes and names.
     """
+    from app.common.cache import cache
+    cache_key = f"sf:cache:flw:banks:{country}"
+    cached = await cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     async with _client() as client:
         resp = await client.get("/banks", params={"country": country})
         data = resp.json()
 
     if data.get("status") != "success":
         return []
-    return data.get("data", [])
+    result = data.get("data", [])
+    await cache.set(cache_key, result, ttl=86400)
+    return result
 
 
 async def resolve_account(*, account_number: str, bank_code: str) -> dict:
