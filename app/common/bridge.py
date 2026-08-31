@@ -2155,6 +2155,7 @@ async def get_store_products(
                     "selling_price": float(row.selling_price) if row.selling_price else None,
                     "status": row.status,
                     "qty": float(row.StockBalance.qty),
+                    "available": float(row.StockBalance.qty) - float(row.StockBalance.reserved_qty),
                     "reserved_qty": float(row.StockBalance.reserved_qty),
                     "min_stock_level": float(row.StockBalance.min_stock_level),
                     "unit_cost": float(row.StockBalance.unit_cost)
@@ -2304,6 +2305,40 @@ async def create_product_for_store(
         session.add(balance)
         await session.commit()
 
+    qr_url = None
+    qr_asset_id = None
+    try:
+        from app.catalog.qr import build_product_qr_url, generate_qr_png
+        from app.catalog.cloudinary_upload import upload_qr_png
+
+        qr_payload = build_product_qr_url(
+            base_url=settings.api_base_url,
+            store_id=store_id,
+            product_id=str(product.id),
+        )
+        png_bytes = generate_qr_png(qr_payload, box_size=20, border=4)
+        upload = upload_qr_png(
+            tenant_id=tenant_id,
+            product_id=str(product.id),
+            png_bytes=png_bytes,
+        )
+        qr_url = upload.get("url")
+        qr_asset_id = upload.get("public_id")
+
+        if qr_url:
+            async with sdb_catalog.session() as session:
+                from app.catalog.repository import update_product
+                await update_product(
+                    session,
+                    product.id,
+                    qr_url=qr_url,
+                    qr_asset_id=qr_asset_id,
+                    qr_payload=qr_payload,
+                )
+                await session.commit()
+    except Exception:
+        logger.exception("QR generation failed for product %s", product.id)
+
     await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{store_id}*")
     return {
         "product_id": str(product.id),
@@ -2312,6 +2347,8 @@ async def create_product_for_store(
         "sku": sku,
         "selling_price": float(selling_price),
         "qty": qty,
+        "qr_url": qr_url,
+        "qr_payload": qr_payload if qr_url else None,
     }
 
 
