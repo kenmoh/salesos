@@ -6,6 +6,7 @@ from starlette.responses import JSONResponse
 from app.core.config import settings
 
 _ALLOWED_ORIGINS = frozenset(origin.lower().rstrip("/") for origin in settings.allowed_origins)
+_ALLOW_ALL = "*" in _ALLOWED_ORIGINS
 
 _MUTATION_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
@@ -29,7 +30,7 @@ class CSRFTokenMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request, call_next):
-        if request.method in _MUTATION_METHODS:
+        if request.method in _MUTATION_METHODS and not _ALLOW_ALL:
             user_id = getattr(request.state, "user_id", None)
             if user_id is None:
                 origin = request.headers.get("origin", "")
