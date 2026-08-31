@@ -1,15 +1,15 @@
 """Outbox relay runner — polls outbox tables and publishes to RabbitMQ.
 
 Run as a standalone process:
-    python -m storeflow_worker.outbox_runner
+    python -m worker.outbox_runner
 """
 
 import asyncio
 import logging
 
-from common.messagebus.outbox_relay import OutboxRelay
-from common.messagebus.publisher import EventPublisher
-from common.settings import get_common_settings
+from app.common.messagebus.outbox_relay import OutboxRelay
+from app.common.messagebus.publisher import EventPublisher
+from app.common.settings import get_common_settings
 
 logging.basicConfig(
     level=logging.INFO,

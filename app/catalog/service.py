@@ -1,15 +1,15 @@
 from uuid import UUID, uuid4
 
-from catalog.events import product_created_event, product_qr_generated_event
-from catalog.ids import new_product_public_id
-from catalog.models import Category
-from catalog.schemas import (
+from app.catalog.events import product_created_event, product_qr_generated_event
+from app.catalog.ids import new_product_public_id
+from app.catalog.models import Category
+from app.catalog.schemas import (
     CategoryCreateCommand,
     CategoryCreateResult,
     ProductCreateCommand,
     ProductCreateResult,
 )
-from common.events.outbox import OutboxWrite
+from app.common.events.outbox import OutboxWrite
 
 
 def plan_product_creation(

@@ -5,9 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "aio-pika>=10.0.1",
     "alembic>=1.19.1",
     "asyncpg>=0.31.0",
     "celery[redis]>=5.6.3",
+    "cloudinary>=1.46.2",
     "cryptography>=50.0.1",
     "email-validator>=2.3.0",
     "fastapi[standard]>=0.141.1",
@@ -20,5 +22,9 @@ dependencies = [
     "qrcode[pil]>=8.2",
     "redis[hiredis]>=6.4.0",
     "sqlalchemy[asyncio]>=2.0.52",
+    "structlog>=26.1.0",
     "user-agent>=0.1.14",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

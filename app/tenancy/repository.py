@@ -3,7 +3,7 @@ from uuid import UUID
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tenancy.models import Tenant, TenantTierProjection
+from app.tenancy.models import Tenant, TenantTierProjection
 
 
 async def get_tenant_by_slug(session: AsyncSession, slug: str) -> Tenant | None:

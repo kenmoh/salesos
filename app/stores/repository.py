@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from stores.models import Store, StoreProduct
+from app.stores.models import Store, StoreProduct
 
 
 async def create_store(session: AsyncSession, store: Store) -> Store:

@@ -3,8 +3,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from catalog.models import Category, Product
-from common.events.outbox import OutboxWrite
+from app.catalog.models import Category, Product
+from app.common.events.outbox import OutboxWrite
 
 
 async def get_product_by_id(session: AsyncSession, product_id: UUID) -> Product | None:

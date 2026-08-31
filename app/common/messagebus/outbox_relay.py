@@ -6,9 +6,9 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from events.envelope import EventEnvelope
-from events.outbox import OutboxEvent
-from messagebus.publisher import EventPublisher
+from app.common.events.envelope import EventEnvelope
+from app.common.events.outbox import OutboxEvent
+from app.common.messagebus.publisher import EventPublisher
 
 logger = logging.getLogger("storeflow.outbox_relay")
 

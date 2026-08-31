@@ -22,8 +22,8 @@ Abbreviations Used in This Module
 
 from uuid import UUID
 
-from common.events import EventEnvelope
-from common.events.names import (
+from app.common.events import EventEnvelope
+from app.common.events.names import (
     DOCUMENT_CREATED,
     DOCUMENT_STATUS_CHANGED,
     DOCUMENT_CONVERTED_TO_SALE,

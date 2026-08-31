@@ -25,7 +25,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from common.events.envelope import EventEnvelope
+from app.common.events.envelope import EventEnvelope
 
 
 async def handle_document_status_changed(
@@ -58,8 +58,8 @@ async def handle_document_status_changed(
         envelope: The event envelope containing the status change payload.
         session: The async SQLAlchemy database session for persistence.
     """
-    from accounting.models import AccountReceivable, Journal, JournalEntry
-    from accounting.repository import (
+    from app.accounting.models import AccountReceivable, Journal, JournalEntry
+    from app.accounting.repository import (
         create_accounts_receivable,
         get_account_by_code,
         update_ar_payment,
@@ -183,7 +183,7 @@ async def handle_document_status_changed(
         # We need to look it up by invoice_id
         from sqlalchemy import select
 
-        from accounting.models import AccountReceivable
+        from app.accounting.models import AccountReceivable
 
         ar_result = await session.execute(
             select(AccountReceivable).where(

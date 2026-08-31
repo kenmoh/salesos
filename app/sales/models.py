@@ -16,7 +16,7 @@ from sqlalchemy import DateTime, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSON, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from common.db.base import StoreFlowBase
+from app.common.db.base import StoreFlowBase
 
 
 class Sale(StoreFlowBase):

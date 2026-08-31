@@ -7,10 +7,10 @@ from jose import ExpiredSignatureError, JWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.redis_client import cache_get, cache_set
-from core.security import decode_access_token, is_token_blacklisted
-from common.db.session import clear_rls_context, set_rls_context
-from identity.models import Role, UserRole
+from app.core.redis_client import cache_get, cache_set
+from app.core.security import decode_access_token, is_token_blacklisted
+from app.common.db.session import clear_rls_context, set_rls_context
+from app.identity.models import Role, UserRole
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -71,7 +71,7 @@ class TenantContext:
 
 def _get_session_factory():
     """Return a session factory using the shared engine."""
-    from common.bridge import _get_shared_engine
+    from app.common.bridge import _get_shared_engine
     from sqlalchemy.ext.asyncio import async_sessionmaker
     engine = _get_shared_engine()
     return async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)

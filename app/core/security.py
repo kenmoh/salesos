@@ -8,8 +8,8 @@ import bcrypt
 import pyotp
 from jose import jwt
 
-from storeflow_api.core.config import settings
-from storeflow_api.core.redis_client import get_session_redis
+from app.core.config import settings
+from app.core.redis_client import get_session_redis
 
 
 def hash_password(password: str) -> str:

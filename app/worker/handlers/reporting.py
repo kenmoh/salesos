@@ -1,11 +1,11 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from common.events.envelope import EventEnvelope
+from app.common.events.envelope import EventEnvelope
 
 
 async def handle_sale_receipt_created(envelope: EventEnvelope, session: AsyncSession) -> None:
-    from reporting.repository import upsert_daily_summary
-    from reporting.service import plan_upsert_daily_summary
+    from app.reporting.repository import upsert_daily_summary
+    from app.reporting.service import plan_upsert_daily_summary
 
     tenant_id = envelope.payload.get("tenant_id")
     total = envelope.payload.get("total")
@@ -21,8 +21,8 @@ async def handle_sale_receipt_created(envelope: EventEnvelope, session: AsyncSes
 
 
 async def handle_sale_voided(envelope: EventEnvelope, session: AsyncSession) -> None:
-    from reporting.repository import upsert_daily_summary
-    from reporting.service import plan_upsert_daily_summary
+    from app.reporting.repository import upsert_daily_summary
+    from app.reporting.service import plan_upsert_daily_summary
 
     tenant_id = envelope.payload.get("tenant_id")
     total = envelope.payload.get("total")
@@ -38,8 +38,8 @@ async def handle_sale_voided(envelope: EventEnvelope, session: AsyncSession) -> 
 
 
 async def handle_payment_succeeded(envelope: EventEnvelope, session: AsyncSession) -> None:
-    from reporting.repository import upsert_payment_method_summary
-    from reporting.service import plan_upsert_payment_method_summary
+    from app.reporting.repository import upsert_payment_method_summary
+    from app.reporting.service import plan_upsert_payment_method_summary
 
     tenant_id = envelope.payload.get("tenant_id")
     amount = envelope.payload.get("amount")

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 import aio_pika
 from aio_pika.abc import AbstractChannel, AbstractConnection, AbstractExchange
 
-from events.envelope import EventEnvelope
+from app.common.events.envelope import EventEnvelope
 
 logger = logging.getLogger("storeflow.messagebus")
 

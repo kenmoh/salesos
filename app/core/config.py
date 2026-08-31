@@ -27,7 +27,7 @@ class ApiSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    app_name: str = "StoreFlow"
+    app_name: str = "SalesOS"
     app_version: str = "0.1.0"
     env: Literal["development", "staging", "production"] = "development"
     debug: bool = False
@@ -57,7 +57,7 @@ class ApiSettings(BaseSettings):
         if not self.database_url_sync:
             self.database_url_sync = f"postgresql+psycopg2://{user}:{pw}@localhost:5432/{db}{ssl}"
 
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
     redis_cache_db: int = 1
     redis_session_db: int = 2
 
@@ -67,23 +67,23 @@ class ApiSettings(BaseSettings):
     access_token_expire_minutes: int = 600
     refresh_token_expire_days: int = 7
 
-    totp_issuer: str = "StoreFlow"
+    totp_issuer: str = "SalesOS"
     password_bcrypt_rounds: int = 12
 
-    celery_broker_url: str = Field(default="amqp://storeflow:storeflow@localhost:5672//")
-    celery_result_backend: str = "redis://localhost:6379/3"
+    celery_broker_url: str = Field(default="", alias="RABBIT_MQ_URL")
+    celery_result_backend: str = ""
 
     smtp_host: str = "smtp.gmail.com"
     smtp_port: int = 587
-    smtp_user: str = "noreply@storeflow.ng"
+    smtp_user: str = "noreply@salesos.ng"
     smtp_password: str = ""
-    email_from_name: str = "StoreFlow"
+    email_from_name: str = "SalesOS"
 
     resend_api_key: str = Field(default="", alias="RESEND_API_KEY")
-    resend_from_email: str = Field(default="noreply@storeflow.ng", alias="RESEND_FROM_EMAIL")
+    resend_from_email: str = Field(default="noreply@salesos.ng", alias="RESEND_FROM_EMAIL")
 
     termii_api_key: str = Field(default="", alias="TERMII_API_KEY")
-    termii_from: str = Field(default="StoreFlow", alias="TERMII_FROM")
+    termii_from: str = Field(default="SalesOS", alias="TERMII_FROM")
     termii_base_url: str = Field(
         default="https://api.termii.com/api", alias="TERMII_BASE_URL"
     )
@@ -99,15 +99,33 @@ class ApiSettings(BaseSettings):
         default="http://localhost:8000", alias="API_BASE_URL"
     )
 
+    ai_groq_api_key: str = Field(default="", alias="AI_GROQ_API_KEY")
+    ai_model: str = Field(default="llama-3.3-70b-versatile", alias="AI_MODEL")
+    llm_provider: str = Field(default="groq", alias="LLM_PROVIDER")
+    llm_api_key: str = Field(default="", alias="LLM_API_KEY")
+    llm_model: str = Field(default="", alias="LLM_MODEL")
+    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
+    serpapi_key: str = Field(default="", alias="SERPAPI_KEY")
+
     supervisor_pin_expire_days: int = 7
 
     @property
     def redis_cache_url(self) -> str:
-        return self.redis_url.rsplit("/", 1)[0] + f"/{self.redis_cache_db}"
+        base = self.redis_url.rsplit("/", 1)[0]
+        return f"{base}/{self.redis_cache_db}"
 
     @property
     def redis_session_url(self) -> str:
-        return self.redis_url.rsplit("/", 1)[0] + f"/{self.redis_session_db}"
+        base = self.redis_url.rsplit("/", 1)[0]
+        return f"{base}/{self.redis_session_db}"
+
+    @property
+    def celery_result_backend_url(self) -> str:
+        if self.celery_result_backend:
+            return self.celery_result_backend
+        base = self.redis_url.rsplit("/", 1)[0]
+        return f"{base}/3"
 
     @property
     def is_production(self) -> bool:

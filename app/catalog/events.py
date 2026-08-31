@@ -1,7 +1,7 @@
 from uuid import UUID
 
-from common.events import EventEnvelope
-from common.events.names import (
+from app.common.events import EventEnvelope
+from app.common.events.names import (
     CATALOG_PRODUCT_CREATED as PRODUCT_CREATED,
     CATALOG_PRODUCT_QR_GENERATED as PRODUCT_QR_GENERATED,
 )

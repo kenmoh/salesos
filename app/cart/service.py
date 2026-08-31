@@ -16,7 +16,7 @@ from .schemas import (
     CheckoutCommand,
     RemoveItemCommand,
 )
-from common.events.outbox import OutboxWrite
+from app.common.events.outbox import OutboxWrite
 
 
 def plan_cart_creation(

@@ -1,9 +1,9 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from common.events.envelope import EventEnvelope
-from notifications.repository import create_notification
-from notifications.schemas import NotificationSendCommand
-from notifications.service import plan_send_notification
+from app.common.events.envelope import EventEnvelope
+from app.notifications.repository import create_notification
+from app.notifications.schemas import NotificationSendCommand
+from app.notifications.service import plan_send_notification
 
 
 async def handle_tenant_created(envelope: EventEnvelope, session: AsyncSession) -> None:

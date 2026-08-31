@@ -4,7 +4,7 @@ import json
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from platform.models import PlatformAuditLog
+from app.platform.models import PlatformAuditLog
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession

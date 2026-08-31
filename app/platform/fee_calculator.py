@@ -9,7 +9,7 @@ The fee calculation follows a tiered rule system where:
 3. Fees can be either flat (fixed amount) or percentage-based
 
 Typical usage:
-    from storeflow_platform.fee_calculator import calculate_platform_fee
+    from app.platform.fee_calculator import calculate_platform_fee
 
     # Calculate fee for a 5000 NGN sale
     result = await calculate_platform_fee(session, 5000.0)
@@ -68,7 +68,7 @@ async def calculate_platform_fee(session: AsyncSession, sale_total: float) -> di
         # For a 500 NGN sale with a flat 100 NGN rule:
         # {"platform_fee": 100.0, "settlement_amount": 400.0}
     """
-    from platform.models import FeeType, PlatformCommission
+    from app.platform.models import FeeType, PlatformCommission
 
     total = Decimal(str(sale_total))
 
@@ -123,7 +123,7 @@ async def get_pending_fee_balance(session: AsyncSession, tenant_id: UUID) -> flo
     Returns:
         Total pending fee balance in Nigerian Naira.
     """
-    from platform.models import PlatformFeeLedger
+    from app.platform.models import PlatformFeeLedger
 
     result = await session.execute(
         select(func.coalesce(func.sum(PlatformFeeLedger.amount), 0)).where(
@@ -146,7 +146,7 @@ async def get_max_pending_balance(session: AsyncSession) -> float:
     Returns:
         Maximum pending balance threshold (default: 1000.0 NGN).
     """
-    from platform.models import PlatformCommission
+    from app.platform.models import PlatformCommission
 
     result = await session.execute(select(PlatformCommission.max_pending_balance).limit(1))
     val = result.scalar()

@@ -2,14 +2,14 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 
-from common.events.outbox import OutboxWrite
-from payments.events import (
+from app.common.events.outbox import OutboxWrite
+from app.payments.events import (
     payment_intent_created_event,
     payment_succeeded_event,
     payment_failed_event,
 )
-from payments.models import PaymentIntent
-from payments.schemas import PaymentIntentCreateCommand, PaymentIntentResult
+from app.payments.models import PaymentIntent
+from app.payments.schemas import PaymentIntentCreateCommand, PaymentIntentResult
 
 
 def plan_payment_intent(

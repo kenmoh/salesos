@@ -1,7 +1,7 @@
 from uuid import UUID
 
-from common.events import EventEnvelope
-from common.events.names import NOTIFICATION_SENT, NOTIFICATION_FAILED
+from app.common.events import EventEnvelope
+from app.common.events.names import NOTIFICATION_SENT, NOTIFICATION_FAILED
 
 
 def notification_sent_event(

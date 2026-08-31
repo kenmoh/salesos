@@ -1,9 +1,9 @@
 from uuid import UUID, uuid4
 
-from common.events.outbox import OutboxWrite
-from identity.events import user_created_event, role_changed_event
-from identity.models import User
-from identity.schemas import UserCreateCommand, UserResult
+from app.common.events.outbox import OutboxWrite
+from app.identity.events import user_created_event, role_changed_event
+from app.identity.models import User
+from app.identity.schemas import UserCreateCommand, UserResult
 
 
 def plan_user_creation(command: UserCreateCommand) -> tuple[UserResult, User, list[OutboxWrite]]:

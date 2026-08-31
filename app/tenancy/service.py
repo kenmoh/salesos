@@ -1,10 +1,10 @@
 import re
 from uuid import uuid4
 
-from common.events.outbox import OutboxWrite
-from tenancy.events import tenant_created_event, tier_changed_event
-from tenancy.models import Tenant, TenantTierProjection
-from tenancy.schemas import TenantCreateCommand, TenantResult, TIER_LIMITS
+from app.common.events.outbox import OutboxWrite
+from app.tenancy.events import tenant_created_event, tier_changed_event
+from app.tenancy.models import Tenant, TenantTierProjection
+from app.tenancy.schemas import TenantCreateCommand, TenantResult, TIER_LIMITS
 
 SUBDOMAIN_SUFFIX = ".storeflow.ng"
 
@@ -39,8 +39,8 @@ def plan_tenant_creation(
         status="active",
     )
 
-    from identity.service import plan_user_creation
-    from identity.schemas import UserCreateCommand
+    from app.identity.service import plan_user_creation
+    from app.identity.schemas import UserCreateCommand
 
     user_command = UserCreateCommand(
         tenant_id=tenant_id,

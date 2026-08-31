@@ -2,8 +2,8 @@
 
 from uuid import UUID
 
-from common.events import EventEnvelope
-from common.events.names import TENANT_CREATED, TENANT_TIER_CHANGED
+from app.common.events import EventEnvelope
+from app.common.events.names import TENANT_CREATED, TENANT_TIER_CHANGED
 
 
 def tenant_created_event(

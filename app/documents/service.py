@@ -33,13 +33,13 @@ Document Lifecycle:
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from common.events.outbox import OutboxWrite
-from documents.events import (
+from app.common.events.outbox import OutboxWrite
+from app.documents.events import (
     document_created_event,
     document_status_changed_event,
 )
-from documents.models import Document, DocumentItem
-from documents.schemas import (
+from app.documents.models import Document, DocumentItem
+from app.documents.schemas import (
     DocumentCreateCommand,
     DocumentResult,
     DocumentStatusCommand,

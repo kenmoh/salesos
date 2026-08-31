@@ -1,7 +1,7 @@
 from uuid import uuid4
 
-from stores.models import Store
-from stores.schemas import StoreCreateCommand, StoreResult
+from app.stores.models import Store
+from app.stores.schemas import StoreCreateCommand, StoreResult
 
 
 def plan_create_store(

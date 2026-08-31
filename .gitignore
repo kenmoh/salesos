@@ -1,12 +1,16 @@
-# Python-generated files
 __pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
+*.py[cod]
+*.egg-info/
+.venv/
+.idea/
+.ruff_cache/
+.pytest_cache/
+.uv-cache/
+.env
+alembic/__pycache__/
+*.db
 
-# Virtual environments
-.venv
+
+store_flow_legacy/
 
 .env

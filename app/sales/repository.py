@@ -3,7 +3,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sales.models import Receipt, Sale, SaleItem
+from app.sales.models import Receipt, Sale, SaleItem
 
 
 async def get_sale_by_id(session: AsyncSession, sale_id: UUID) -> Sale | None:

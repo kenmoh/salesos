@@ -5,9 +5,9 @@ from typing import Any
 
 import aio_pika
 from aio_pika.abc import AbstractIncomingMessage
-from events.envelope import EventEnvelope
-from events.inbox import InboxEvent
-from messagebus.publisher import EXCHANGE_NAME, EXCHANGE_TYPE
+from app.common.events.envelope import EventEnvelope
+from app.common.events.inbox import InboxEvent
+from app.common.messagebus.publisher import EXCHANGE_NAME, EXCHANGE_TYPE
 
 logger = logging.getLogger("storeflow.messagebus.consumer")
 

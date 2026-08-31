@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounting.models import AccountPayable, AccountReceivable, ChartOfAccount, CommissionLedger, Expense, Journal, JournalEntry
 
-# from storeflow_accounting.models import (
+# from app.accounting.models import (
 #     AccountPayable,
 #     AccountReceivable,
 #     ChartOfAccount,

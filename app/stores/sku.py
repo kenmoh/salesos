@@ -67,7 +67,7 @@ async def generate_unique_sku(session, tenant_id) -> str:
     """
     from sqlalchemy import select, text
 
-    from stores.models import StoreProduct
+    from app.stores.models import StoreProduct
 
     for _ in range(_MAX_RETRIES):
         candidate = generate_sku()

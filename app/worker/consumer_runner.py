@@ -1,7 +1,7 @@
 """Event consumer runner — starts EventConsumer for each service.
 
 Run as a standalone process:
-    python -m storeflow_worker.consumer_runner
+    python -m worker.consumer_runner
 """
 
 import asyncio
@@ -9,11 +9,11 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from common.messagebus.consumer import EventConsumer
-from common.messagebus.setup import SERVICE_QUEUES
-from common.settings import get_common_settings
+from app.common.messagebus.consumer import EventConsumer
+from app.common.messagebus.setup import SERVICE_QUEUES
+from app.common.settings import get_common_settings
 
-from worker.handlers import apply_service_handlers
+from app.worker.handlers import apply_service_handlers
 
 logging.basicConfig(
     level=logging.INFO,

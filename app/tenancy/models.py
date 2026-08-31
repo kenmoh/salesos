@@ -17,7 +17,7 @@ from sqlalchemy import DateTime, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from common.db.base import StoreFlowBase
+from app.common.db.base import StoreFlowBase
 
 
 class Tenant(StoreFlowBase):

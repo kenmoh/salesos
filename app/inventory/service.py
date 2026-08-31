@@ -1,7 +1,7 @@
 from uuid import uuid4
 
-from common.events.outbox import OutboxWrite
-from inventory.events import (
+from app.common.events.outbox import OutboxWrite
+from app.inventory.events import (
     low_stock_detected_event,
     stock_adjusted_event,
     stock_committed_event,
@@ -12,13 +12,13 @@ from inventory.events import (
     transfer_rejected_event,
     transfer_requested_event,
 )
-from inventory.models import (
+from app.inventory.models import (
     StockAdjustment,
     StockBalance,
     StockReservation,
     TransferRequest,
 )
-from inventory.schemas import (
+from app.inventory.schemas import (
     AdjustStockCommand,
     ReserveStockCommand,
     TransferRequestApproveCommand,

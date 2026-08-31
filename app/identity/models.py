@@ -24,7 +24,7 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstr
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from common.db.base import StoreFlowBase
+from app.common.db.base import StoreFlowBase
 
 
 class User(StoreFlowBase):

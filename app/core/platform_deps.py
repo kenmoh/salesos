@@ -6,8 +6,8 @@ from jose import ExpiredSignatureError, JWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from storeflow_api.core.security import decode_access_token, is_token_blacklisted
-from storeflow_platform.models import PlatformAdmin
+from app.core.security import decode_access_token, is_token_blacklisted
+from app.platform.models import PlatformAdmin
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -62,7 +62,7 @@ async def get_platform_context(
     user = PlatformUserData(payload)
     request.state.admin_id = user.admin_id
 
-    from storeflow_api.services.bridge import _get_shared_engine
+    from app.common.bridge import _get_shared_engine
     from sqlalchemy.ext.asyncio import async_sessionmaker
     engine = _get_shared_engine()
     factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)

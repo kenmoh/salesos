@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.platform.models import PlatformAdmin
 
-from core.config import settings
-from core.security import (
+from app.core.config import settings
+from app.core.security import (
     create_access_token,
     decode_access_token,
     generate_session_id,
@@ -19,7 +19,7 @@ from core.security import (
     verify_password,
     verify_session_hash,
 )
-from platform.models import PlatformAdmin
+from app.platform.models import PlatformAdmin
 
 
 class PlatformAuthError(Exception):
@@ -53,7 +53,7 @@ async def platform_login(*, session: AsyncSession, email: str, password: str, re
     sid = generate_session_id()
     refresh_token, _ = create_access_token(str(admin.id), "platform", role_str, perms)
 
-    from core.security import create_refresh_token
+    from app.core.security import create_refresh_token
 
     refresh_token, _ = create_refresh_token(str(admin.id), "platform", sid)
     await store_refresh_session(
@@ -90,7 +90,7 @@ async def platform_refresh(*, session: AsyncSession, raw_token: str) -> dict:
         await revoke_all_sessions(payload["sub"])
         raise PlatformAuthError("Token reuse detected")
 
-    from core.security import create_refresh_token, generate_session_id
+    from app.core.security import create_refresh_token, generate_session_id
 
     new_sid = generate_session_id()
     new_refresh, _ = create_refresh_token(payload["sub"], "platform", new_sid)

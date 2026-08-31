@@ -2,8 +2,8 @@
 
 from uuid import UUID
 
-from common.events import EventEnvelope
-from common.events.names import PAYMENT_FAILED, PAYMENT_INTENT_CREATED, PAYMENT_SUCCEEDED
+from app.common.events import EventEnvelope
+from app.common.events.names import PAYMENT_FAILED, PAYMENT_INTENT_CREATED, PAYMENT_SUCCEEDED
 
 
 def payment_intent_created_event(

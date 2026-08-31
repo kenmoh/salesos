@@ -6,8 +6,8 @@ from sqlalchemy import JSON, DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from db.base import StoreFlowBase
-from events.envelope import EventEnvelope
+from app.common.db.base import StoreFlowBase
+from app.common.events.envelope import EventEnvelope
 
 
 class OutboxEvent(StoreFlowBase):

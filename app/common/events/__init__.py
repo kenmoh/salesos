@@ -1,3 +1,3 @@
-from events.envelope import EventEnvelope
+from app.common.events.envelope import EventEnvelope
 
 __all__ = ["EventEnvelope"]

@@ -1,16 +1,16 @@
 """Flower configuration for Celery monitoring.
 
 Usage:
-    celery -A storeflow_worker.celery_app flower --port=5555
+    celery -A app.worker.celery_app flower --port=5555
 
 Or with uv:
-    uv run celery -A storeflow_worker.celery_app flower --port=5555
+    uv run celery -A app.worker.celery_app flower --port=5555
 
 Dashboard: http://localhost:5555
 API: http://localhost:5555/api/workers
 """
 
-from common.settings import get_common_settings
+from app.common.settings import get_common_settings
 
 settings = get_common_settings()
 

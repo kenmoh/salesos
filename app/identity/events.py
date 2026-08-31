@@ -2,8 +2,8 @@
 
 from uuid import UUID
 
-from common.events import EventEnvelope
-from common.events.names import (
+from app.common.events import EventEnvelope
+from app.common.events.names import (
     IDENTITY_USER_CREATED,
     IDENTITY_ROLE_CHANGED,
     IDENTITY_SESSION_REVOKED,

@@ -1,7 +1,7 @@
 from uuid import UUID
 
-from common.events import EventEnvelope
-from common.events.names import STORE_CREATED
+from app.common.events import EventEnvelope
+from app.common.events.names import STORE_CREATED
 
 
 def store_created_event(

@@ -20,7 +20,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from documents.models import Document, DocumentItem
+from app.documents.models import Document, DocumentItem
 
 
 async def create_document(session: AsyncSession, doc: Document) -> Document:

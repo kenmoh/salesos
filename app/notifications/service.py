@@ -16,8 +16,8 @@ import logging
 import os
 from uuid import uuid4
 
-from notifications.models import Notification, NotificationTemplate
-from notifications.schemas import (
+from app.notifications.models import Notification, NotificationTemplate
+from app.notifications.schemas import (
     NotificationResult,
     NotificationSendCommand,
     TemplateCreateCommand,

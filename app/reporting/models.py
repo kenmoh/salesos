@@ -5,7 +5,7 @@ from sqlalchemy import Date, DateTime, Integer, Numeric, String
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from common.db.base import StoreFlowBase
+from app.common.db.base import StoreFlowBase
 
 
 class DailySalesSummary(StoreFlowBase):

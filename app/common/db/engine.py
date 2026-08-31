@@ -47,3 +47,7 @@ def create_database(
     )
     session_factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
     return ServiceDatabase(engine=engine, session_factory=session_factory, schema=schema)
+
+
+# Alias for backwards compatibility with worker tasks
+create_service_database = create_database

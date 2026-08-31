@@ -23,7 +23,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from common.events.envelope import EventEnvelope
+from app.common.events.envelope import EventEnvelope
 
 
 async def handle_sale_confirmed(envelope: EventEnvelope, session: AsyncSession) -> None:
@@ -46,8 +46,8 @@ async def handle_sale_confirmed(envelope: EventEnvelope, session: AsyncSession) 
     """
     from datetime import UTC, datetime
 
-    from accounting.models import Journal, JournalEntry
-    from accounting.repository import get_account_by_code
+    from app.accounting.models import Journal, JournalEntry
+    from app.accounting.repository import get_account_by_code
 
     sale_id = envelope.payload.get("sale_id")
     tenant_id = envelope.payload.get("tenant_id")
@@ -133,8 +133,8 @@ async def handle_payment_succeeded(envelope: EventEnvelope, session: AsyncSessio
     """
     from datetime import UTC, datetime
 
-    from accounting.models import Journal, JournalEntry
-    from accounting.repository import get_account_by_code
+    from app.accounting.models import Journal, JournalEntry
+    from app.accounting.repository import get_account_by_code
 
     payment_id = envelope.payload.get("payment_id")
     tenant_id = envelope.payload.get("tenant_id")

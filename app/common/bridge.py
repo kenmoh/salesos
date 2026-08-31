@@ -9,14 +9,17 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, text
+from app.common.cache import cache, cached
+
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from storeflow_accounting.repository import get_account_by_id
-from storeflow_api.core.config import settings
-from storeflow_common.db.engine import ServiceDatabase, create_service_database
-from storeflow_common.settings import get_common_settings
-from storeflow_common.utils import generate_random_timestamp_string
+from app.accounting.repository import get_account_by_id
+from app.common import flutterwave_service
+from app.core.config import settings
+from app.common.db.engine import ServiceDatabase, create_database
+from app.common.settings import get_common_settings
+from app.common.utils import generate_random_timestamp_string
 
 
 common_settings = get_common_settings()
@@ -80,7 +83,7 @@ async def _record_movement(
     created_by: UUID | None = None,
 ) -> None:
     """Insert a stock_movement record for full audit trail."""
-    from storeflow_inventory.models import StockMovement
+    from app.inventory.models import StockMovement
 
     movement = StockMovement(
         tenant_id=tenant_id,
@@ -143,13 +146,12 @@ async def create_tenant(
         ValueError: If the generated slug already exists and cannot be
             made unique within the retry limit.
     """
-    from storeflow_tenancy.schemas import TenantCreateCommand
-    from storeflow_tenancy.service import plan_tenant_creation, slugify
-    from storeflow_tenancy.repository import create_tenant as repo_create_tenant, slug_exists
-    from storeflow_identity.models import Permission
-    from storeflow_identity.repository import (
+    from app.tenancy.schemas import TenantCreateCommand
+    from app.tenancy.service import plan_tenant_creation, slugify
+    from app.tenancy.repository import create_tenant as repo_create_tenant, slug_exists
+    from app.identity.models import Permission
+    from app.identity.repository import (
         create_user as repo_create_user,
-        get_role_by_name,
         get_role_by_name_for_tenant,
         assign_role_to_user,
         get_all_permissions,
@@ -185,9 +187,9 @@ async def create_tenant(
 
         # Create the "owner" role for this tenant (if missing)
         tenant_uid = tenant_model.id
-        role = await get_role_by_name(session, "owner")
+        role = await get_role_by_name_for_tenant(session, tenant_uid, "owner")
         if not role:
-            from storeflow_identity.models import Role
+            from app.identity.models import Role
 
             role = Role(
                 name="owner",
@@ -198,7 +200,7 @@ async def create_tenant(
             session.add(role)
             await session.flush()
             # Assign all permissions to owner
-            from storeflow_identity.repository import get_all_permissions, set_role_permissions
+            from app.identity.repository import get_all_permissions, set_role_permissions
 
             all_perms = await get_all_permissions(session)
             await set_role_permissions(session, role.id, [p.id for p in all_perms])
@@ -350,7 +352,7 @@ async def create_tenant(
                 )
                 perm = result_perms.scalar_one_or_none()
                 if perm:
-                    from storeflow_identity.models import RolePermission
+                    from app.identity.models import RolePermission
 
                     session.add(RolePermission(role_id=new_role.id, permission_id=perm.id))
 
@@ -358,7 +360,7 @@ async def create_tenant(
             session.add(write.to_model())
 
         # Seed default Chart of Accounts for the new tenant
-        from storeflow_accounting.seed import seed_chart_of_accounts
+        from app.accounting.seed import seed_chart_of_accounts
 
         await seed_chart_of_accounts(tenant_uid, session)
 
@@ -399,9 +401,9 @@ async def create_user(
         A dictionary containing the newly created user details including
         ``id``, ``email``, ``full_name``, and ``status``.
     """
-    from storeflow_identity.schemas import UserCreateCommand
-    from storeflow_identity.service import plan_user_creation
-    from storeflow_identity.repository import create_user as repo_create_user
+    from app.identity.schemas import UserCreateCommand
+    from app.identity.service import plan_user_creation
+    from app.identity.repository import create_user as repo_create_user
 
     command = UserCreateCommand(
         tenant_id=UUID(tenant_id),
@@ -443,7 +445,7 @@ async def list_assignable_roles(tenant_id: str | None = None) -> list[dict]:
         A list of dictionaries, each containing ``id``, ``name``, ``rank``,
         ``description``, and a ``permissions`` list of permission name strings.
     """
-    from storeflow_identity.repository import get_assignable_roles, get_permissions_for_role
+    from app.identity.repository import get_assignable_roles, get_permissions_for_role
 
     sdb = _get_sdb("identity")
     async with sdb.session() as session:
@@ -479,7 +481,7 @@ async def list_all_roles(tenant_id: str | None = None) -> list[dict]:
         A list of dictionaries, each containing ``id``, ``name``, ``rank``,
         ``description``, and a ``permissions`` list of permission name strings.
     """
-    from storeflow_identity.repository import get_all_roles, get_permissions_for_role
+    from app.identity.repository import get_all_roles, get_permissions_for_role
 
     sdb = _get_sdb("identity")
     async with sdb.session() as session:
@@ -511,7 +513,7 @@ async def list_all_permissions() -> list[dict]:
         A list of dictionaries, each containing ``id``, ``name``, and
         ``description`` of a permission.
     """
-    from storeflow_identity.repository import get_all_permissions
+    from app.identity.repository import get_all_permissions
 
     sdb = _get_sdb("identity")
     async with sdb.session() as session:
@@ -534,7 +536,7 @@ async def get_user_roles(tenant_id: str, user_id: str) -> list[dict] | None:
         and ``description``, or ``None`` if the user does not exist or belongs
         to a different tenant.
     """
-    from storeflow_identity.repository import get_user_by_id, get_user_roles
+    from app.identity.repository import get_user_by_id, get_user_roles
 
     sdb = _get_sdb("identity")
     async with sdb.session() as session:
@@ -571,14 +573,14 @@ async def assign_role(
         ValueError: If the user is not found, the role does not exist within
             the tenant, or the role is already assigned to the user.
     """
-    from storeflow_identity.repository import (
+    from app.identity.repository import (
         assign_role_to_user,
         get_role_by_name_for_tenant,
         get_user_by_id,
         get_user_roles,
     )
-    from storeflow_identity.service import plan_role_assignment
-    from storeflow_identity.schemas import UserRoleAssignCommand
+    from app.identity.service import plan_role_assignment
+    from app.identity.schemas import UserRoleAssignCommand
 
     tenant_uid = UUID(tenant_id)
     sdb = _get_sdb("identity")
@@ -637,7 +639,7 @@ async def remove_role(tenant_id: str, user_id: str, role_name: str) -> dict:
         ValueError: If the user is not found or the role does not exist
             within the tenant.
     """
-    from storeflow_identity.repository import (
+    from app.identity.repository import (
         get_role_by_name_for_tenant,
         get_user_by_id,
         remove_role_from_user,
@@ -744,10 +746,10 @@ async def create_products(
         dictionaries) and ``errors`` (list of failed items with their error
         messages).
     """
-    from storeflow_catalog.models import Product
-    from storeflow_catalog.repository import update_product
-    from storeflow_catalog.schemas import ProductCreateCommand
-    from storeflow_catalog.service import plan_product_creation
+    from app.catalog.models import Product
+    from app.catalog.repository import update_product
+    from app.catalog.schemas import ProductCreateCommand
+    from app.catalog.service import plan_product_creation
 
     products: list[ProductCreateCommand] = []
     errors: list[dict] = []
@@ -793,8 +795,8 @@ async def create_products(
         await session.commit()
 
     # Generate QR codes (URL-based) for each product and upload to Cloudinary
-    from storeflow_catalog.cloudinary_upload import upload_qr_png
-    from storeflow_catalog.qr import build_product_qr_url, generate_qr_png
+    from app.catalog.cloudinary_upload import upload_qr_png
+    from app.catalog.qr import build_product_qr_url, generate_qr_png
 
     api_base = settings.api_base_url
 
@@ -827,8 +829,8 @@ async def create_products(
 
     # Create store_products records if store_id is provided
     if store_id:
-        from storeflow_stores.models import StoreProduct
-        from storeflow_stores.sku import generate_unique_sku
+        from app.stores.models import StoreProduct
+        from app.stores.sku import generate_unique_sku
 
         sdb_stores = _get_sdb("inventory")
         async with sdb_stores.session() as store_session:
@@ -890,9 +892,9 @@ async def create_cart(
         A dictionary containing the newly created cart details including
         ``id``, ``session_id``, ``status``, and ``expires_at``.
     """
-    from storeflow_cart.schemas import CartCreateCommand
-    from storeflow_cart.service import plan_cart_creation
-    from storeflow_cart.repository import create_cart as repo_create_cart
+    from app.cart.schemas import CartCreateCommand
+    from app.cart.service import plan_cart_creation
+    from app.cart.repository import create_cart as repo_create_cart
 
     command = CartCreateCommand(
         store_id=UUID(store_id),
@@ -955,9 +957,9 @@ async def create_sale_via_service(
         A dictionary containing the newly created sale details including
         ``id``, ``sale_number``, ``total``, ``amount_paid``, and ``status``.
     """
-    from storeflow_sales.schemas import SaleCreateCommand, SaleItemLine
-    from storeflow_sales.service import plan_sale_creation
-    from storeflow_sales.repository import create_sale as repo_create_sale, create_sale_items
+    from app.sales.schemas import SaleCreateCommand, SaleItemLine
+    from app.sales.service import plan_sale_creation
+    from app.sales.repository import create_sale as repo_create_sale, create_sale_items
 
     sale_items = [
         SaleItemLine(
@@ -1025,9 +1027,9 @@ async def create_account(
         A dictionary containing the newly created account details including
         ``id``, ``code``, ``name``, ``account_type``, and ``parent_id``.
     """
-    from storeflow_accounting.schemas import ChartOfAccountCreateCommand
-    from storeflow_accounting.service import plan_create_account
-    from storeflow_accounting.repository import create_account as repo_create_account
+    from app.accounting.schemas import ChartOfAccountCreateCommand
+    from app.accounting.service import plan_create_account
+    from app.accounting.repository import create_account as repo_create_account
 
     command = ChartOfAccountCreateCommand(
         tenant_id=UUID(tenant_id),
@@ -1059,7 +1061,7 @@ async def list_accounts(tenant_id: str) -> list[dict]:
         A list of dictionaries, each containing account details: id, code,
         name, account_type, status.
     """
-    from storeflow_accounting.repository import list_accounts as repo_list_accounts
+    from app.accounting.repository import list_accounts as repo_list_accounts
 
     sdb = _get_sdb("accounting")
     async with sdb.session() as session:
@@ -1093,7 +1095,7 @@ async def get_balance_sheet(
     Returns:
         A dictionary containing assets, liabilities, equity totals and details.
     """
-    from storeflow_accounting.repository import get_balance_sheet as repo_get_balance_sheet
+    from app.accounting.repository import get_balance_sheet as repo_get_balance_sheet
 
     sdb = _get_sdb("accounting")
     async with sdb.session() as session:
@@ -1117,7 +1119,7 @@ async def get_cash_flow(
     Returns:
         A dictionary containing inflows, outflows, and net cash flow.
     """
-    from storeflow_accounting.repository import get_cash_flow as repo_get_cash_flow
+    from app.accounting.repository import get_cash_flow as repo_get_cash_flow
 
     sdb = _get_sdb("accounting")
     async with sdb.session() as session:
@@ -1137,7 +1139,7 @@ async def list_accounts_receivable(
     Returns:
         A list of dictionaries containing AR record details.
     """
-    from storeflow_accounting.repository import (
+    from app.accounting.repository import (
         list_accounts_receivable as repo_list_ar,
     )
 
@@ -1185,9 +1187,9 @@ async def create_accounts_receivable(
     Returns:
         A dictionary containing the newly created AR record details.
     """
-    from storeflow_accounting.schemas import AccountsReceivableCreateCommand
-    from storeflow_accounting.service import plan_create_accounts_receivable
-    from storeflow_accounting.repository import (
+    from app.accounting.schemas import AccountsReceivableCreateCommand
+    from app.accounting.service import plan_create_accounts_receivable
+    from app.accounting.repository import (
         create_accounts_receivable as repo_create_ar,
     )
 
@@ -1233,7 +1235,7 @@ async def record_ar_payment(
     Returns:
         A dictionary containing the updated AR record details.
     """
-    from storeflow_accounting.repository import (
+    from app.accounting.repository import (
         get_accounts_receivable_by_id,
         update_ar_payment,
         create_journal,
@@ -1251,8 +1253,8 @@ async def record_ar_payment(
         updated_ar = await update_ar_payment(session, UUID(ar_id), amount)
 
         # Create journal entry: Debit Cash, Credit AR
-        from storeflow_accounting.service import plan_record_ar_payment
-        from storeflow_accounting.schemas import PaymentRecordCommand
+        from app.accounting.service import plan_record_ar_payment
+        from app.accounting.schemas import PaymentRecordCommand
         from uuid import uuid4
 
         command = PaymentRecordCommand(
@@ -1266,7 +1268,7 @@ async def record_ar_payment(
         )
 
         # Resolve account IDs
-        from storeflow_accounting.repository import get_account_by_code
+        from app.accounting.repository import get_account_by_code
 
         cash_account = await get_account_by_code(session, UUID(tenant_id), "1000")
         ar_account = await get_account_by_code(session, UUID(tenant_id), "1100")
@@ -1287,7 +1289,7 @@ async def record_ar_payment(
                 await create_journal_entry(session, entry)
 
             # Post the journal
-            from storeflow_accounting.repository import post_journal as repo_post_journal
+            from app.accounting.repository import post_journal as repo_post_journal
 
             await repo_post_journal(session, journal.id, None)
             updated_ar.journal_id = journal.id
@@ -1315,7 +1317,7 @@ async def list_accounts_payable(
     Returns:
         A list of dictionaries containing AP record details.
     """
-    from storeflow_accounting.repository import (
+    from app.accounting.repository import (
         list_accounts_payable as repo_list_ap,
     )
 
@@ -1361,9 +1363,9 @@ async def create_accounts_payable(
     Returns:
         A dictionary containing the newly created AP record details.
     """
-    from storeflow_accounting.schemas import AccountsPayableCreateCommand
-    from storeflow_accounting.service import plan_create_accounts_payable
-    from storeflow_accounting.repository import (
+    from app.accounting.schemas import AccountsPayableCreateCommand
+    from app.accounting.service import plan_create_accounts_payable
+    from app.accounting.repository import (
         create_accounts_payable as repo_create_ap,
     )
 
@@ -1408,7 +1410,7 @@ async def record_ap_payment(
     Returns:
         A dictionary containing the updated AP record details.
     """
-    from storeflow_accounting.repository import (
+    from app.accounting.repository import (
         get_accounts_payable_by_id,
         update_ap_payment,
         create_journal,
@@ -1426,8 +1428,8 @@ async def record_ap_payment(
         updated_ap = await update_ap_payment(session, UUID(ap_id), amount)
 
         # Create journal entry: Debit AP, Credit Cash
-        from storeflow_accounting.service import plan_record_ap_payment
-        from storeflow_accounting.schemas import PaymentRecordCommand
+        from app.accounting.service import plan_record_ap_payment
+        from app.accounting.schemas import PaymentRecordCommand
 
         command = PaymentRecordCommand(
             tenant_id=UUID(tenant_id),
@@ -1440,7 +1442,7 @@ async def record_ap_payment(
         )
 
         # Resolve account IDs
-        from storeflow_accounting.repository import get_account_by_code
+        from app.accounting.repository import get_account_by_code
 
         cash_account = await get_account_by_code(session, UUID(tenant_id), "1000")
         ap_account = await get_account_by_code(session, UUID(tenant_id), "2000")
@@ -1461,7 +1463,7 @@ async def record_ap_payment(
                 await create_journal_entry(session, entry)
 
             # Post the journal
-            from storeflow_accounting.repository import post_journal as repo_post_journal
+            from app.accounting.repository import post_journal as repo_post_journal
 
             await repo_post_journal(session, journal.id, None)
             updated_ap.journal_id = journal.id
@@ -1493,7 +1495,7 @@ async def list_expenses(
     Returns:
         A list of dictionaries containing expense details.
     """
-    from storeflow_accounting.repository import list_expenses as repo_list_expenses
+    from app.accounting.repository import list_expenses as repo_list_expenses
 
     sdb = _get_sdb("accounting")
     async with sdb.session() as session:
@@ -1560,10 +1562,10 @@ async def create_expense(
     Raises:
         ValueError: If the category is invalid or the expense account is not found.
     """
-    from storeflow_accounting.seed import EXPENSE_CATEGORY_ACCOUNT_MAP
-    from storeflow_accounting.schemas import ExpenseCreateCommand
-    from storeflow_accounting.service import plan_create_expense
-    from storeflow_accounting.repository import (
+    from app.accounting.seed import EXPENSE_CATEGORY_ACCOUNT_MAP
+    from app.accounting.schemas import ExpenseCreateCommand
+    from app.accounting.service import plan_create_expense
+    from app.accounting.repository import (
         create_expense as repo_create_expense,
         create_journal,
         create_journal_entry,
@@ -1625,7 +1627,7 @@ async def create_expense(
             await create_journal_entry(session, entry)
 
         # Post the journal
-        from storeflow_accounting.repository import post_journal as repo_post_journal
+        from app.accounting.repository import post_journal as repo_post_journal
 
         await repo_post_journal(session, journal.id, UUID(created_by))
 
@@ -1653,7 +1655,7 @@ async def get_expense_summary(
     Returns:
         A dictionary mapping category names to total amounts.
     """
-    from storeflow_accounting.repository import (
+    from app.accounting.repository import (
         get_expense_summary as repo_get_expense_summary,
     )
 
@@ -1681,7 +1683,7 @@ async def get_financial_dashboard(tenant_id: str) -> dict:
     Returns:
         A dictionary containing all dashboard metrics.
     """
-    from storeflow_accounting.repository import (
+    from app.accounting.repository import (
         get_financial_dashboard as repo_get_dashboard,
     )
 
@@ -1723,9 +1725,9 @@ async def send_notification(
         A dictionary containing the notification details including ``id``,
         ``channel``, ``recipient``, and ``status``.
     """
-    from storeflow_notifications.schemas import NotificationSendCommand
-    from storeflow_notifications.service import plan_send_notification
-    from storeflow_notifications.repository import create_notification as repo_create_notification
+    from app.notifications.schemas import NotificationSendCommand
+    from app.notifications.service import plan_send_notification
+    from app.notifications.repository import create_notification as repo_create_notification
 
     command = NotificationSendCommand(
         tenant_id=UUID(tenant_id),
@@ -1789,9 +1791,9 @@ async def adjust_stock(
     Raises:
         ValueError: If the adjustment would result in negative stock.
     """
-    from storeflow_inventory.schemas import AdjustStockCommand
-    from storeflow_inventory.service import plan_adjust_stock
-    from storeflow_inventory.repository import (
+    from app.inventory.schemas import AdjustStockCommand
+    from app.inventory.service import plan_adjust_stock
+    from app.inventory.repository import (
         create_stock_adjustment,
         get_stock_balance,
         upsert_stock_balance,
@@ -1875,9 +1877,9 @@ async def create_store(
     Raises:
         ValueError: If the tenant's tier does not allow additional stores.
     """
-    from storeflow_stores.schemas import StoreCreateCommand
-    from storeflow_stores.service import plan_create_store
-    from storeflow_stores.repository import (
+    from app.stores.schemas import StoreCreateCommand
+    from app.stores.service import plan_create_store
+    from app.stores.repository import (
         create_store as repo_create_store,
         count_main_stores,
     )
@@ -1902,6 +1904,7 @@ async def create_store(
     return result.model_dump(mode="json")
 
 
+@cached(prefix="stores:list", ttl=300, key_func=lambda tenant_id, **kw: tenant_id)
 async def list_stores(tenant_id: str) -> list[dict]:
     """List all stores belonging to a tenant.
 
@@ -1916,7 +1919,7 @@ async def list_stores(tenant_id: str) -> list[dict]:
         A list of store dictionaries, each containing ``id``, ``name``,
         ``address``, ``is_warehouse``, and ``status``.
     """
-    from storeflow_stores.repository import list_stores as repo_list_stores
+    from app.stores.repository import list_stores as repo_list_stores
 
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
@@ -1948,7 +1951,7 @@ async def get_store(tenant_id: str, store_id: str) -> dict | None:
         ``address``, ``is_warehouse``, and ``status``, or ``None`` if the
         store does not exist or belongs to a different tenant.
     """
-    from storeflow_stores.repository import get_store_with_tenant
+    from app.stores.repository import get_store_with_tenant
 
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
@@ -2018,9 +2021,9 @@ async def sync_store_products(tenant_id: str, store_id: str) -> dict:
         ValueError: If the tenant has no warehouse or the target store does
             not exist.
     """
-    from storeflow_inventory.models import StockBalance
-    from storeflow_inventory.repository import get_stock_balance
-    from storeflow_stores.repository import list_stores as repo_list_stores
+    from app.inventory.models import StockBalance
+    from app.inventory.repository import get_stock_balance
+    from app.stores.repository import list_stores as repo_list_stores
 
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
@@ -2090,8 +2093,8 @@ async def get_store_products(
         A dictionary containing ``items`` (list of product dictionaries with
         stock information), ``total`` count, ``page``, and ``page_size``.
     """
-    from storeflow_catalog.models import Product
-    from storeflow_inventory.models import StockBalance
+    from app.catalog.models import Product
+    from app.inventory.models import StockBalance
 
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
@@ -2116,20 +2119,24 @@ async def get_store_products(
         result = await session.execute(query)
         rows = result.all()
 
-        count_query = select(StockBalance).where(
-            StockBalance.tenant_id == UUID(tenant_id),
-            StockBalance.store_id == UUID(store_id),
+        count_query = (
+            select(func.count())
+            .select_from(StockBalance)
+            .join(Product, StockBalance.product_id == Product.id, isouter=True)
+            .where(
+                StockBalance.tenant_id == UUID(tenant_id),
+                StockBalance.store_id == UUID(store_id),
+            )
         )
         if search:
-            count_query = count_query.join(Product, StockBalance.product_id == Product.id).where(
-                Product.name.ilike(f"%{search}%")
-            )
+            count_query = count_query.where(Product.name.ilike(f"%{search}%"))
         count_result = await session.execute(count_query)
-        total = len(list(count_result.scalars().all()))
+        total = count_result.scalar() or 0
 
         return {
             "items": [
                 {
+                    "id": str(row.StockBalance.product_id),
                     "product_id": str(row.StockBalance.product_id),
                     "public_id": row.public_id,
                     "name": row.name,
@@ -2176,9 +2183,9 @@ async def add_product_to_store(
         ValueError: If the product does not exist in the catalog or already
             has a stock balance in the specified store.
     """
-    from storeflow_catalog.repository import get_product_by_id as repo_get_product
-    from storeflow_inventory.models import StockBalance
-    from storeflow_inventory.repository import get_stock_balance
+    from app.catalog.repository import get_product_by_id as repo_get_product
+    from app.inventory.models import StockBalance
+    from app.inventory.repository import get_stock_balance
 
     sdb_catalog = _get_sdb("catalog")
     async with sdb_catalog.session() as cat_session:
@@ -2211,7 +2218,6 @@ async def create_product_for_store(
     tenant_id: str,
     store_id: str,
     name: str,
-    sku: str | None = None,
     description: str | None = None,
     category_id: str | None = None,
     unit: str = "unit",
@@ -2228,12 +2234,14 @@ async def create_product_for_store(
     Creates the product in catalog.products, then creates a store_products
     record and a stock_balances record for the specified store.
     """
-    from storeflow_catalog.models import Product
-    from storeflow_catalog.ids import new_product_public_id
-    from storeflow_inventory.models import StockBalance
-    from storeflow_stores.models import StoreProduct
+    from app.catalog.models import Product
+    from app.catalog.ids import new_product_public_id
+    from app.inventory.models import StockBalance
+    from app.stores.models import StoreProduct
 
     sdb_catalog = _get_sdb("catalog")
+    _random = generate_random_timestamp_string()
+    sku = f'{name}-{_random[:6]}'.upper().replace(" ", "")
     async with sdb_catalog.session() as session:
         product = Product(
             tenant_id=UUID(tenant_id),
@@ -2251,6 +2259,7 @@ async def create_product_for_store(
         )
         session.add(product)
         await session.flush()
+        await session.commit()
 
     sdb_stores = _get_sdb("stores")
     async with sdb_stores.session() as session:
@@ -2322,7 +2331,7 @@ async def update_store(
         ValueError: If attempting to convert to a warehouse while main
             stores exist.
     """
-    from storeflow_stores.repository import get_store_with_tenant, count_main_stores
+    from app.stores.repository import get_store_with_tenant, count_main_stores
 
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
@@ -2366,7 +2375,7 @@ async def delete_store(tenant_id: str, store_id: str) -> dict | None:
         A dictionary containing ``ok: True`` on success, or ``None`` if the
         store does not exist.
     """
-    from storeflow_stores.repository import get_store_with_tenant
+    from app.stores.repository import get_store_with_tenant
 
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
@@ -2425,14 +2434,14 @@ async def create_store_product(
         ValueError: If the store or product does not exist, or if the
             product already exists in the store.
     """
-    from storeflow_stores.models import StoreProduct
-    from storeflow_stores.repository import (
+    from app.stores.models import StoreProduct
+    from app.stores.repository import (
         get_store_product,
         create_store_product as repo_create,
         get_store_with_tenant,
     )
-    from storeflow_stores.sku import generate_unique_sku
-    from storeflow_catalog.repository import get_product_by_id
+    from app.stores.sku import generate_unique_sku
+    from app.catalog.repository import get_product_by_id
 
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
@@ -2500,7 +2509,7 @@ async def update_store_product(
     Raises:
         ValueError: If the store or product does not exist.
     """
-    from storeflow_stores.repository import (
+    from app.stores.repository import (
         get_store_product,
         update_store_product as repo_update,
         get_store_with_tenant,
@@ -2555,9 +2564,9 @@ async def delete_store_product(
     product_id: str,
 ) -> bool:
     """Remove a product from a store (deletes stock balance + store_product)."""
-    from storeflow_inventory.models import StockBalance
-    from storeflow_inventory.repository import get_stock_balance
-    from storeflow_stores.models import StoreProduct
+    from app.inventory.models import StockBalance
+    from app.inventory.repository import get_stock_balance
+    from app.stores.models import StoreProduct
 
     sdb_inventory = _get_sdb("inventory")
     async with sdb_inventory.session() as session:
@@ -2610,7 +2619,7 @@ async def list_store_products(
     Returns:
         A dictionary containing items, total, page, and page_size.
     """
-    from storeflow_stores.repository import list_store_products as repo_list
+    from app.stores.repository import list_store_products as repo_list
 
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
@@ -2662,7 +2671,7 @@ async def get_store_product_detail(
         A dictionary containing the store product details, or None if
         not found.
     """
-    from storeflow_stores.repository import get_store_product
+    from app.stores.repository import get_store_product
 
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
@@ -2714,15 +2723,15 @@ async def sync_store_products(
         ValueError: If the target store does not exist, or if neither
             product_ids nor sync_all is provided.
     """
-    from storeflow_stores.models import StoreProduct
-    from storeflow_stores.repository import (
+    from app.stores.models import StoreProduct
+    from app.stores.repository import (
         get_store_product,
         get_store_with_tenant,
         create_store_product as repo_create,
     )
-    from storeflow_stores.sku import generate_unique_sku
-    from storeflow_catalog.models import Product
-    from storeflow_catalog.repository import list_products
+    from app.stores.sku import generate_unique_sku
+    from app.catalog.models import Product
+    from app.catalog.repository import list_products
 
     if not product_ids and not sync_all:
         raise ValueError("provide_product_ids_or_sync_all")
@@ -2780,7 +2789,7 @@ async def sync_store_products(
                     # Copy from catalog template
                     sdb_cat = _get_sdb("catalog")
                     async with sdb_cat.session() as cat_session:
-                        from storeflow_catalog.repository import get_product_by_id
+                        from app.catalog.repository import get_product_by_id
 
                         catalog_product = await get_product_by_id(cat_session, pid)
                         if not catalog_product:
@@ -2859,14 +2868,14 @@ async def transfer_stock(
             the same, the source balance is not found, or there is
             insufficient stock.
     """
-    from storeflow_inventory.schemas import TransferStockCommand
-    from storeflow_inventory.service import plan_transfer_stock
-    from storeflow_inventory.repository import (
+    from app.inventory.schemas import TransferStockCommand
+    from app.inventory.service import plan_transfer_stock
+    from app.inventory.repository import (
         create_stock_adjustment,
         get_stock_balance,
         upsert_stock_balance,
     )
-    from storeflow_stores.repository import get_store_with_tenant
+    from app.stores.repository import get_store_with_tenant
 
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
@@ -2992,13 +3001,13 @@ async def create_transfer_request(
         ValueError: If either store is not found or the requesting store
             attempts to request from itself.
     """
-    from storeflow_inventory.schemas import TransferRequestCreateCommand
-    from storeflow_inventory.service import plan_create_transfer_request
-    from storeflow_inventory.repository import (
+    from app.inventory.schemas import TransferRequestCreateCommand
+    from app.inventory.service import plan_create_transfer_request
+    from app.inventory.repository import (
         create_transfer_request as repo_create_transfer_request,
         get_stock_balance,
     )
-    from storeflow_stores.repository import get_store_with_tenant
+    from app.stores.repository import get_store_with_tenant
 
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
@@ -3088,9 +3097,9 @@ async def approve_transfer_request(
     Raises:
         ValueError: If the transfer request is not found.
     """
-    from storeflow_inventory.schemas import TransferRequestApproveCommand
-    from storeflow_inventory.service import plan_approve_transfer_request
-    from storeflow_inventory.repository import (
+    from app.inventory.schemas import TransferRequestApproveCommand
+    from app.inventory.service import plan_approve_transfer_request
+    from app.inventory.repository import (
         get_transfer_request_by_id,
         get_stock_balance,
     )
@@ -3153,11 +3162,11 @@ async def set_min_stock_level(
     Raises:
         ValueError: If the store or stock balance is not found.
     """
-    from storeflow_inventory.repository import (
+    from app.inventory.repository import (
         get_stock_balance,
         update_stock_balance_min_level,
     )
-    from storeflow_stores.repository import get_store_with_tenant
+    from app.stores.repository import get_store_with_tenant
 
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
@@ -3205,8 +3214,8 @@ async def fulfill_transfer_request(
         ValueError: If the transfer request is not found or the supplying
             store's stock balance is missing.
     """
-    from storeflow_inventory.service import plan_fulfill_transfer_request
-    from storeflow_inventory.repository import (
+    from app.inventory.service import plan_fulfill_transfer_request
+    from app.inventory.repository import (
         get_transfer_request_by_id,
         get_stock_balance,
         create_stock_adjustment,
@@ -3308,7 +3317,7 @@ async def list_transfer_requests(
         A dictionary containing ``items`` (list of transfer request
         dictionaries), ``total`` count, ``page``, and ``page_size``.
     """
-    from storeflow_inventory.repository import (
+    from app.inventory.repository import (
         list_transfer_requests as repo_list_transfer_requests,
         count_transfer_requests,
     )
@@ -3372,7 +3381,7 @@ async def get_transfer_request(tenant_id: str, request_id: str) -> dict | None:
         ``approved_by``, ``created_at``, and ``updated_at``, or ``None``
         if the request does not exist.
     """
-    from storeflow_inventory.repository import get_transfer_request_by_id
+    from app.inventory.repository import get_transfer_request_by_id
 
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
@@ -3411,8 +3420,8 @@ async def get_main_store_dashboard(tenant_id: str) -> dict:
         store or ``None``) and ``stores`` (list of stores with their stock
         summaries).
     """
-    from storeflow_inventory.repository import get_stores_with_stock
-    from storeflow_stores.repository import get_main_store
+    from app.inventory.repository import get_stores_with_stock
+    from app.stores.repository import get_main_store
 
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
@@ -3451,7 +3460,7 @@ async def get_subaccount(tenant_id: str) -> dict | None:
         ``bank_code``, ``bank_name``, ``business_name``, and
         ``percentage_charge``, or ``None`` if no subaccount exists.
     """
-    from storeflow_payments.repository import get_subaccount_by_tenant
+    from app.payments.repository import get_subaccount_by_tenant
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
@@ -3484,7 +3493,7 @@ async def get_subaccount_by_code(*, subaccount_code: str) -> dict | None:
         and ``percentage_charge``, or ``None`` if no matching subaccount
         exists.
     """
-    from storeflow_payments.repository import get_subaccount_by_code as repo_get
+    from app.payments.repository import get_subaccount_by_code as repo_get
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
@@ -3515,7 +3524,7 @@ async def list_all_subaccounts() -> list:
         ``bank_code``, ``bank_name``, ``business_name``, and
         ``percentage_charge``.
     """
-    from storeflow_payments.repository import list_subaccounts as repo_list
+    from app.payments.repository import list_subaccounts as repo_list
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
@@ -3576,7 +3585,6 @@ async def create_subaccount_on_flutterwave(
         ValueError: If the Flutterwave API call fails or the response
             does not contain a ``subaccount_id``.
     """
-    from storeflow_api.services import flutterwave_service
 
     fw_result = await flutterwave_service.create_subaccount(
         account_bank=account_bank,
@@ -3639,7 +3647,7 @@ async def update_subaccount_on_flutterwave(
     Raises:
         ValueError: If no subaccount exists for the tenant.
     """
-    from storeflow_api.services import flutterwave_service
+    # from api.services import flutterwave_service
 
     existing = await get_subaccount(tenant_id=tenant_id)
     if not existing:
@@ -3684,7 +3692,6 @@ async def delete_subaccount_on_flutterwave(*, tenant_id: str) -> dict:
     Raises:
         ValueError: If no subaccount exists for the tenant.
     """
-    from storeflow_api.services import flutterwave_service
 
     existing = await get_subaccount(tenant_id=tenant_id)
     if not existing:
@@ -3729,7 +3736,7 @@ async def update_subaccount(
     Raises:
         ValueError: If no subaccount exists for the tenant.
     """
-    from storeflow_payments.repository import get_subaccount_by_tenant
+    from app.payments.repository import get_subaccount_by_tenant
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
@@ -3774,7 +3781,7 @@ async def delete_subaccount(*, tenant_id: str) -> dict:
     Raises:
         ValueError: If no subaccount exists for the tenant.
     """
-    from storeflow_payments.repository import get_subaccount_by_tenant
+    from app.payments.repository import get_subaccount_by_tenant
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
@@ -3820,8 +3827,8 @@ async def upsert_subaccount(
         ``account_number``, ``bank_code``, ``bank_name``, and
         ``business_name``.
     """
-    from storeflow_payments.models import Subaccount
-    from storeflow_payments.repository import upsert_subaccount as repo_upsert_subaccount
+    from app.payments.models import Subaccount
+    from app.payments.repository import upsert_subaccount as repo_upsert_subaccount
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
@@ -3862,7 +3869,7 @@ async def get_dva(tenant_id: str) -> dict | None:
         ``bank_name``, and ``customer_code``, or ``None`` if no DVA
         exists for the tenant.
     """
-    from storeflow_payments.repository import get_dva_by_tenant
+    from app.payments.repository import get_dva_by_tenant
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
@@ -3917,8 +3924,8 @@ async def upsert_dva(
         A dictionary containing ``id``, ``account_number``, ``account_name``,
         and ``bank_name``.
     """
-    from storeflow_payments.models import DedicatedVirtualAccount
-    from storeflow_payments.repository import upsert_dva as repo_upsert_dva
+    from app.payments.models import DedicatedVirtualAccount
+    from app.payments.repository import upsert_dva as repo_upsert_dva
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
@@ -3970,7 +3977,7 @@ async def confirm_payment_intent(reference: str, gateway_data: dict) -> dict:
     Raises:
         ValueError: If no payment intent matches the given reference.
     """
-    from storeflow_payments.repository import get_intent_by_reference, update_intent_status
+    from app.payments.repository import get_intent_by_reference, update_intent_status
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
@@ -4008,7 +4015,7 @@ async def get_tenant_by_id(tenant_id: str) -> dict | None:
         ``tier``, and ``status``, or ``None`` if the tenant does not
         exist.
     """
-    from storeflow_tenancy.repository import get_tenant_by_id
+    from app.tenancy.repository import get_tenant_by_id
 
     sdb = _get_sdb("tenancy")
     async with sdb.session() as session:
@@ -4055,7 +4062,7 @@ async def list_products(
         A dictionary containing ``items`` (list of product dictionaries),
         ``total`` count, ``page``, and ``page_size``.
     """
-    from storeflow_catalog.repository import list_products
+    from app.catalog.repository import list_products
 
     sdb = _get_sdb("catalog")
     async with sdb.session() as session:
@@ -4105,7 +4112,7 @@ async def get_product_by_id(tenant_id: str, product_id: str) -> dict | None:
         ``category_id``, ``status``, ``qr_url``, and ``qr_payload``, or
         ``None`` if the product does not exist.
     """
-    from storeflow_catalog.repository import get_product_by_id
+    from app.catalog.repository import get_product_by_id
 
     sdb = _get_sdb("catalog")
     async with sdb.session() as session:
@@ -4144,8 +4151,8 @@ async def get_product_qr_download(
         ``(png_bytes, public_id)`` if a QR payload exists and a PNG can
         be generated, or ``None`` if no QR data is available.
     """
-    from storeflow_catalog.repository import get_product_by_id
-    from storeflow_catalog.qr import generate_qr_png
+    from app.catalog.repository import get_product_by_id
+    from app.catalog.qr import generate_qr_png
 
     sdb = _get_sdb("catalog")
     async with sdb.session() as session:
@@ -4173,8 +4180,8 @@ async def lookup_product_by_scan(store_id: str, product_id: str) -> dict | None:
     Returns:
         A dict with product details and store-specific pricing, or None.
     """
-    from storeflow_catalog.repository import get_product_by_id
-    from storeflow_stores.repository import get_store_by_id, get_store_product
+    from app.catalog.repository import get_product_by_id
+    from app.stores.repository import get_store_by_id, get_store_product
 
     store_uid = UUID(store_id)
     product_uid = UUID(product_id)
@@ -4221,7 +4228,7 @@ async def update_product(tenant_id: str, product_id: str, **kwargs) -> None:
             update (e.g. ``name``, ``selling_price``, ``sku``,
             ``category_id``).
     """
-    from storeflow_catalog.repository import update_product
+    from app.catalog.repository import update_product
 
     sdb = _get_sdb("catalog")
     async with sdb.session() as session:
@@ -4239,7 +4246,7 @@ async def delete_product(tenant_id: str, product_id: str) -> None:
         tenant_id: Unique identifier of the tenant that owns the product.
         product_id: Unique identifier of the product to delete.
     """
-    from storeflow_catalog.repository import update_product
+    from app.catalog.repository import update_product
 
     sdb = _get_sdb("catalog")
     async with sdb.session() as session:
@@ -4281,12 +4288,12 @@ async def create_category(
         ValueError: If a category with the same name already exists within
             the store.
     """
-    from storeflow_catalog.repository import (
+    from app.catalog.repository import (
         create_category as repo_create_category,
         get_category_by_name,
     )
-    from storeflow_catalog.schemas import CategoryCreateCommand
-    from storeflow_catalog.service import plan_category_creation
+    from app.catalog.schemas import CategoryCreateCommand
+    from app.catalog.service import plan_category_creation
 
     tenant_uid = UUID(tenant_id)
     store_uid = UUID(store_id)
@@ -4326,7 +4333,7 @@ async def list_categories(store_id: str) -> list[dict]:
         A list of category dictionaries, each containing ``id``, ``name``,
         ``description``, and ``created_at``.
     """
-    from storeflow_catalog.repository import list_categories
+    from app.catalog.repository import list_categories
 
     sdb = _get_sdb("catalog")
     async with sdb.session() as session:
@@ -4357,7 +4364,7 @@ async def get_category(store_id: str, category_id: str) -> dict | None:
         ``store_id``, ``name``, ``description``, and ``created_at``,
         or ``None`` if the category does not exist.
     """
-    from storeflow_catalog.repository import get_category_by_id
+    from app.catalog.repository import get_category_by_id
 
     sdb = _get_sdb("catalog")
     async with sdb.session() as session:
@@ -4390,7 +4397,7 @@ async def update_category(store_id: str, category_id: str, **kwargs) -> None:
         ValueError: If a category with the same name already exists, or
             the category is not found.
     """
-    from storeflow_catalog.repository import get_category_by_name, update_category
+    from app.catalog.repository import get_category_by_name, update_category
 
     store_uid = UUID(store_id)
     cat_uid = UUID(category_id)
@@ -4421,8 +4428,8 @@ async def delete_category(store_id: str, category_id: str) -> None:
     Raises:
         ValueError: If the category still has products assigned to it.
     """
-    from storeflow_catalog.models import Product
-    from storeflow_catalog.repository import delete_category as repo_delete_category
+    from app.catalog.models import Product
+    from app.catalog.repository import delete_category as repo_delete_category
     from sqlalchemy import select
 
     sdb = _get_sdb("catalog")
@@ -4475,8 +4482,8 @@ async def _get_or_create_cart(
     """
     from datetime import UTC, datetime, timedelta
 
-    from storeflow_cart.models import Cart
-    from storeflow_cart.repository import get_cart_by_session
+    from app.cart.models import Cart
+    from app.cart.repository import get_cart_by_session
 
     existing = await get_cart_by_session(session, session_id)
     if existing and existing.status == "active" and existing.expires_at > datetime.now(UTC):
@@ -4546,7 +4553,7 @@ async def create_or_resume_cart(
         ValueError: If the tenant's pending fee balance has exceeded the
             maximum allowed threshold.
     """
-    from storeflow_platform.fee_calculator import get_max_pending_balance, get_pending_fee_balance
+    from app.platform.fee_calculator import get_max_pending_balance, get_pending_fee_balance
 
     sdb_payments = _get_sdb("payments")
     async with sdb_payments.session() as pay_session:
@@ -4598,9 +4605,9 @@ async def remove_cart_item(tenant_id: str, item_id: str, actor_id: str | None = 
     Raises:
         ValueError: If the cart item is not found.
     """
-    from storeflow_cart.repository import get_cart_item, remove_cart_item
-    from storeflow_cart.schemas import RemoveItemCommand
-    from storeflow_cart.service import plan_remove_item
+    from app.cart.repository import get_cart_item, remove_cart_item
+    from app.cart.schemas import RemoveItemCommand
+    from app.cart.service import plan_remove_item
 
     sdb = _get_sdb("cart")
     async with sdb.session() as session:
@@ -4622,7 +4629,7 @@ async def remove_cart_item(tenant_id: str, item_id: str, actor_id: str | None = 
 
         # Log direct deletion to tenant audit trail
         if actor_id:
-            from storeflow_identity.models import AuthAuditLog as _AuditLog
+            from app.identity.models import AuthAuditLog as _AuditLog
 
             sdb_identity = _get_sdb("identity")
             async with sdb_identity.session() as audit_session:
@@ -4667,11 +4674,11 @@ async def void_cart_item(
     """
     from datetime import UTC as _UTC, datetime as _datetime
 
-    from storeflow_api.core.security import verify_pin
-    from storeflow_cart.repository import get_cart_item, remove_cart_item
-    from storeflow_cart.schemas import RemoveItemCommand
-    from storeflow_cart.service import plan_remove_item
-    from storeflow_identity.models import (
+    from app.core.security import verify_pin
+    from app.cart.repository import get_cart_item, remove_cart_item
+    from app.cart.schemas import RemoveItemCommand
+    from app.cart.service import plan_remove_item
+    from app.identity.models import (
         Permission,
         Role,
         RolePermission,
@@ -4746,7 +4753,7 @@ async def void_cart_item(
     # Log to tenant audit trail
     sdb_identity = _get_sdb("identity")
     async with sdb_identity.session() as audit_session:
-        from storeflow_identity.models import AuthAuditLog as _AuditLog
+        from app.identity.models import AuthAuditLog as _AuditLog
 
         audit_session.add(
             _AuditLog(
@@ -4787,7 +4794,7 @@ async def get_cart(tenant_id: str, cart_id: str) -> dict:
     Raises:
         ValueError: If the cart is not found.
     """
-    from storeflow_cart.repository import get_cart_by_id, get_cart_items
+    from app.cart.repository import get_cart_by_id, get_cart_items
 
     sdb = _get_sdb("cart")
     async with sdb.session() as session:
@@ -4856,19 +4863,19 @@ async def checkout_cart(
         ValueError: If the cart is not found, the cart is empty, the fee
             balance is exceeded, or referenced products do not exist.
     """
-    from storeflow_cart.repository import (
+    from app.cart.repository import (
         bulk_add_cart_items,
         get_cart_by_id,
         get_cart_items,
         update_cart_status,
     )
-    from storeflow_cart.schemas import CheckoutCommand, CheckoutItem
-    from storeflow_cart.service import plan_bulk_add_items, plan_checkout
-    from storeflow_catalog.repository import get_products_by_public_ids
-    from storeflow_sales.schemas import SaleCreateCommand, SaleItemLine
-    from storeflow_sales.service import plan_sale_creation
-    from storeflow_sales.repository import create_sale as repo_create_sale, create_sale_items
-    from storeflow_platform.fee_calculator import get_max_pending_balance, get_pending_fee_balance
+    from app.cart.schemas import CheckoutCommand, CheckoutItem
+    from app.cart.service import plan_bulk_add_items, plan_checkout
+    from app.catalog.repository import get_products_by_public_ids
+    from app.sales.schemas import SaleCreateCommand, SaleItemLine
+    from app.sales.service import plan_sale_creation
+    from app.sales.repository import create_sale as repo_create_sale, create_sale_items
+    from app.platform.fee_calculator import get_max_pending_balance, get_pending_fee_balance
 
     sdb_payments = _get_sdb("payments")
     async with sdb_payments.session() as pay_session:
@@ -4911,7 +4918,7 @@ async def checkout_cart(
             store_product_map = {}
             cart_store_id = getattr(cart, "store_id", None)
             if cart_store_id:
-                from storeflow_stores.repository import get_store_product
+                from app.stores.repository import get_store_product
 
                 sdb_inv = _get_sdb("inventory")
                 async with sdb_inv.session() as inv_session:
@@ -5022,8 +5029,8 @@ async def checkout_cart(
             customer_phone=cart.customer_phone,
         )
 
-    from storeflow_sales.service import plan_sale_creation
-    from storeflow_sales.repository import create_sale as repo_create_sale, create_sale_items
+    from app.sales.service import plan_sale_creation
+    from app.sales.repository import create_sale as repo_create_sale, create_sale_items
 
     sdb_sales = _get_sdb("sales")
     async with sdb_sales.session() as sales_session:
@@ -5059,8 +5066,8 @@ async def get_receipt_by_sale(business_id: str, sale_id: str) -> dict | None:
         ``pdf_url``, ``sent_via``, and ``created_at``, or ``None`` if
         no receipt exists for the sale.
     """
-    from storeflow_sales.repository import get_receipt_by_sale as _get_receipt
-    from storeflow_sales.models import Sale
+    from app.sales.repository import get_receipt_by_sale as _get_receipt
+    from app.sales.models import Sale
 
     sdb = _get_sdb("sales")
     async with sdb.session() as session:
@@ -5116,10 +5123,10 @@ async def record_payment(
     Raises:
         ValueError: If the sale is not found.
     """
-    from storeflow_payments.models import Payment
-    from storeflow_payments.repository import create_payment
-    from storeflow_payments.service import plan_payment_success
-    from storeflow_sales.repository import get_sale_by_id
+    from app.payments.models import Payment
+    from app.payments.repository import create_payment
+    from app.payments.service import plan_payment_success
+    from app.sales.repository import get_sale_by_id
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
@@ -5154,7 +5161,7 @@ async def record_payment(
                 sale.status = "partial"
 
             if sale.status == "completed":
-                from storeflow_platform.fee_calculator import calculate_platform_fee
+                from app.platform.fee_calculator import calculate_platform_fee
 
                 fee_result = await calculate_platform_fee(session, float(sale.total))
                 pm["platform_fee"] = fee_result["platform_fee"]
@@ -5183,7 +5190,7 @@ async def record_payment(
             and method in ("cash",)
             and pm.get("platform_fee", 0) > 0
         ):
-            from storeflow_platform.models import PlatformFeeLedger
+            from app.platform.models import PlatformFeeLedger
 
             total_fee = pm["platform_fee"]
             cash_fee_share = (
@@ -5242,9 +5249,9 @@ async def record_split_payment(
     Raises:
         ValueError: If the sale is not found.
     """
-    from storeflow_payments.models import Payment
-    from storeflow_payments.repository import create_payment
-    from storeflow_sales.repository import get_sale_by_id
+    from app.payments.models import Payment
+    from app.payments.repository import create_payment
+    from app.sales.repository import get_sale_by_id
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
@@ -5291,7 +5298,7 @@ async def record_split_payment(
             sale.status = "partial"
 
         if sale.status == "completed":
-            from storeflow_platform.fee_calculator import calculate_platform_fee
+            from app.platform.fee_calculator import calculate_platform_fee
 
             fee_result = await calculate_platform_fee(session, float(sale.total))
             pm["platform_fee"] = fee_result["platform_fee"]
@@ -5301,7 +5308,7 @@ async def record_split_payment(
 
             total_fee = fee_result["platform_fee"]
             if total_fee > 0:
-                from storeflow_platform.models import PlatformFeeLedger
+                from app.platform.models import PlatformFeeLedger
 
                 cash_payments = [p for p in payments if p["method"] == "cash"]
                 for cp in cash_payments:
@@ -5350,7 +5357,7 @@ async def suggest_even_split(sale_id: str) -> dict:
     Raises:
         ValueError: If the sale is not found.
     """
-    from storeflow_sales.repository import get_sale_by_id
+    from app.sales.repository import get_sale_by_id
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
@@ -5388,8 +5395,8 @@ async def _build_subaccounts_for_payment(
         or "flat"), and ``transaction_charge`` (the fee rate), or ``None``
         if no split is applicable.
     """
-    from storeflow_payments.repository import get_subaccount_by_tenant
-    from storeflow_platform.fee_calculator import calculate_platform_fee
+    from app.payments.repository import get_subaccount_by_tenant
+    from app.platform.fee_calculator import calculate_platform_fee
 
     sub = await get_subaccount_by_tenant(session, tenant_id)
     if not sub:
@@ -5444,11 +5451,10 @@ async def initiate_card_payment(
     Raises:
         ValueError: If the sale is not found.
     """
-    from storeflow_sales.repository import get_sale_by_id
-    from storeflow_payments.models import PaymentIntent
-    from storeflow_payments.repository import create_intent
-    from storeflow_api.services import flutterwave_service
-    from storeflow_catalog.qr import generate_qr_base64
+    from app.sales.repository import get_sale_by_id
+    from app.payments.models import PaymentIntent
+    from app.payments.repository import create_intent
+    from app.catalog.qr import generate_qr_base64
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
@@ -5530,10 +5536,9 @@ async def initiate_transfer_payment(
     Raises:
         ValueError: If the sale is not found.
     """
-    from storeflow_sales.repository import get_sale_by_id
-    from storeflow_payments.models import PaymentIntent
-    from storeflow_payments.repository import create_intent
-    from storeflow_api.services import flutterwave_service
+    from app.sales.repository import get_sale_by_id
+    from app.payments.models import PaymentIntent
+    from app.payments.repository import create_intent
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
@@ -5619,11 +5624,10 @@ async def process_split_payment(
         ValueError: If the sale is not found or the split amounts do not
             sum to the sale total.
     """
-    from storeflow_sales.repository import get_sale_by_id
-    from storeflow_payments.models import PaymentIntent
-    from storeflow_payments.repository import create_intent
-    from storeflow_api.services import flutterwave_service
-    from storeflow_catalog.qr import generate_qr_base64
+    from app.sales.repository import get_sale_by_id
+    from app.payments.models import PaymentIntent
+    from app.payments.repository import create_intent
+    from app.catalog.qr import generate_qr_base64
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
@@ -5649,8 +5653,8 @@ async def process_split_payment(
         }
 
         if cash_amount > 0:
-            from storeflow_payments.models import Payment
-            from storeflow_payments.repository import create_payment
+            from app.payments.models import Payment
+            from app.payments.repository import create_payment
 
             payment_id = uuid4()
             payment = Payment(
@@ -5768,7 +5772,7 @@ async def process_split_payment(
             sale.status = "partial"
 
         if sale.status == "completed":
-            from storeflow_platform.fee_calculator import calculate_platform_fee
+            from app.platform.fee_calculator import calculate_platform_fee
 
             fee_result = await calculate_platform_fee(session, total)
             pm["platform_fee"] = fee_result["platform_fee"]
@@ -5777,7 +5781,7 @@ async def process_split_payment(
             sale.payment_methods = pm
 
             if cash_amount > 0 and fee_result["platform_fee"] > 0:
-                from storeflow_platform.models import PlatformFeeLedger
+                from app.platform.models import PlatformFeeLedger
 
                 total_fee = fee_result["platform_fee"]
                 cash_fee_share = (
@@ -5828,11 +5832,11 @@ async def confirm_split_card_payment(
     Raises:
         ValueError: If the payment intent is not found.
     """
-    from storeflow_payments.repository import (
+    from app.payments.repository import (
         get_intent_by_reference,
         update_intent_status,
     )
-    from storeflow_platform.models import PlatformFeeLedger
+    from app.platform.models import PlatformFeeLedger
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
@@ -5893,11 +5897,11 @@ async def confirm_split_transfer_payment(
     Raises:
         ValueError: If the payment intent is not found.
     """
-    from storeflow_payments.repository import (
+    from app.payments.repository import (
         get_intent_by_reference,
         update_intent_status,
     )
-    from storeflow_platform.models import PlatformFeeLedger
+    from app.platform.models import PlatformFeeLedger
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
@@ -5967,7 +5971,7 @@ async def convert_document_to_sale(
         ValueError: If the document is not found, is not a quote or
             invoice, or is not in "sent" or "accepted" status.
     """
-    from storeflow_documents.repository import (
+    from app.documents.repository import (
         get_document_by_id,
         get_document_items,
         update_document_status,
@@ -6065,9 +6069,9 @@ async def create_document(
         including ``id``, ``doc_number``, ``doc_type``, ``status``,
         ``total``, and ``created_at``.
     """
-    from storeflow_documents.schemas import DocumentCreateCommand, DocumentItemLine
-    from storeflow_documents.service import plan_document_creation
-    from storeflow_documents.repository import (
+    from app.documents.schemas import DocumentCreateCommand, DocumentItemLine
+    from app.documents.service import plan_document_creation
+    from app.documents.repository import (
         create_document as repo_create_document,
         create_document_items,
     )
@@ -6136,7 +6140,7 @@ async def list_documents(
         A dictionary containing ``items`` (list of document dictionaries),
         ``total`` count, ``page``, and ``page_size``.
     """
-    from storeflow_documents.repository import list_documents_by_tenant
+    from app.documents.repository import list_documents_by_tenant
 
     sdb = _get_sdb("documents")
     async with sdb.session() as session:
@@ -6188,7 +6192,7 @@ async def get_document_by_id(tenant_id: str, document_id: str) -> dict | None:
         ``created_at``, and ``items`` (list of item dictionaries), or
         ``None`` if the document does not exist.
     """
-    from storeflow_documents.repository import get_document_by_id, get_document_items
+    from app.documents.repository import get_document_by_id, get_document_items
 
     sdb = _get_sdb("documents")
     async with sdb.session() as session:
@@ -6257,12 +6261,12 @@ async def update_document_status(
         ValueError: If the document is not found or the status transition
             is invalid.
     """
-    from storeflow_documents.repository import (
+    from app.documents.repository import (
         get_document_by_id,
         update_document_status as repo_update_status,
     )
-    from storeflow_documents.schemas import DocumentStatusCommand
-    from storeflow_documents.service import plan_status_change
+    from app.documents.schemas import DocumentStatusCommand
+    from app.documents.service import plan_status_change
 
     sdb = _get_sdb("documents")
     async with sdb.session() as session:
@@ -6325,7 +6329,7 @@ async def create_role_for_tenant(
         ValueError: If a role with the same name already exists for the
             tenant.
     """
-    from storeflow_identity.repository import (
+    from app.identity.repository import (
         create_role as repo_create_role,
         get_role_by_name_for_tenant,
         set_role_permissions,
@@ -6380,7 +6384,7 @@ async def update_role_for_tenant(
         ``name``, ``rank``, ``description``, and ``tenant_id``, or ``None``
         if the role does not exist.
     """
-    from storeflow_identity.repository import get_role_by_id, update_role as repo_update_role
+    from app.identity.repository import get_role_by_id, update_role as repo_update_role
 
     role_uid = UUID(role_id)
     sdb = _get_sdb("identity")
@@ -6417,7 +6421,7 @@ async def delete_role_for_tenant(tenant_id: str, role_id: str) -> bool:
         ``True`` if the role was successfully deleted, ``False`` if the
         role was not found.
     """
-    from storeflow_identity.repository import get_role_by_id, delete_role as repo_delete_role
+    from app.identity.repository import get_role_by_id, delete_role as repo_delete_role
 
     role_uid = UUID(role_id)
     sdb = _get_sdb("identity")
@@ -6452,7 +6456,7 @@ async def set_role_permissions_for_tenant(
         (list of permission name strings), or ``None`` if the role does
         not exist.
     """
-    from storeflow_identity.repository import (
+    from app.identity.repository import (
         get_role_by_id,
         set_role_permissions as repo_set_permissions,
     )
@@ -6467,7 +6471,7 @@ async def set_role_permissions_for_tenant(
         await repo_set_permissions(session, role_uid, [UUID(pid) for pid in permission_ids])
         await session.commit()
 
-        from storeflow_identity.repository import get_permissions_for_role
+        from app.identity.repository import get_permissions_for_role
 
         perms = await get_permissions_for_role(session, role_uid)
         return {
@@ -6524,7 +6528,7 @@ async def list_customers(
         A dictionary containing ``items`` (list of customer dictionaries),
         ``total`` count, ``page``, and ``page_size``.
     """
-    from packages.customers.storeflow_customers.models import Customer
+    from app.customers.models import Customer
     from sqlalchemy import func, select
 
     tenant_uid = UUID(tenant_id)
@@ -6578,7 +6582,7 @@ async def get_customer(tenant_id: str, customer_id: str) -> dict | None:
         ``name``, ``phone``, ``email``, ``address``, ``created_at``,
         and ``updated_at``, or ``None`` if the customer does not exist.
     """
-    from packages.customers.storeflow_customers.models import Customer
+    from app.customers.models import Customer
     from sqlalchemy import select
 
     sdb = _get_sdb("customers")
@@ -6619,7 +6623,7 @@ async def create_customer(
         including ``id``, ``name``, ``phone``, ``email``, ``address``,
         ``created_at``, and ``updated_at``.
     """
-    from packages.customers.storeflow_customers.models import Customer
+    from app.customers.models import Customer
 
     sdb = _get_sdb("customers")
     async with sdb.session() as session:
@@ -6657,7 +6661,7 @@ async def update_customer(
         A dictionary containing the updated customer details, or ``None``
         if the customer does not exist.
     """
-    from packages.customers.storeflow_customers.models import Customer
+    from app.customers.models import Customer
     from sqlalchemy import select
 
     sdb = _get_sdb("customers")
@@ -6713,8 +6717,8 @@ async def list_stock_balances(
         dictionaries with product details), ``total`` count, ``page``,
         and ``page_size``.
     """
-    from storeflow_inventory.models import StockBalance
-    from storeflow_catalog.models import Product
+    from app.inventory.models import StockBalance
+    from app.catalog.models import Product
     from sqlalchemy import func, select
 
     tenant_uid = UUID(tenant_id)
@@ -6791,7 +6795,7 @@ async def delete_customer(tenant_id: str, customer_id: str) -> bool:
         ``True`` if the customer was successfully deleted, ``False`` if the
         customer was not found.
     """
-    from packages.customers.storeflow_customers.models import Customer
+    from app.customers.models import Customer
     from sqlalchemy import select
 
     sdb = _get_sdb("customers")

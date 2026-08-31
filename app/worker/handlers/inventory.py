@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from common.events.envelope import EventEnvelope
+from app.common.events.envelope import EventEnvelope
 
 
 async def handle_sale_created(envelope: EventEnvelope, session: AsyncSession) -> None:
@@ -31,16 +31,16 @@ async def handle_sale_created(envelope: EventEnvelope, session: AsyncSession) ->
     if not sale_id or not tenant_id:
         return
 
-    from inventory.repository import (
+    from app.inventory.repository import (
         create_reservation,
         get_stock_balances_by_product,
     )
-    from inventory.models import StockReservation
-    from inventory.service import check_low_stock
-    from sales.repository import get_sale_items
+    from app.inventory.models import StockReservation
+    from app.inventory.service import check_low_stock
+    from app.sales.repository import get_sale_items
 
-    from common.db.engine import create_service_database
-    from common.settings import get_common_settings
+    from app.common.db.engine import create_service_database
+    from app.common.settings import get_common_settings
 
     settings = get_common_settings()
     sdb_sales = create_service_database(settings.database_url_sales)
@@ -74,7 +74,7 @@ async def handle_sale_created(envelope: EventEnvelope, session: AsyncSession) ->
                 )
                 if low_stock_outbox:
                     # Write low stock event to outbox
-                    from common.events.outbox import OutboxWrite
+                    from app.common.events.outbox import OutboxWrite
                     for outbox_event in low_stock_outbox:
                         session.add(outbox_event.to_model())
 
@@ -127,7 +127,7 @@ async def handle_sale_voided(envelope: EventEnvelope, session: AsyncSession) -> 
         envelope: Event envelope with sale details.
         session: Database session for inventory operations.
     """
-    from inventory.repository import release_reservations_for_sale
+    from app.inventory.repository import release_reservations_for_sale
 
     sale_id = envelope.payload.get("sale_id")
     tenant_id = envelope.payload.get("tenant_id")

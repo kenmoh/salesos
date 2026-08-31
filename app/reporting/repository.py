@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from reporting.models import (
+from app.reporting.models import (
     CashierPerformance,
     DailySalesSummary,
     PaymentMethodSummary,

@@ -1,15 +1,15 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from common.events.outbox import OutboxWrite
-from sales.events import (
+from app.common.events.outbox import OutboxWrite
+from app.sales.events import (
     sale_confirmed_event,
     sale_created_event,
     sale_receipt_created_event,
     sale_voided_event,
 )
-from sales.models import Receipt, Sale, SaleItem
-from sales.schemas import (
+from app.sales.models import Receipt, Sale, SaleItem
+from app.sales.schemas import (
     ConfirmSaleCommand,
     ReceiptCreateCommand,
     SaleCreateCommand,

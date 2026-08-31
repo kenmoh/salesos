@@ -1,7 +1,7 @@
 from collections.abc import Callable, Coroutine
 from typing import Any
 
-from common.events.envelope import EventEnvelope
+from app.common.events.envelope import EventEnvelope
 
 EventHandler = Callable[[EventEnvelope, Any], Coroutine[Any, Any, None]]
 
@@ -27,7 +27,7 @@ def apply_service_handlers(service: str, register_fn: Callable[[str, EventHandle
 
 
 from ..handlers import accounting, documents, inventory, notifications, reporting, sales
-from common.events.names import (
+from app.common.events.names import (
     CART_CHECKED_OUT,
     DOCUMENT_STATUS_CHANGED,
     IDENTITY_USER_CREATED,

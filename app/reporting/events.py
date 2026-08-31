@@ -1,7 +1,7 @@
 from uuid import UUID
 
-from common.events import EventEnvelope
-from common.events.names import REPORTING_PROJECTION_UPDATED
+from app.common.events import EventEnvelope
+from app.common.events.names import REPORTING_PROJECTION_UPDATED
 
 
 def projection_updated_event(

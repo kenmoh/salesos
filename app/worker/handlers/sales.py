@@ -4,15 +4,15 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from common.events.envelope import EventEnvelope
-from sales.repository import (
+from app.common.events.envelope import EventEnvelope
+from app.sales.repository import (
     create_sale,
     create_sale_items,
     create_receipt,
     get_receipt_by_sale,
 )
-from sales.schemas import ReceiptCreateCommand, SaleCreateCommand, SaleItemLine
-from sales.service import plan_create_receipt, plan_sale_creation
+from app.sales.schemas import ReceiptCreateCommand, SaleCreateCommand, SaleItemLine
+from app.sales.service import plan_create_receipt, plan_sale_creation
 
 
 async def handle_cart_checked_out(envelope: EventEnvelope, session: AsyncSession) -> None:
@@ -61,7 +61,7 @@ async def handle_payment_succeeded(envelope: EventEnvelope, session: AsyncSessio
         envelope: Event envelope with payment details in payload.
         session: Database session for sales operations.
     """
-    from sales.repository import get_sale_by_id, update_sale_status
+    from app.sales.repository import get_sale_by_id, update_sale_status
 
     sale_id = envelope.payload.get("sale_id")
     if not sale_id:

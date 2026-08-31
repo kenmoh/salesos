@@ -3,7 +3,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from notifications.models import Notification, NotificationTemplate
+from app.notifications.models import Notification, NotificationTemplate
 
 
 async def create_template(

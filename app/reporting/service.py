@@ -1,13 +1,13 @@
 from datetime import UTC, date, datetime
 from uuid import uuid4
 
-from reporting.models import (
+from app.reporting.models import (
     CashierPerformance,
     DailySalesSummary,
     PaymentMethodSummary,
     ProductPerformance,
 )
-from reporting.schemas import (
+from app.reporting.schemas import (
     CashierPerformanceResult,
     DailySalesSummaryResult,
     PaymentMethodSummaryResult,

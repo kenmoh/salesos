@@ -3,7 +3,7 @@ import time
 
 from fastapi import HTTPException, Request
 
-from storeflow_api.core.redis_client import cache_get, cache_set
+from app.core.redis_client import cache_get, cache_set
 
 
 async def check_rate_limit(

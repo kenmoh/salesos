@@ -6,7 +6,7 @@ import cloudinary
 import cloudinary.api
 import cloudinary.uploader
 
-from common.settings import get_common_settings
+from app.common.settings import get_common_settings
 
 logger = logging.getLogger("storeflow.catalog.cloudinary")
 

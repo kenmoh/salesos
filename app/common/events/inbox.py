@@ -5,7 +5,7 @@ from sqlalchemy import DateTime, String
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from db.base import StoreFlowBase
+from app.common.db.base import StoreFlowBase
 
 
 class InboxEvent(StoreFlowBase):

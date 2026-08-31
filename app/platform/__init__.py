@@ -1,4 +1,4 @@
-from platform.models import (
+from app.platform.models import (
     PlatformAdmin,
     PlatformAuditLog,
     PlatformCommission,
