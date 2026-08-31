@@ -72,10 +72,12 @@ class AuditMiddleware(BaseHTTPMiddleware):
                             text("""
                                 INSERT INTO audit_events
                                     (user_id, business_id, action, resource_type,
-                                     method, path, status_code, ip_address, user_agent)
+                                     method, path, status_code, ip_address, user_agent,
+                                     created_at)
                                 VALUES
                                     (:user_id, :business_id, :action, :resource_type,
-                                     :method, :path, :status_code, :ip_address, :user_agent)
+                                     :method, :path, :status_code, :ip_address, :user_agent,
+                                     now())
                             """),
                             {
                                 "user_id": user_id,
