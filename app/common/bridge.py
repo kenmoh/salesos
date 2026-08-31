@@ -15,7 +15,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounting.repository import get_account_by_id
-from app.common import flutterwave_service
+from app.common import flutterwave_service, logging
 from app.core.config import settings
 from app.common.db.engine import ServiceDatabase, create_database
 from app.common.settings import get_common_settings
@@ -2337,6 +2337,7 @@ async def create_product_for_store(
                 )
                 await session.commit()
     except Exception:
+        logger = logging.getLogger("QR.generation.product")
         logger.exception("QR generation failed for product %s", product.id)
 
     await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{store_id}*")
