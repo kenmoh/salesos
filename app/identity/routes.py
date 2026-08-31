@@ -20,6 +20,7 @@ class BanCreate(BaseModel):
 router = APIRouter(prefix="/security", tags=["Admin Security"])
 
 
+
 @router.get(
     "/audit-stream",
     response_model=DataResponse[list[AuditEvent]],

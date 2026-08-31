@@ -9,7 +9,6 @@ from app.common.events.names import (
     IDENTITY_SESSION_REVOKED,
 )
 
-
 def user_created_event(
     *,
     tenant_id: UUID,
