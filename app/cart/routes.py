@@ -1,42 +1,32 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
 
 from app.core.dependencies import TenantDep, require_permission
 from app.core.responses import DataResponse, ok
-from app.auth.schemas.responses import CartCreated, CartDetail, CheckoutResult, SuccessResponse
+from app.auth.schemas.responses import SuccessResponse
 import app.common.bridge as bridge
-from app.cart.schemas import CartCreateCommand
+from app.cart.schemas import (
+    CartCreateRequest,
+    CartCreatedResponse,
+    CartDetailResponse,
+    CheckoutRequest,
+    CheckoutResultResponse,
+    VoidItemRequest,
+)
 
 router = APIRouter(prefix="/cart", tags=["Cart"])
-
-
-class CartCreateBody(BaseModel):
-    store_id: str
-    customer_name: str | None = None
-    customer_phone: str | None = None
-
-
-class CheckoutBody(BaseModel):
-    items: list[dict] | None = None
-    customer_name: str | None = None
-    customer_phone: str | None = None
-
-
-class VoidItemBody(BaseModel):
-    supervisor_pin: str
 
 
 @router.post(
     "",
     status_code=201,
-    response_model=DataResponse[CartCreated],
+    response_model=DataResponse[CartCreatedResponse],
     dependencies=[Depends(require_permission("cart:create"))],
 )
 async def create_cart(
-    cart_data: CartCreateBody,
-    ctx: TenantDep, 
+    cart_data: CartCreateRequest,
+    ctx: TenantDep,
 ):
     sid = f"sess_{uuid.uuid4().hex[:16]}"
     try:
@@ -77,7 +67,7 @@ async def remove_item(item_id: str, ctx: TenantDep):
     "/items/{item_id}/void",
     response_model=DataResponse[SuccessResponse],
 )
-async def void_item(item_id: str, body: VoidItemBody, ctx: TenantDep, request: Request):
+async def void_item(item_id: str, body: VoidItemRequest, ctx: TenantDep, request: Request):
     from app.core.redis_client import get_cache_redis
     import time
 
@@ -130,7 +120,7 @@ async def void_item(item_id: str, body: VoidItemBody, ctx: TenantDep, request: R
 
 @router.get(
     "/{cart_id}",
-    response_model=DataResponse[CartDetail],
+    response_model=DataResponse[CartDetailResponse],
     dependencies=[Depends(require_permission("cart:read"))],
 )
 async def get_cart(cart_id: str, ctx: TenantDep):
@@ -139,17 +129,20 @@ async def get_cart(cart_id: str, ctx: TenantDep):
 
 @router.post(
     "/{cart_id}/checkout",
-    response_model=DataResponse[CheckoutResult],
+    response_model=DataResponse[CheckoutResultResponse],
     dependencies=[Depends(require_permission("cart:checkout"))],
 )
-async def checkout_cart(cart_id: str, body: CheckoutBody, ctx: TenantDep):
+async def checkout_cart(cart_id: str, body: CheckoutRequest, ctx: TenantDep):
     try:
+        items_raw = None
+        if body.items:
+            items_raw = [i.model_dump(mode="json") for i in body.items]
         return ok(
             await bridge.checkout_cart(
                 tenant_id=ctx.user.business_id,
                 cart_id=cart_id,
                 actor_id=ctx.user.user_id,
-                items=body.items,
+                items=items_raw,
                 customer_name=body.customer_name,
                 customer_phone=body.customer_phone,
             )

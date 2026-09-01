@@ -4,6 +4,11 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SERVICE-LAYER COMMAND SCHEMAS (used by bridge.py / service)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
 class CartCreateCommand(BaseModel):
     store_id: UUID
     customer_name: str | None = None
@@ -58,3 +63,64 @@ class CheckoutCommand(BaseModel):
     customer_phone: str | None = None
     created_by: UUID | None = None
     correlation_id: str | None = None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ROUTE REQUEST SCHEMAS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class CartCreateRequest(BaseModel):
+    store_id: str
+    customer_name: str | None = None
+    customer_phone: str | None = None
+
+
+class CheckoutRequest(BaseModel):
+    items: list[CheckoutItem] | None = None
+    customer_name: str | None = None
+    customer_phone: str | None = None
+
+
+class VoidItemRequest(BaseModel):
+    supervisor_pin: str
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ROUTE RESPONSE SCHEMAS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class CartItemResponse(BaseModel):
+    id: str = ""
+    product_id: str = ""
+    product_public_id: str = ""
+    name: str = ""
+    unit_price: float = 0
+    qty: float = 0
+
+
+class CartCreatedResponse(BaseModel):
+    id: str = ""
+    session_id: str = ""
+    store_id: str | None = None
+    status: str = "active"
+    resumed: bool = False
+
+
+class CartDetailResponse(BaseModel):
+    id: str = ""
+    session_id: str = ""
+    status: str = "active"
+    customer_name: str | None = None
+    customer_phone: str | None = None
+    expires_at: str | None = None
+    items: list[CartItemResponse] = []
+
+
+class CheckoutResultResponse(BaseModel):
+    sale_id: str = ""
+    sale_number: str = ""
+    total: float = 0
+    amount_paid: float = 0
+    status: str = "pending"

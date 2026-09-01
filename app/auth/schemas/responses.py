@@ -377,32 +377,6 @@ class AuditLogItem(_Base):
 # ── Cart ──────────────────────────────────────────────────────────────────────
 
 
-class CartCreated(_Base):
-    cart_id: str = ""
-    id: str = ""
-    store_id: str | None = None
-    status: str = "active"
-    items: list[dict] = []
-
-
-class CartDetail(_Base):
-    cart_id: str = ""
-    id: str = ""
-    store_id: str | None = None
-    status: str = "active"
-    items: list[dict] = []
-    subtotal: float = 0
-    total: float = 0
-
-
-class CheckoutResult(_Base):
-    sale_id: str = ""
-    sale_number: str = ""
-    total: float = 0
-    amount_paid: float = 0
-    status: str = "pending"
-
-
 # ── Sales ─────────────────────────────────────────────────────────────────────
 
 
