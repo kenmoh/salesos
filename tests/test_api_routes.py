@@ -847,8 +847,8 @@ class TestAccounting:
             json={
                 "description": "test",
                 "entries": [
-                    {"account_code": "100", "debit": 100},
-                    {"account_code": "200", "credit": 100},
+                    {"account_id": "00000000-0000-0000-0000-000000000001", "account_code": "100", "debit": 100, "credit": 0},
+                    {"account_id": "00000000-0000-0000-0000-000000000002", "account_code": "200", "debit": 0, "credit": 100},
                 ],
             },
         )
