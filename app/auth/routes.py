@@ -9,6 +9,7 @@ from app.core.responses import DataResponse, DataMessageResponse, ok
 from app.auth.schemas.auth import (
     ChangePasswordRequest,
     CreateEmployeeRequest,
+    EmployeeStatusRequest,
     LoginRequest,
     LogoutRequest,
     PasswordResetComplete,
@@ -20,6 +21,7 @@ from app.auth.schemas.auth import (
     RoleUpdateRequest,
     TOTPDisableRequest,
     TOTPVerifyRequest,
+    UpdateEmployeeRequest,
     UpdateRoleRequest,
     VerifyEmailRequest,
 )
@@ -460,6 +462,53 @@ async def update_role(payload: UpdateRoleRequest, ctx: TenantDep):
         ctx.user.business_id, str(payload.user_id), payload.new_role, actor_id=ctx.user.user_id
     )
     return ok(None, message="Role assigned")
+
+
+@router.patch(
+    "/employees/{user_id}",
+    response_model=DataMessageResponse[SuccessResponse],
+    dependencies=[Depends(require_permission("employees:update"))],
+)
+async def update_employee(user_id: str, payload: UpdateEmployeeRequest, ctx: TenantDep):
+    result = await auth_service.update_employee(
+        session=ctx.session,
+        business_id=ctx.user.business_id,
+        user_id=user_id,
+        full_name=payload.full_name,
+        phone=payload.phone,
+        email=payload.email,
+        store_id=str(payload.store_id) if payload.store_id else None,
+    )
+    return ok(result, message="Employee updated")
+
+
+@router.delete(
+    "/employees/{user_id}",
+    response_model=DataMessageResponse[SuccessResponse],
+    dependencies=[Depends(require_permission("employees:delete"))],
+)
+async def delete_employee(user_id: str, ctx: TenantDep):
+    result = await auth_service.delete_employee(
+        session=ctx.session,
+        business_id=ctx.user.business_id,
+        user_id=user_id,
+    )
+    return ok(result, message="Employee deleted")
+
+
+@router.patch(
+    "/employees/{user_id}/status",
+    response_model=DataMessageResponse[SuccessResponse],
+    dependencies=[Depends(require_permission("employees:update"))],
+)
+async def set_employee_status(user_id: str, payload: EmployeeStatusRequest, ctx: TenantDep):
+    result = await auth_service.set_employee_status(
+        session=ctx.session,
+        business_id=ctx.user.business_id,
+        user_id=user_id,
+        status=payload.status,
+    )
+    return ok(result, message=f"Employee {payload.status}")
 
 
 @router.get(

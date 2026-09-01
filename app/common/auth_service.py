@@ -391,3 +391,69 @@ async def create_employee(
         "role": role,
         "store_id": str(user.store_id) if user.store_id else None,
     }
+
+
+async def update_employee(*, session, business_id: str, user_id: str, full_name=None, phone=None, email=None, store_id=None):
+    from app.identity.models import User as IdUser
+
+    result = await session.execute(
+        select(IdUser).where(IdUser.id == UUID(user_id), IdUser.tenant_id == UUID(business_id))
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise AuthError("Employee not found", "not_found")
+
+    if email and email != user.email:
+        dup = await session.execute(select(IdUser).where(IdUser.email == email))
+        if dup.scalar_one_or_none():
+            raise AuthError("A user with this email already exists", "duplicate_email")
+        user.email = email
+
+    if full_name is not None:
+        user.full_name = full_name
+    if phone is not None:
+        user.phone = phone
+    if store_id is not None:
+        user.store_id = UUID(store_id) if store_id else None
+
+    await session.flush()
+    return {
+        "user_id": str(user.id),
+        "email": user.email,
+        "full_name": user.full_name,
+        "phone": user.phone,
+        "store_id": str(user.store_id) if user.store_id else None,
+    }
+
+
+async def delete_employee(*, session, business_id: str, user_id: str):
+    from app.identity.models import User as IdUser
+
+    result = await session.execute(
+        select(IdUser).where(IdUser.id == UUID(user_id), IdUser.tenant_id == UUID(business_id))
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise AuthError("Employee not found", "not_found")
+
+    await session.delete(user)
+    await session.flush()
+    return {"deleted": True}
+
+
+async def set_employee_status(*, session, business_id: str, user_id: str, status: str):
+    from app.identity.models import User as IdUser
+
+    result = await session.execute(
+        select(IdUser).where(IdUser.id == UUID(user_id), IdUser.tenant_id == UUID(business_id))
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise AuthError("Employee not found", "not_found")
+
+    user.status = status
+    await session.flush()
+    return {
+        "user_id": str(user.id),
+        "status": user.status,
+    }

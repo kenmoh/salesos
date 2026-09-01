@@ -124,6 +124,17 @@ class UpdateRoleRequest(Base):
     new_role: str
 
 
+class UpdateEmployeeRequest(Base):
+    full_name: str | None = Field(default=None, min_length=2, max_length=100)
+    phone: str | None = None
+    email: EmailStr | None = None
+    store_id: UUID | None = None
+
+
+class EmployeeStatusRequest(Base):
+    status: str = Field(..., pattern=r"^(active|suspended)$")
+
+
 class RoleCreateRequest(Base):
     name: str = Field(..., min_length=1, max_length=30)
     rank: int = Field(default=50, ge=1, le=100)

@@ -51,6 +51,8 @@ ALL_PERMISSIONS = [
     "auth:login",
     "employees:create",
     "employees:read",
+    "employees:update",
+    "employees:delete",
     "employees:assign_roles",
     "roles:read",
     "stores:create",
@@ -427,6 +429,11 @@ def patch_services():
             create_employee=AsyncMock(
                 return_value={"id": "emp1", "email": "e@e.com", "password": "tmp"}
             ),
+            update_employee=AsyncMock(
+                return_value={"user_id": "emp1", "email": "e@e.com", "full_name": "Emp"}
+            ),
+            delete_employee=AsyncMock(return_value={"deleted": True}),
+            set_employee_status=AsyncMock(return_value={"user_id": "emp1", "status": "suspended"}),
             TotpRequired=auth_service.TotpRequired,
             AuthError=auth_service.AuthError,
         ),
@@ -1242,6 +1249,44 @@ class TestAuth:
         resp = await client.delete(f"{self.ROUTE}/employees/x/roles/cashier")
         assert resp.status_code == 200
         assert "data" in resp.json()
+
+    async def test_update_employee(self, client):
+        resp = await client.patch(
+            f"{self.ROUTE}/employees/00000000-0000-0000-0000-000000000001",
+            json={"full_name": "Updated Name", "phone": "1234567890"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["message"] == "Employee updated"
+
+    async def test_delete_employee(self, client):
+        resp = await client.delete(
+            f"{self.ROUTE}/employees/00000000-0000-0000-0000-000000000001",
+        )
+        assert resp.status_code == 200
+        assert resp.json()["message"] == "Employee deleted"
+
+    async def test_suspend_employee(self, client):
+        resp = await client.patch(
+            f"{self.ROUTE}/employees/00000000-0000-0000-0000-000000000001/status",
+            json={"status": "suspended"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["message"] == "Employee suspended"
+
+    async def test_activate_employee(self, client):
+        resp = await client.patch(
+            f"{self.ROUTE}/employees/00000000-0000-0000-0000-000000000001/status",
+            json={"status": "active"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["message"] == "Employee active"
+
+    async def test_suspend_employee_invalid_status(self, client):
+        resp = await client.patch(
+            f"{self.ROUTE}/employees/00000000-0000-0000-0000-000000000001/status",
+            json={"status": "invalid"},
+        )
+        assert resp.status_code == 422
 
     async def test_audit(self, client):
         resp = await client.get(f"{self.ROUTE}/audit")
