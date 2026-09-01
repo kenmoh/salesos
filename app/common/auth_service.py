@@ -105,6 +105,7 @@ async def bust_perms(user_id: str):
     await cache_del(f"sf:perms:{user_id}")
 
 
+# login response includes store_id for employee store filtering
 async def login(*, session, email, password, totp_code, req, device_name=None):
     user = await _get_user_by_email(session, email)
     if not user:
