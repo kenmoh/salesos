@@ -2645,6 +2645,7 @@ async def get_store_product(
             "min_stock_level": float(stock.get("min_stock_level", 0)),
             "unit_cost": None,
             "qr_url": data.get("qr_url"),
+            "category": data.get("category"),
             "history": history,
         }
 

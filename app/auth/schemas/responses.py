@@ -201,6 +201,7 @@ class StoreProductDetail(_Base):
     status: str = "active"
     image_url: str | None = None
     qr_url: str | None = None
+    category: str | None = None
     history: list[StockMovementItem] = []
 
 
