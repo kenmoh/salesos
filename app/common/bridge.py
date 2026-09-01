@@ -2117,6 +2117,7 @@ async def get_store_products(
                 Product.sku,
                 Product.selling_price,
                 Product.status,
+                Product.qr_url,
                 Category.name.label("category_name"),
             )
             .join(Product, StockBalance.product_id == Product.id)
@@ -2157,6 +2158,7 @@ async def get_store_products(
                     "selling_price": float(row.selling_price) if row.selling_price else None,
                     "status": row.status,
                     "category": row.category_name,
+                    "qr_url": row.qr_url,
                     "qty": float(row.StockBalance.qty),
                     "available": float(row.StockBalance.qty) - float(row.StockBalance.reserved_qty),
                     "reserved_qty": float(row.StockBalance.reserved_qty),

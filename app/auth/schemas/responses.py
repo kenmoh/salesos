@@ -133,6 +133,7 @@ class StoreProductListItem(_Base):
     available: float = 0
     status: str = "active"
     category: str | None = None
+    qr_url: str | None = None
 
 
 class StoreProductUpdated(_Base):
@@ -199,6 +200,7 @@ class StoreProductDetail(_Base):
     unit_cost: float | None = None
     status: str = "active"
     image_url: str | None = None
+    qr_url: str | None = None
     history: list[StockMovementItem] = []
 
 
@@ -293,6 +295,7 @@ class AuthUser(_Base):
     totp_enabled: bool | None = None
     last_login_at: str | None = None
     avatar_url: str | None = None
+    store_id: str | None = None
 
 
 class LoginResponse(_Base):
