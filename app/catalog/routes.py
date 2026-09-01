@@ -21,7 +21,7 @@ async def scan_product_lookup(request: Request, store_id: str, product_id: str):
                 content="<html><body><h2>Product not found</h2></body></html>",
                 status_code=404,
             )
-        return templates.TemplateResponse("product_scan.html", {"request": request, **result})
+        return templates.TemplateResponse(request, "product_scan.html", context=result)
 
     result = await bridge.lookup_product_by_scan(store_id, product_id)
     if not result:
