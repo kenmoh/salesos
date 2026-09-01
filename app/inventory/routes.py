@@ -265,10 +265,24 @@ async def delete_store_product(store_id: str, product_id: str, ctx: TenantDep):
     "/{store_id}/products/{product_id}/qr",
     dependencies=[Depends(require_permission("inventory:read"))],
 )
-async def download_product_qr(store_id: str, product_id: str, ctx: TenantDep):
+async def download_product_qr(
+    store_id: str,
+    product_id: str,
+    ctx: TenantDep,
+    size: str | None = None,
+    box_size: int | None = None,
+):
     from fastapi.responses import RedirectResponse, Response
+    from app.common.bridge import SIZE_PRESETS
 
-    result = await bridge.get_product_qr_download(ctx.user.business_id, product_id)
+    if box_size is not None:
+        bs = max(1, min(30, box_size))
+    elif size and size in SIZE_PRESETS:
+        bs = SIZE_PRESETS[size]
+    else:
+        bs = 20
+
+    result = await bridge.get_product_qr_download(ctx.user.business_id, product_id, box_size=bs)
     if not result:
         raise HTTPException(status_code=404, detail="Product not found")
     if isinstance(result, str):

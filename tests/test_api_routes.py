@@ -546,7 +546,7 @@ class TestStores:
 
 
 class TestInventory:
-    CATEGORIES = "/inventory/sid/categories"
+    CATEGORIES = "/inventory/00000000-0000-0000-0000-000000000001/categories"
 
     async def test_create_category(self, client):
         resp = await client.post(self.CATEGORIES, json={"name": "Cat"})
@@ -581,7 +581,7 @@ class TestInventory:
         assert resp.json() == {"message": "ok", "data": {"success": True}}
 
     async def test_download_qr(self, client):
-        resp = await client.get("/inventory/sid/products/x/qr")
+        resp = await client.get("/inventory/00000000-0000-0000-0000-000000000001/products/x/qr")
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "image/png"
 
@@ -589,12 +589,12 @@ class TestInventory:
         from app.common import bridge
 
         bridge.get_product_qr_download.return_value = None
-        resp = await client.get("/inventory/sid/products/missing/qr")
+        resp = await client.get("/inventory/00000000-0000-0000-0000-000000000001/products/missing/qr")
         assert resp.status_code == 404
 
     async def test_adjust_stock(self, client):
         resp = await client.post(
-            "/inventory/sid/adjust",
+            "/inventory/00000000-0000-0000-0000-000000000001/adjust",
             json={
                 "product_id": "00000000-0000-0000-0000-000000000001",
                 "reason": "count",
@@ -605,7 +605,7 @@ class TestInventory:
         assert "data" in resp.json()
 
     async def test_store_products(self, client):
-        resp = await client.get("/inventory/sid/products")
+        resp = await client.get("/inventory/00000000-0000-0000-0000-000000000001/products")
         assert resp.status_code == 200
         body = resp.json()
         assert "data" in body
@@ -613,7 +613,7 @@ class TestInventory:
 
     async def test_add_store_product(self, client):
         resp = await client.post(
-            "/inventory/sid/products",
+            "/inventory/00000000-0000-0000-0000-000000000001/products",
             json={"product_id": "00000000-0000-0000-0000-000000000001", "qty": 10},
         )
         assert resp.status_code == 201
@@ -623,7 +623,7 @@ class TestInventory:
 
     async def test_create_product_for_store(self, client):
         resp = await client.post(
-            "/inventory/sid/products/create",
+            "/inventory/00000000-0000-0000-0000-000000000001/products/create",
             json={"name": "Widget", "selling_price": 500, "qty": 20},
         )
         assert resp.status_code == 201
@@ -632,7 +632,7 @@ class TestInventory:
         assert body["data"]["selling_price"] == 500
 
     async def test_get_store_product(self, client):
-        resp = await client.get("/inventory/sid/products/pid")
+        resp = await client.get("/inventory/00000000-0000-0000-0000-000000000001/products/pid")
         assert resp.status_code == 200
         body = resp.json()
         assert "data" in body
@@ -640,13 +640,13 @@ class TestInventory:
 
     async def test_get_store_product_not_found(self, client):
         resp = await client.get(
-            "/inventory/sid/products/00000000-0000-0000-0000-999999999999"
+            "/inventory/00000000-0000-0000-0000-000000000001/products/00000000-0000-0000-0000-999999999999"
         )
         assert resp.status_code == 404
 
     async def test_update_store_product(self, client):
         resp = await client.patch(
-            "/inventory/sid/products/pid",
+            "/inventory/00000000-0000-0000-0000-000000000001/products/pid",
             json={"selling_price": 750, "name": "Updated Widget"},
         )
         assert resp.status_code == 200
@@ -655,13 +655,13 @@ class TestInventory:
 
     async def test_update_store_product_not_found(self, client):
         resp = await client.patch(
-            "/inventory/sid/products/00000000-0000-0000-0000-999999999999",
+            "/inventory/00000000-0000-0000-0000-000000000001/products/00000000-0000-0000-0000-999999999999",
             json={"selling_price": 100},
         )
         assert resp.status_code == 404
 
     async def test_delete_store_product(self, client):
-        resp = await client.delete("/inventory/sid/products/pid")
+        resp = await client.delete("/inventory/00000000-0000-0000-0000-000000000001/products/pid")
         assert resp.status_code == 200
         body = resp.json()
         assert "data" in body
@@ -669,12 +669,12 @@ class TestInventory:
 
     async def test_delete_store_product_not_found(self, client):
         resp = await client.delete(
-            "/inventory/sid/products/00000000-0000-0000-0000-999999999999"
+            "/inventory/00000000-0000-0000-0000-000000000001/products/00000000-0000-0000-0000-999999999999"
         )
         assert resp.status_code == 404
 
     async def test_sync_store_products(self, client):
-        resp = await client.post("/inventory/sid/sync")
+        resp = await client.post("/inventory/00000000-0000-0000-0000-000000000001/sync")
         assert resp.status_code == 200
         body = resp.json()
         assert "data" in body
@@ -682,7 +682,7 @@ class TestInventory:
 
     async def test_set_min_stock_level(self, client):
         resp = await client.patch(
-            "/inventory/sid/min-level/pid",
+            "/inventory/00000000-0000-0000-0000-000000000001/min-level/pid",
             json={"min_stock_level": 10},
         )
         assert resp.status_code == 200

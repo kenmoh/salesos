@@ -4225,24 +4225,25 @@ async def get_product_by_id(tenant_id: str, product_id: str) -> dict | None:
         }
 
 
+SIZE_PRESETS = {"small": 6, "medium": 10, "large": 20}
+
+
 async def get_product_qr_download(
-    tenant_id: str, product_id: str
+    tenant_id: str, product_id: str, box_size: int = 20
 ) -> str | tuple[bytes, str] | None:
     """Retrieve the QR code for a product, either as a URL or generated PNG bytes.
 
-    Returns the QR code URL if one exists, otherwise generates a PNG image
-    from the product's QR payload. If no QR payload exists, returns
-    ``None``.
+    When box_size matches the stored image (20), returns the Cloudinary URL.
+    For any other size, generates a fresh PNG from the qr_payload.
 
     Args:
         tenant_id: Unique identifier of the tenant that owns the product.
         product_id: Unique identifier of the product whose QR code is
             being requested.
+        box_size: QR image box size (6=small, 10=medium, 20=large).
 
     Returns:
-        A URL string if the product has a hosted QR URL, a tuple of
-        ``(png_bytes, public_id)`` if a QR payload exists and a PNG can
-        be generated, or ``None`` if no QR data is available.
+        A URL string, a tuple of ``(png_bytes, public_id)``, or ``None``.
     """
     from app.catalog.repository import get_product_by_id
     from app.catalog.qr import generate_qr_png
@@ -4252,11 +4253,13 @@ async def get_product_qr_download(
         product = await get_product_by_id(session, UUID(product_id))
         if not product or str(product.tenant_id) != tenant_id:
             return None
-        if product.qr_url and product.qr_url.startswith("http"):
+        if box_size == 20 and product.qr_url and product.qr_url.startswith("http"):
             return product.qr_url
         if product.qr_payload:
-            png_bytes = generate_qr_png(product.qr_payload, box_size=20, border=4)
+            png_bytes = generate_qr_png(product.qr_payload, box_size=box_size, border=4)
             return png_bytes, product.public_id
+        if product.qr_url and product.qr_url.startswith("http"):
+            return product.qr_url
         return None
 
 
