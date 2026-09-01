@@ -2613,7 +2613,40 @@ async def get_store_product(
         row = result.scalar()
         if not row or row == {}:
             return None
-        return dict(row)
+        data = dict(row)
+        prod = data.get("product") or {}
+        stock = data.get("stock") or {}
+        raw_history = data.get("recent_history") or []
+        history = [
+            {
+                "id": str(h.get("id", "")),
+                "product_id": product_id,
+                "store_id": store_id,
+                "movement_type": h.get("movement_type", ""),
+                "qty_change": float(h.get("qty_change", 0)),
+                "balance_before": float(h.get("balance_before", 0)),
+                "balance_after": float(h.get("balance_after", 0)),
+                "reason": h.get("reason"),
+                "created_at": h.get("created_at", ""),
+            }
+            for h in raw_history
+        ]
+        return {
+            "id": str(prod.get("id", "")),
+            "name": prod.get("name", ""),
+            "sku": prod.get("sku"),
+            "selling_price": float(prod.get("selling_price", 0)),
+            "cost_price": float(prod.get("cost_price", 0)),
+            "image_url": prod.get("image_url"),
+            "status": prod.get("status", "active"),
+            "qty": float(stock.get("qty", 0)),
+            "reserved_qty": float(stock.get("reserved_qty", 0)),
+            "available": float(stock.get("available", 0)),
+            "min_stock_level": float(stock.get("min_stock_level", 0)),
+            "unit_cost": None,
+            "qr_url": data.get("qr_url"),
+            "history": history,
+        }
 
 
 async def delete_store_product(
