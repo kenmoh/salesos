@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.redis_client import cache_get, cache_set
 from app.core.security import decode_access_token, is_token_blacklisted
 from app.common.db.session import clear_rls_context, set_rls_context
+from app.common.db.engine import set_current_tenant, reset_current_tenant
 from app.identity.models import Role, UserRole
 
 bearer = HTTPBearer(auto_error=False)
@@ -108,6 +109,7 @@ async def get_tenant_context(
     user = TokenData(payload)
     request.state.user_id = user.user_id
     request.state.business_id = user.business_id
+    tokens = set_current_tenant(user.user_id, user.business_id, user.role)
     factory = _get_session_factory()
     async with factory() as session:
         async with session.begin():
@@ -116,6 +118,7 @@ async def get_tenant_context(
                 yield TenantContext(user, session)
             finally:
                 await clear_rls_context(session)
+                reset_current_tenant(tokens)
 
 
 TenantDep = Annotated[TenantContext, Depends(get_tenant_context)]

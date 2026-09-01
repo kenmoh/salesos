@@ -68,6 +68,11 @@ async def create_category(store_id: str, payload: CategoryCreate, ctx: TenantDep
     dependencies=[Depends(require_permission("categories:read"))],
 )
 async def categories(store_id: str, ctx: TenantDep):
+    from uuid import UUID
+    try:
+        UUID(store_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid store_id")
     return ok(await bridge.list_categories(store_id=store_id))
 
 

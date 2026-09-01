@@ -42,6 +42,7 @@ class ApiSettings(BaseSettings):
     db_password: str = Field(default="", alias="DATABASE_PASSWORD")
     db_name: str = Field(default="storeflow", alias="DATABASE_NAME")
     database_url: str = ""
+    admin_database_url: str = ""
     database_url_sync: str = ""
     db_pool_size: int = 20
     db_max_overflow: int = 10

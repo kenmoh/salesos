@@ -69,6 +69,7 @@ async def _get_user_by_email(session, email: str) -> dict | None:
         "totp_secret": user.totp_secret,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
         "avatar_url": user.avatar_url,
+        "store_id": str(user.store_id) if user.store_id else None,
     }
 
 
@@ -182,6 +183,7 @@ async def login(*, session, email, password, totp_code, req, device_name=None):
         "totp_enabled": bool(user.get("totp_enabled")),
         "last_login_at": user.get("last_login_at"),
         "avatar_url": user.get("avatar_url"),
+        "store_id": user.get("store_id"),
     }
 
 
@@ -346,7 +348,7 @@ async def disable_totp(*, session, user_id, password, code):
 
 
 async def create_employee(
-    *, session, business_id, actor_id, email, full_name, phone, role, password, req
+    *, session, business_id, actor_id, email, full_name, phone, role, password, store_id=None, req
 ):
     from app.core.security import hash_password as hp
     from app.identity.models import User as IdUser
@@ -362,6 +364,7 @@ async def create_employee(
         full_name=full_name,
         phone=phone,
         status="active",
+        store_id=UUID(store_id) if store_id else None,
     )
     session.add(user)
     await session.flush()
@@ -385,4 +388,5 @@ async def create_employee(
         "email": user.email,
         "full_name": user.full_name,
         "role": role,
+        "store_id": str(user.store_id) if user.store_id else None,
     }

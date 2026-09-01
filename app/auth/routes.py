@@ -174,6 +174,7 @@ async def me(ctx: TenantDep):
             "totp_enabled": bool(user.totp_enabled),
             "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
             "avatar_url": user.avatar_url,
+            "store_id": str(user.store_id) if user.store_id else None,
         }
     )
 
@@ -402,6 +403,7 @@ async def create_employee(payload: CreateEmployeeRequest, request: Request, ctx:
         phone=payload.phone,
         role=payload.role,
         password=payload.password,
+        store_id=str(payload.store_id) if payload.store_id else None,
         req=request,
     )
     return ok(result)
@@ -418,7 +420,7 @@ async def employees(ctx: TenantDep):
     result = await ctx.session.execute(
         text("""
             SELECT u.id, u.email, u.full_name, u.phone, u.status,
-                   u.last_login_at, u.created_at,
+                   u.last_login_at, u.created_at, u.store_id,
                    STRING_AGG(r.name, ',') AS role
             FROM users u
             LEFT JOIN user_roles ur ON ur.user_id = u.id
@@ -441,6 +443,7 @@ async def employees(ctx: TenantDep):
                 "status": r["status"],
                 "last_login_at": r["last_login_at"].isoformat() if r["last_login_at"] else None,
                 "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                "store_id": str(r["store_id"]) if r["store_id"] else None,
             }
             for r in rows
         ]

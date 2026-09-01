@@ -116,6 +116,7 @@ class CreateEmployeeRequest(Base):
     phone: str | None = None
     role: str = Field(default="viewer", min_length=1)
     password: str | None = None
+    store_id: UUID | None = None
 
 
 class UpdateRoleRequest(Base):

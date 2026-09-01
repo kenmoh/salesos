@@ -2104,7 +2104,7 @@ async def get_store_products(
         A dictionary containing ``items`` (list of product dictionaries with
         stock information), ``total`` count, ``page``, and ``page_size``.
     """
-    from app.catalog.models import Product
+    from app.catalog.models import Product, Category
     from app.inventory.models import StockBalance
 
     sdb = _get_sdb("inventory")
@@ -2117,8 +2117,10 @@ async def get_store_products(
                 Product.sku,
                 Product.selling_price,
                 Product.status,
+                Category.name.label("category_name"),
             )
             .join(Product, StockBalance.product_id == Product.id)
+            .join(Category, Product.category_id == Category.id, isouter=True)
             .where(
                 StockBalance.tenant_id == UUID(tenant_id),
                 StockBalance.store_id == UUID(store_id),
@@ -2154,6 +2156,7 @@ async def get_store_products(
                     "sku": row.sku,
                     "selling_price": float(row.selling_price) if row.selling_price else None,
                     "status": row.status,
+                    "category": row.category_name,
                     "qty": float(row.StockBalance.qty),
                     "available": float(row.StockBalance.qty) - float(row.StockBalance.reserved_qty),
                     "reserved_qty": float(row.StockBalance.reserved_qty),

@@ -132,6 +132,7 @@ class StoreProductListItem(_Base):
     qty: float = 0
     available: float = 0
     status: str = "active"
+    category: str | None = None
 
 
 class StoreProductUpdated(_Base):
@@ -324,6 +325,7 @@ class EmployeeCreated(_Base):
     email: str = ""
     full_name: str | None = None
     role: str | None = None
+    store_id: str | None = None
 
 
 class EmployeeListItem(_Base):
@@ -332,6 +334,7 @@ class EmployeeListItem(_Base):
     full_name: str | None = None
     role: str | None = None
     is_active: bool = True
+    store_id: str | None = None
 
 
 class RoleCreated(_Base):
