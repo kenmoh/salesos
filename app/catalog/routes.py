@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse
 
 from app.core.responses import DataResponse, ok
 from app.auth.schemas.responses import ScannedProduct
@@ -11,7 +12,21 @@ scan_router = APIRouter(prefix="/inventory/products", tags=["Products"])
     "/{store_id}/{product_id}",
     response_model=DataResponse[ScannedProduct],
 )
-async def scan_product_lookup(store_id: str, product_id: str):
+async def scan_product_lookup(request: Request, store_id: str, product_id: str):
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept:
+        from starlette.templating import Jinja2Templates
+        from pathlib import Path
+
+        templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
+        result = await bridge.lookup_product_by_scan(store_id, product_id)
+        if not result:
+            return HTMLResponse(
+                content="<html><body><h2>Product not found</h2></body></html>",
+                status_code=404,
+            )
+        return templates.TemplateResponse("product_scan.html", {"request": request, **result})
+
     result = await bridge.lookup_product_by_scan(store_id, product_id)
     if not result:
         raise HTTPException(status_code=404, detail="Product not found")

@@ -843,7 +843,5 @@ class ScannedProduct(_Base):
     name: str = ""
     sku: str | None = None
     selling_price: float = 0
-    cost_price: float = 0
     store_id: str | None = None
     stock_qty: float | None = None
-    image_url: str | None = None

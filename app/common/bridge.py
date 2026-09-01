@@ -4236,6 +4236,8 @@ async def lookup_product_by_scan(store_id: str, product_id: str) -> dict | None:
     """
     from app.catalog.repository import get_product_by_id
     from app.stores.repository import get_store_by_id, get_store_product
+    from app.inventory.models import StockBalance
+    from sqlalchemy import select
 
     store_uid = UUID(store_id)
     product_uid = UUID(product_id)
@@ -4249,6 +4251,17 @@ async def lookup_product_by_scan(store_id: str, product_id: str) -> dict | None:
 
         store_product = await get_store_product(store_session, store_uid, product_uid)
 
+        balance_q = (
+            select(StockBalance.qty)
+            .where(
+                StockBalance.tenant_id == tenant_id,
+                StockBalance.store_id == store_uid,
+                StockBalance.product_id == product_uid,
+            )
+        )
+        balance_result = await store_session.execute(balance_q)
+        stock_qty = float(balance_result.scalar() or 0)
+
     sdb_catalog = _get_sdb("catalog")
     async with sdb_catalog.session() as cat_session:
         product = await get_product_by_id(cat_session, product_uid)
@@ -4257,14 +4270,12 @@ async def lookup_product_by_scan(store_id: str, product_id: str) -> dict | None:
 
     result = {
         "product_id": str(product.id),
-        "public_id": product.public_id,
         "name": store_product.name if store_product else product.name,
         "sku": store_product.sku if store_product else product.sku,
         "selling_price": float(store_product.selling_price) if store_product else float(product.selling_price),
-        "category_id": str(product.category_id) if product.category_id else None,
-        "image_url": product.image_url,
         "store_id": store_id,
         "store_name": store.name,
+        "stock_qty": stock_qty,
     }
     return result
 
