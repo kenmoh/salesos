@@ -186,6 +186,11 @@ async def store_products(
     page: int = 1,
     page_size: int = 50,
 ):
+    from uuid import UUID
+    try:
+        UUID(store_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid store_id")
     result = await bridge.get_store_products(
         tenant_id=ctx.user.business_id,
         store_id=store_id,
