@@ -77,9 +77,12 @@ class CartCreateRequest(BaseModel):
 
 
 class CheckoutRequest(BaseModel):
+    store_id: str | None = None
     items: list[CheckoutItem] | None = None
     customer_name: str | None = None
     customer_phone: str | None = None
+    coupon_code: str | None = None
+    discount_id: str | None = None
 
 
 class VoidItemRequest(BaseModel):
@@ -121,6 +124,9 @@ class CartDetailResponse(BaseModel):
 class CheckoutResultResponse(BaseModel):
     sale_id: str = ""
     sale_number: str = ""
+    subtotal: float = 0
+    discount: float = 0
     total: float = 0
     amount_paid: float = 0
     status: str = "pending"
+    coupon_code: str | None = None

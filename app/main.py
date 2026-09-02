@@ -142,6 +142,8 @@ def create_app() -> FastAPI:
     from app.cart.routes import router as cart_router
     from app.customers.routes import router as customers_router
     from app.ai.routes import router as ai_router
+    from app.discounts.routes import router as discounts_router
+    from app.discounts.routes import coupon_router
 
     for router in (
         auth_router,
@@ -156,6 +158,8 @@ def create_app() -> FastAPI:
         cart_router,
         customers_router,
         ai_router,
+        discounts_router,
+        coupon_router,
     ):
         app.include_router(router, prefix=prefix)
 

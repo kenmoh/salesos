@@ -4938,6 +4938,9 @@ async def checkout_cart(
     items: list[dict] | None = None,
     customer_name: str | None = None,
     customer_phone: str | None = None,
+    store_id: str | None = None,
+    coupon_code: str | None = None,
+    discount_id: str | None = None,
 ) -> dict:
     """Check out a shopping cart and create the corresponding sale.
 
@@ -5076,13 +5079,48 @@ async def checkout_cart(
                 for i in validated
             ]
 
+            # Calculate subtotal
+            subtotal = sum(
+                float(si.unit_price) * float(si.qty) for si in sale_items
+            )
+
+            # Resolve discount
+            discount_amount = Decimal("0")
+            applied_coupon_code = None
+
+            if coupon_code:
+                coupon_result = await validate_coupon(
+                    tenant_id=tenant_id, code=coupon_code, cart_subtotal=subtotal
+                )
+                if coupon_result.get("valid"):
+                    discount_amount = Decimal(str(coupon_result["discount_amount"]))
+                    applied_coupon_code = coupon_result.get("code")
+                    # Increment usage
+                    if coupon_result.get("coupon_id"):
+                        await increment_coupon_usage(tenant_id, coupon_result["coupon_id"])
+                else:
+                    raise ValueError(f"invalid_coupon:{coupon_result.get('message', 'Unknown error')}")
+
+            elif discount_id:
+                disc = await get_discount(tenant_id=tenant_id, discount_id=discount_id)
+                if disc and disc.get("is_active"):
+                    disc_amount = await apply_discount(
+                        subtotal=subtotal,
+                        discount_type=disc["discount_type"],
+                        value=disc["value"],
+                        buy_x_get_y_free_qty=disc.get("buy_x_get_y_free_qty", 0),
+                        cart_items=[{"qty": float(si.qty), "unit_price": float(si.unit_price)} for si in sale_items],
+                    )
+                    discount_amount = Decimal(str(disc_amount))
+
             sale_command = SaleCreateCommand(
                 tenant_id=tenant_uid,
                 cashier_id=actor_uid or cart_uid,
-                store_id=UUID(str(cart_store_id)) if cart_store_id else UUID(cart_id),
+                store_id=UUID(store_id) if store_id else (UUID(str(cart_store_id)) if cart_store_id else UUID(cart_id)),
                 items=sale_items,
                 customer_name=customer_name or cart.customer_name,
                 customer_phone=customer_phone or cart.customer_phone,
+                discount=discount_amount,
             )
 
             # Create sale in sales DB (separate session)
@@ -5104,7 +5142,11 @@ async def checkout_cart(
                 cart_session.add(write.to_model())
             await cart_session.commit()
 
-            return result.model_dump(mode="json")
+            result_dict = result.model_dump(mode="json")
+            result_dict["subtotal"] = round(subtotal, 2)
+            result_dict["discount"] = round(float(discount_amount), 2)
+            result_dict["coupon_code"] = applied_coupon_code
+            return result_dict
 
         # ── Legacy flow: items already persisted in cart DB ──
         existing_items = await get_cart_items(cart_session, cart_uid)
@@ -5121,6 +5163,37 @@ async def checkout_cart(
             for i in existing_items
         ]
 
+        # Calculate subtotal
+        subtotal = sum(float(si.unit_price) * float(si.qty) for si in sale_items)
+
+        # Resolve discount
+        discount_amount = Decimal("0")
+        applied_coupon_code = None
+
+        if coupon_code:
+            coupon_result = await validate_coupon(
+                tenant_id=tenant_id, code=coupon_code, cart_subtotal=subtotal
+            )
+            if coupon_result.get("valid"):
+                discount_amount = Decimal(str(coupon_result["discount_amount"]))
+                applied_coupon_code = coupon_result.get("code")
+                if coupon_result.get("coupon_id"):
+                    await increment_coupon_usage(tenant_id, coupon_result["coupon_id"])
+            else:
+                raise ValueError(f"invalid_coupon:{coupon_result.get('message', 'Unknown error')}")
+
+        elif discount_id:
+            disc = await get_discount(tenant_id=tenant_id, discount_id=discount_id)
+            if disc and disc.get("is_active"):
+                disc_amount = await apply_discount(
+                    subtotal=subtotal,
+                    discount_type=disc["discount_type"],
+                    value=disc["value"],
+                    buy_x_get_y_free_qty=disc.get("buy_x_get_y_free_qty", 0),
+                    cart_items=[{"qty": float(si.qty), "unit_price": float(si.unit_price)} for si in sale_items],
+                )
+                discount_amount = Decimal(str(disc_amount))
+
         checkout_command = CheckoutCommand(
             cart_id=cart_uid,
             tenant_id=tenant_uid,
@@ -5131,10 +5204,11 @@ async def checkout_cart(
         sale_command = SaleCreateCommand(
             tenant_id=tenant_uid,
             cashier_id=actor_uid or cart_uid,
-            store_id=UUID(str(getattr(cart, "store_id", None) or cart_id)),
+            store_id=UUID(store_id) if store_id else UUID(str(getattr(cart, "store_id", None) or cart_id)),
             items=sale_items,
             customer_name=cart.customer_name,
             customer_phone=cart.customer_phone,
+            discount=discount_amount,
         )
 
     from app.sales.service import plan_sale_creation
@@ -5155,7 +5229,11 @@ async def checkout_cart(
             cart_session.add(write.to_model())
         await cart_session.commit()
 
-    return result.model_dump(mode="json")
+    result_dict = result.model_dump(mode="json")
+    result_dict["subtotal"] = round(subtotal, 2)
+    result_dict["discount"] = round(float(discount_amount), 2)
+    result_dict["coupon_code"] = applied_coupon_code
+    return result_dict
 
 
 async def get_receipt_by_sale(business_id: str, sale_id: str) -> dict | None:
@@ -6927,3 +7005,498 @@ async def delete_customer(tenant_id: str, customer_id: str) -> bool:
         await session.delete(row)
         await session.commit()
         return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  DISCOUNTS & COUPONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _discount_to_dict(d, product_ids=None, category_ids=None) -> dict:
+    return {
+        "id": str(d.id),
+        "name": d.name,
+        "discount_type": d.discount_type,
+        "value": float(d.value),
+        "buy_x_get_y_free_qty": d.buy_x_get_y_free_qty,
+        "scope": d.scope,
+        "min_order": float(d.min_order),
+        "is_active": d.is_active,
+        "start_date": d.start_date.isoformat() if d.start_date else None,
+        "end_date": d.end_date.isoformat() if d.end_date else None,
+        "product_ids": [str(p) for p in (product_ids or [])],
+        "category_ids": [str(c) for c in (category_ids or [])],
+        "created_at": d.created_at.isoformat() if d.created_at else None,
+        "updated_at": d.updated_at.isoformat() if d.updated_at else None,
+    }
+
+
+def _coupon_to_dict(c) -> dict:
+    return {
+        "id": str(c.id),
+        "code": c.code,
+        "discount_type": c.discount_type,
+        "value": float(c.value),
+        "max_uses": c.max_uses,
+        "used_count": c.used_count,
+        "min_order": float(c.min_order),
+        "is_active": c.is_active,
+        "expires_at": c.expires_at.isoformat() if c.expires_at else None,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+    }
+
+
+async def create_discount(
+    tenant_id: str,
+    name: str,
+    discount_type: str,
+    value,
+    buy_x_get_y_free_qty: int = 0,
+    scope: str = "all",
+    min_order=0,
+    is_active: bool = True,
+    start_date=None,
+    end_date=None,
+    product_ids: list[str] | None = None,
+    category_ids: list[str] | None = None,
+) -> dict:
+    from app.discounts.models import Discount, DiscountProduct, DiscountCategory
+
+    sdb = _get_sdb("customers")
+    async with sdb.session() as session:
+        discount = Discount(
+            tenant_id=UUID(tenant_id),
+            name=name,
+            discount_type=discount_type,
+            value=Decimal(str(value)),
+            buy_x_get_y_free_qty=buy_x_get_y_free_qty,
+            scope=scope,
+            min_order=Decimal(str(min_order)),
+            is_active=is_active,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        session.add(discount)
+        await session.flush()
+
+        linked_product_ids = []
+        if scope == "specific_products" and product_ids:
+            for pid in product_ids:
+                dp = DiscountProduct(discount_id=discount.id, product_id=UUID(pid))
+                session.add(dp)
+                linked_product_ids.append(pid)
+
+        linked_category_ids = []
+        if scope == "specific_categories" and category_ids:
+            for cid in category_ids:
+                dc = DiscountCategory(discount_id=discount.id, category_id=UUID(cid))
+                session.add(dc)
+                linked_category_ids.append(cid)
+
+        result = _discount_to_dict(discount, linked_product_ids, linked_category_ids)
+        await session.commit()
+        return result
+
+
+async def list_discounts(
+    tenant_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    active_only: bool = False,
+) -> dict:
+    from app.discounts.models import Discount, DiscountProduct, DiscountCategory
+    from sqlalchemy import func, select
+
+    tid = UUID(tenant_id)
+    sdb = _get_sdb("customers")
+    async with sdb.session() as session:
+        q = select(Discount).where(Discount.tenant_id == tid)
+        cq = select(func.count(Discount.id)).where(Discount.tenant_id == tid)
+
+        if active_only:
+            q = q.where(Discount.is_active == True)
+            cq = cq.where(Discount.is_active == True)
+
+        total = (await session.execute(cq)).scalar() or 0
+        rows = (
+            await session.execute(
+                q.order_by(Discount.created_at.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        ).scalars().all()
+
+        items = []
+        for d in rows:
+            pids = (
+                await session.execute(
+                    select(DiscountProduct.product_id).where(DiscountProduct.discount_id == d.id)
+                )
+            ).scalars().all()
+            cids = (
+                await session.execute(
+                    select(DiscountCategory.category_id).where(DiscountCategory.discount_id == d.id)
+                )
+            ).scalars().all()
+            items.append(_discount_to_dict(d, pids, cids))
+
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+async def get_discount(tenant_id: str, discount_id: str) -> dict | None:
+    from app.discounts.models import Discount, DiscountProduct, DiscountCategory
+    from sqlalchemy import select
+
+    sdb = _get_sdb("customers")
+    async with sdb.session() as session:
+        d = (
+            await session.execute(
+                select(Discount).where(
+                    Discount.id == UUID(discount_id), Discount.tenant_id == UUID(tenant_id)
+                )
+            )
+        ).scalar_one_or_none()
+        if not d:
+            return None
+        pids = (
+            await session.execute(
+                select(DiscountProduct.product_id).where(DiscountProduct.discount_id == d.id)
+            )
+        ).scalars().all()
+        cids = (
+            await session.execute(
+                select(DiscountCategory.category_id).where(DiscountCategory.discount_id == d.id)
+            )
+        ).scalars().all()
+        return _discount_to_dict(d, pids, cids)
+
+
+async def update_discount(tenant_id: str, discount_id: str, **kwargs) -> dict | None:
+    from app.discounts.models import Discount, DiscountProduct, DiscountCategory
+    from sqlalchemy import select
+
+    sdb = _get_sdb("customers")
+    async with sdb.session() as session:
+        d = (
+            await session.execute(
+                select(Discount).where(
+                    Discount.id == UUID(discount_id), Discount.tenant_id == UUID(tenant_id)
+                )
+            )
+        ).scalar_one_or_none()
+        if not d:
+            return None
+
+        product_ids = kwargs.pop("product_ids", None)
+        category_ids = kwargs.pop("category_ids", None)
+
+        allowed = {"name", "discount_type", "value", "buy_x_get_y_free_qty", "scope", "min_order", "is_active", "start_date", "end_date"}
+        for k, v in kwargs.items():
+            if k in allowed and v is not None:
+                if k in ("value", "min_order"):
+                    v = Decimal(str(v))
+                setattr(d, k, v)
+
+        if product_ids is not None:
+            await session.execute(
+                DiscountProduct.__table__.delete().where(DiscountProduct.discount_id == d.id)
+            )
+            for pid in product_ids:
+                session.add(DiscountProduct(discount_id=d.id, product_id=UUID(pid)))
+
+        if category_ids is not None:
+            await session.execute(
+                DiscountCategory.__table__.delete().where(DiscountCategory.discount_id == d.id)
+            )
+            for cid in category_ids:
+                session.add(DiscountCategory(discount_id=d.id, category_id=UUID(cid)))
+
+        await session.flush()
+        pids = (
+            await session.execute(
+                select(DiscountProduct.product_id).where(DiscountProduct.discount_id == d.id)
+            )
+        ).scalars().all()
+        cids = (
+            await session.execute(
+                select(DiscountCategory.category_id).where(DiscountCategory.discount_id == d.id)
+            )
+        ).scalars().all()
+        result = _discount_to_dict(d, pids, cids)
+        await session.commit()
+        return result
+
+
+async def toggle_discount(tenant_id: str, discount_id: str) -> dict | None:
+    from app.discounts.models import Discount
+    from sqlalchemy import select
+
+    sdb = _get_sdb("customers")
+    async with sdb.session() as session:
+        d = (
+            await session.execute(
+                select(Discount).where(
+                    Discount.id == UUID(discount_id), Discount.tenant_id == UUID(tenant_id)
+                )
+            )
+        ).scalar_one_or_none()
+        if not d:
+            return None
+        d.is_active = not d.is_active
+        await session.flush()
+        result = _discount_to_dict(d)
+        await session.commit()
+        return result
+
+
+async def delete_discount(tenant_id: str, discount_id: str) -> bool:
+    from app.discounts.models import Discount
+    from sqlalchemy import select
+
+    sdb = _get_sdb("customers")
+    async with sdb.session() as session:
+        d = (
+            await session.execute(
+                select(Discount).where(
+                    Discount.id == UUID(discount_id), Discount.tenant_id == UUID(tenant_id)
+                )
+            )
+        ).scalar_one_or_none()
+        if not d:
+            return False
+        await session.delete(d)
+        await session.commit()
+        return True
+
+
+# ── Coupons ────────────────────────────────────────────────────────────────
+
+
+async def create_coupon(
+    tenant_id: str,
+    code: str,
+    discount_type: str,
+    value,
+    max_uses: int = 0,
+    min_order=0,
+    is_active: bool = True,
+    expires_at=None,
+) -> dict:
+    from app.discounts.models import Coupon
+
+    sdb = _get_sdb("customers")
+    async with sdb.session() as session:
+        coupon = Coupon(
+            tenant_id=UUID(tenant_id),
+            code=code.upper().strip(),
+            discount_type=discount_type,
+            value=Decimal(str(value)),
+            max_uses=max_uses,
+            min_order=Decimal(str(min_order)),
+            is_active=is_active,
+            expires_at=expires_at,
+        )
+        session.add(coupon)
+        await session.flush()
+        result = _coupon_to_dict(coupon)
+        await session.commit()
+        return result
+
+
+async def list_coupons(tenant_id: str, page: int = 1, page_size: int = 50) -> dict:
+    from app.discounts.models import Coupon
+    from sqlalchemy import func, select
+
+    tid = UUID(tenant_id)
+    sdb = _get_sdb("customers")
+    async with sdb.session() as session:
+        q = select(Coupon).where(Coupon.tenant_id == tid)
+        cq = select(func.count(Coupon.id)).where(Coupon.tenant_id == tid)
+
+        total = (await session.execute(cq)).scalar() or 0
+        rows = (
+            await session.execute(
+                q.order_by(Coupon.created_at.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        ).scalars().all()
+
+        return {
+            "items": [_coupon_to_dict(c) for c in rows],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+
+
+async def get_coupon(tenant_id: str, coupon_id: str) -> dict | None:
+    from app.discounts.models import Coupon
+    from sqlalchemy import select
+
+    sdb = _get_sdb("customers")
+    async with sdb.session() as session:
+        c = (
+            await session.execute(
+                select(Coupon).where(
+                    Coupon.id == UUID(coupon_id), Coupon.tenant_id == UUID(tenant_id)
+                )
+            )
+        ).scalar_one_or_none()
+        return _coupon_to_dict(c) if c else None
+
+
+async def update_coupon(tenant_id: str, coupon_id: str, **kwargs) -> dict | None:
+    from app.discounts.models import Coupon
+    from sqlalchemy import select
+
+    sdb = _get_sdb("customers")
+    async with sdb.session() as session:
+        c = (
+            await session.execute(
+                select(Coupon).where(
+                    Coupon.id == UUID(coupon_id), Coupon.tenant_id == UUID(tenant_id)
+                )
+            )
+        ).scalar_one_or_none()
+        if not c:
+            return None
+
+        allowed = {"code", "discount_type", "value", "max_uses", "min_order", "is_active", "expires_at"}
+        for k, v in kwargs.items():
+            if k in allowed and v is not None:
+                if k == "code":
+                    v = v.upper().strip()
+                if k in ("value", "min_order"):
+                    v = Decimal(str(v))
+                setattr(c, k, v)
+
+        await session.flush()
+        result = _coupon_to_dict(c)
+        await session.commit()
+        return result
+
+
+async def delete_coupon(tenant_id: str, coupon_id: str) -> bool:
+    from app.discounts.models import Coupon
+    from sqlalchemy import select
+
+    sdb = _get_sdb("customers")
+    async with sdb.session() as session:
+        c = (
+            await session.execute(
+                select(Coupon).where(
+                    Coupon.id == UUID(coupon_id), Coupon.tenant_id == UUID(tenant_id)
+                )
+            )
+        ).scalar_one_or_none()
+        if not c:
+            return False
+        await session.delete(c)
+        await session.commit()
+        return True
+
+
+async def validate_coupon(tenant_id: str, code: str, cart_subtotal) -> dict:
+    from app.discounts.models import Coupon
+    from sqlalchemy import select
+    from datetime import UTC, datetime
+
+    sdb = _get_sdb("customers")
+    async with sdb.session() as session:
+        c = (
+            await session.execute(
+                select(Coupon).where(
+                    Coupon.tenant_id == UUID(tenant_id),
+                    Coupon.code == code.upper().strip(),
+                )
+            )
+        ).scalar_one_or_none()
+
+        if not c:
+            return {"valid": False, "message": "Coupon not found"}
+
+        if not c.is_active:
+            return {"valid": False, "message": "Coupon is disabled"}
+
+        if c.expires_at and c.expires_at < datetime.now(UTC):
+            return {"valid": False, "message": "Coupon has expired"}
+
+        if c.max_uses > 0 and c.used_count >= c.max_uses:
+            return {"valid": False, "message": "Coupon usage limit reached"}
+
+        subtotal = Decimal(str(cart_subtotal))
+        if subtotal < c.min_order:
+            return {
+                "valid": False,
+                "message": f"Minimum order of ₦{c.min_order:,.2f} required",
+            }
+
+        if c.discount_type == "percentage":
+            discount_amount = float(subtotal * c.value / 100)
+        else:
+            discount_amount = min(float(c.value), float(subtotal))
+
+        final_total = max(float(subtotal) - discount_amount, 0)
+
+        return {
+            "valid": True,
+            "coupon_id": str(c.id),
+            "code": c.code,
+            "discount_type": c.discount_type,
+            "discount_amount": round(discount_amount, 2),
+            "final_total": round(final_total, 2),
+            "message": "Coupon applied successfully",
+        }
+
+
+async def apply_discount(
+    subtotal,
+    discount_type: str,
+    value,
+    buy_x_get_y_free_qty: int = 0,
+    cart_items: list[dict] | None = None,
+) -> float:
+    """Calculate discount amount for a promotion."""
+    sub = Decimal(str(subtotal))
+
+    if discount_type == "percentage":
+        return round(float(sub * Decimal(str(value)) / 100), 2)
+
+    if discount_type == "fixed_amount":
+        return round(min(float(value), float(sub)), 2)
+
+    if discount_type == "buy_x_get_y" and cart_items:
+        total_free = Decimal("0")
+        for item in cart_items:
+            qty = Decimal(str(item.get("qty", 0)))
+            unit_price = Decimal(str(item.get("unit_price", 0)))
+            if buy_x_get_y_free_qty > 0:
+                free_sets = qty // (qty + buy_x_get_y_free_qty)
+                # Actually: for every (buy_qty + free_qty), you get free_qty free
+                # But we only have free_qty, so assume buy_qty = 1
+                free_sets = qty // (1 + buy_x_get_y_free_qty)
+                total_free += free_sets * buy_x_get_y_free_qty * unit_price
+        return round(float(total_free), 2)
+
+    return 0.0
+
+
+async def increment_coupon_usage(tenant_id: str, coupon_id: str) -> None:
+    """Increment the used_count on a coupon after successful checkout."""
+    from app.discounts.models import Coupon
+    from sqlalchemy import select
+
+    sdb = _get_sdb("customers")
+    async with sdb.session() as session:
+        c = (
+            await session.execute(
+                select(Coupon).where(
+                    Coupon.id == UUID(coupon_id), Coupon.tenant_id == UUID(tenant_id)
+                )
+            )
+        ).scalar_one_or_none()
+        if c:
+            c.used_count += 1
+            await session.commit()

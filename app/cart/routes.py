@@ -145,6 +145,9 @@ async def checkout_cart(cart_id: str, body: CheckoutRequest, ctx: TenantDep):
                 items=items_raw,
                 customer_name=body.customer_name,
                 customer_phone=body.customer_phone,
+                store_id=body.store_id,
+                coupon_code=body.coupon_code,
+                discount_id=body.discount_id,
             )
         )
     except ValueError as e:
