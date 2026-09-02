@@ -2308,6 +2308,21 @@ async def create_product_for_store(
             unit_cost=cost_price if cost_price else None,
         )
         session.add(balance)
+
+        if qty > 0:
+            from app.inventory.models import StockAdjustment
+            adjustment = StockAdjustment(
+                tenant_id=UUID(tenant_id),
+                product_id=product.id,
+                store_id=UUID(store_id),
+                reason="initial_stock",
+                qty_change=Decimal(str(qty)),
+                unit_cost=cost_price if cost_price else None,
+                notes="Initial stock on product creation",
+                created_by=UUID(created_by) if created_by else None,
+            )
+            session.add(adjustment)
+
         await session.commit()
 
     qr_url = None
