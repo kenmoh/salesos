@@ -129,6 +129,7 @@ class StoreProductListItem(_Base):
     name: str = ""
     sku: str | None = None
     selling_price: float = 0
+    reorder_point: int = 0
     qty: float = 0
     available: float = 0
     status: str = "active"

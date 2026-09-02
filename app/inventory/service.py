@@ -45,6 +45,11 @@ def plan_adjust_stock(
 
     if current_balance:
         new_qty = float(current_balance.qty) + float(command.qty_change)
+        if new_qty < 0:
+            raise ValueError(
+                f"Insufficient stock: current={float(current_balance.qty)}, "
+                f"attempted change={float(command.qty_change)}"
+            )
         new_cost = (
             float(command.unit_cost) if command.unit_cost else float(current_balance.unit_cost or 0)
         )

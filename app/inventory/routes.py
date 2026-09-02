@@ -302,18 +302,21 @@ async def download_product_qr(
     dependencies=[Depends(require_permission("inventory:adjust"))],
 )
 async def adjust(store_id: str, payload: InventoryAdjust, ctx: TenantDep):
-    return ok(
-        await bridge.adjust_stock(
-            tenant_id=ctx.user.business_id,
-            created_by=ctx.user.user_id,
-            product_id=str(payload.product_id),
-            store_id=store_id,
-            reason=payload.reason,
-            qty_change=payload.qty_change,
-            unit_cost=payload.unit_cost,
-            notes=payload.notes,
+    try:
+        return ok(
+            await bridge.adjust_stock(
+                tenant_id=ctx.user.business_id,
+                created_by=ctx.user.user_id,
+                product_id=str(payload.product_id),
+                store_id=store_id,
+                reason=payload.reason,
+                qty_change=payload.qty_change,
+                unit_cost=payload.unit_cost,
+                notes=payload.notes,
+            )
         )
-    )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get(
