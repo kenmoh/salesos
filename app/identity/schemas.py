@@ -21,6 +21,7 @@ class UserResult(BaseModel):
     role: str
     status: str
     totp_enabled: bool
+    auto_create_cart: bool
     last_login_at: str | None
 
 

@@ -305,7 +305,7 @@ async def adjust(store_id: str, payload: InventoryAdjust, ctx: TenantDep):
     return ok(
         await bridge.adjust_stock(
             tenant_id=ctx.user.business_id,
-            actor_id=ctx.user.user_id,
+            created_by=ctx.user.user_id,
             product_id=str(payload.product_id),
             store_id=store_id,
             reason=payload.reason,

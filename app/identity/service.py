@@ -41,6 +41,7 @@ def plan_user_creation(command: UserCreateCommand) -> tuple[UserResult, User, li
         role="",
         status="active",
         totp_enabled=False,
+        auto_create_cart=False,
         last_login_at=None,
     )
     outbox = [OutboxWrite(event=event, aggregate_type="user", aggregate_id=str(user_id))]

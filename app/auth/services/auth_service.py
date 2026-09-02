@@ -66,6 +66,7 @@ async def _get_user_by_email(session, email: str) -> dict | None:
         "password_hash": user.password_hash,
         "status": user.status,
         "totp_enabled": bool(user.totp_enabled),
+        "auto_create_cart": bool(user.auto_create_cart),
         "totp_secret": user.totp_secret,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
         "avatar_url": user.avatar_url,
@@ -180,6 +181,7 @@ async def login(*, session, email, password, totp_code, req, device_name=None):
         "status": user.get("status", "active"),
         "permissions": perms,
         "totp_enabled": bool(user.get("totp_enabled")),
+        "auto_create_cart": bool(user.get("auto_create_cart")),
         "last_login_at": user.get("last_login_at"),
         "avatar_url": user.get("avatar_url"),
     }

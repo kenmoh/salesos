@@ -2258,7 +2258,7 @@ async def create_product_for_store(
 
     sdb_catalog = _get_sdb("catalog")
     _random = generate_random_timestamp_string()
-    sku = f'{name}-{_random[:6]}'.upper().replace(" ", "")
+    sku = f'{name}-{_random}'.upper().replace(" ", "")
     async with sdb_catalog.session() as session:
         product = Product(
             tenant_id=UUID(tenant_id),

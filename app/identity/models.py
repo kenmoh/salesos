@@ -64,6 +64,7 @@ class User(StoreFlowBase):
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
     totp_secret: Mapped[str | None] = mapped_column(String(32), nullable=True)
     totp_enabled: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)
+    auto_create_cart: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     store_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)

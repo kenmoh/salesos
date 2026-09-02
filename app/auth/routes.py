@@ -174,11 +174,29 @@ async def me(ctx: TenantDep):
             "status": user.status,
             "permissions": ctx.user.permissions,
             "totp_enabled": bool(user.totp_enabled),
+            "auto_create_cart": bool(user.auto_create_cart),
             "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
             "avatar_url": user.avatar_url,
             "store_id": str(user.store_id) if user.store_id else None,
         }
     )
+
+
+@router.patch(
+    "/auto-create-cart",
+    dependencies=[Depends(require_permission("auth:login"))],
+)
+async def toggle_auto_create_cart(ctx: TenantDep):
+    from app.identity.models import User
+    from sqlalchemy import select
+
+    result = await ctx.session.execute(select(User).where(User.id == UUID(ctx.user.user_id)))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.auto_create_cart = 0 if user.auto_create_cart else 1
+    await ctx.session.commit()
+    return ok({"auto_create_cart": bool(user.auto_create_cart)})
 
 
 @router.post("/verify-email", response_model=DataMessageResponse[SuccessResponse])

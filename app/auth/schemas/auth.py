@@ -161,6 +161,7 @@ class UserProfile(Base):
     status: str
     permissions: list[str]
     totp_enabled: bool
+    auto_create_cart: bool
     last_login_at: datetime | None
     avatar_url: str | None
 

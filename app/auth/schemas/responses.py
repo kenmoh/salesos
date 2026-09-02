@@ -294,6 +294,7 @@ class AuthUser(_Base):
     status: str | None = None
     permissions: list[str] = []
     totp_enabled: bool | None = None
+    auto_create_cart: bool | None = None
     last_login_at: str | None = None
     avatar_url: str | None = None
     store_id: str | None = None
