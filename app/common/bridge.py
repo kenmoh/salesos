@@ -2653,30 +2653,36 @@ async def get_store_product(
 
         balance = row.StockBalance
 
-        from app.inventory.models import StockAdjustment
+        from app.inventory.models import StockMovement
         history_result = await session.execute(
-            select(StockAdjustment)
+            select(StockMovement)
             .where(
-                StockAdjustment.tenant_id == UUID(tenant_id),
-                StockAdjustment.store_id == UUID(store_id),
-                StockAdjustment.product_id == UUID(product_id),
+                StockMovement.tenant_id == UUID(tenant_id),
+                StockMovement.store_id == UUID(store_id),
+                StockMovement.product_id == UUID(product_id),
             )
-            .order_by(StockAdjustment.created_at.desc())
+            .order_by(StockMovement.created_at.desc())
             .limit(20)
         )
-        adjustments = history_result.scalars().all()
+        movements = history_result.scalars().all()
         history = [
             {
-                "id": str(a.id),
-                "product_id": str(a.product_id),
-                "store_id": str(a.store_id),
-                "movement_type": a.reason,
-                "qty_change": float(a.qty_change),
-                "reason": a.reason,
-                "notes": a.notes,
-                "created_at": a.created_at.isoformat() if a.created_at else "",
+                "id": str(m.id),
+                "product_id": str(m.product_id),
+                "store_id": str(m.store_id),
+                "movement_type": m.movement_type,
+                "qty_change": float(m.qty_change),
+                "balance_before": float(m.balance_before),
+                "balance_after": float(m.balance_after),
+                "reference_type": m.reference_type,
+                "reference_id": str(m.reference_id) if m.reference_id else None,
+                "reason": m.reason,
+                "unit_cost": float(m.unit_cost) if m.unit_cost else None,
+                "notes": m.notes,
+                "created_by": str(m.created_by) if m.created_by else None,
+                "created_at": m.created_at.isoformat() if m.created_at else "",
             }
-            for a in adjustments
+            for m in movements
         ]
 
         return {
