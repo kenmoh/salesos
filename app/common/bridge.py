@@ -2621,39 +2621,21 @@ async def get_store_product(
     product_id: str,
 ) -> dict | None:
     """Get a single product in a store with stock info and recent history."""
-    from app.catalog.models import Product, Category
-    from app.inventory.models import StockBalance
+    from app.inventory.models import StockBalance, StockMovement
 
     sdb_inventory = _get_sdb("inventory")
     async with sdb_inventory.session() as session:
         result = await session.execute(
-            select(
-                StockBalance,
-                Product.name,
-                Product.sku,
-                Product.selling_price,
-                Product.cost_price,
-                Product.reorder_point,
-                Product.image_url,
-                Product.status,
-                Product.qr_url,
-                Category.name.label("category_name"),
-            )
-            .join(Product, StockBalance.product_id == Product.id)
-            .join(Category, Product.category_id == Category.id, isouter=True)
-            .where(
+            select(StockBalance).where(
                 StockBalance.tenant_id == UUID(tenant_id),
                 StockBalance.store_id == UUID(store_id),
                 StockBalance.product_id == UUID(product_id),
             )
         )
-        row = result.one_or_none()
-        if not row:
+        balance = result.scalar_one_or_none()
+        if not balance:
             return None
 
-        balance = row.StockBalance
-
-        from app.inventory.models import StockMovement
         history_result = await session.execute(
             select(StockMovement)
             .where(
@@ -2685,24 +2667,44 @@ async def get_store_product(
             for m in movements
         ]
 
-        return {
-            "id": str(product_id),
-            "name": row.name,
-            "sku": row.sku,
-            "selling_price": float(row.selling_price) if row.selling_price else 0,
-            "cost_price": float(row.cost_price) if row.cost_price else 0,
-            "reorder_point": int(row.reorder_point) if row.reorder_point else 0,
-            "image_url": row.image_url,
-            "status": row.status,
-            "qty": float(balance.qty),
-            "reserved_qty": float(balance.reserved_qty),
-            "available": float(balance.qty) - float(balance.reserved_qty),
-            "min_stock_level": float(balance.min_stock_level),
-            "unit_cost": float(balance.unit_cost) if balance.unit_cost else None,
-            "qr_url": row.qr_url,
-            "category": row.category_name,
-            "history": history,
-        }
+    sdb_catalog = _get_sdb("catalog")
+    async with sdb_catalog.session() as session:
+        from app.catalog.models import Product, Category
+        prod_result = await session.execute(
+            select(Product, Category.name.label("category_name"))
+            .join(Category, Product.category_id == Category.id, isouter=True)
+            .where(Product.id == UUID(product_id))
+        )
+        row = prod_result.one_or_none()
+
+    name = row.name if row else ""
+    sku = row.sku if row else None
+    selling_price = float(row.selling_price) if row and row.selling_price else 0
+    cost_price = float(row.cost_price) if row and row.cost_price else 0
+    reorder_point = int(row.reorder_point) if row and row.reorder_point else 0
+    image_url = row.image_url if row else None
+    status = row.status if row else "active"
+    qr_url = row.qr_url if row else None
+    category = row.category_name if row else None
+
+    return {
+        "id": str(product_id),
+        "name": name,
+        "sku": sku,
+        "selling_price": selling_price,
+        "cost_price": cost_price,
+        "reorder_point": reorder_point,
+        "image_url": image_url,
+        "status": status,
+        "qty": float(balance.qty),
+        "reserved_qty": float(balance.reserved_qty),
+        "available": float(balance.qty) - float(balance.reserved_qty),
+        "min_stock_level": float(balance.min_stock_level),
+        "unit_cost": float(balance.unit_cost) if balance.unit_cost else None,
+        "qr_url": qr_url,
+        "category": category,
+        "history": history,
+    }
 
 
 async def delete_store_product(
