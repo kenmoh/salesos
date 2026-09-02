@@ -2620,49 +2620,81 @@ async def get_store_product(
     store_id: str,
     product_id: str,
 ) -> dict | None:
-    """Get a single product in a store with stock info and recent history via RPC."""
-    sdb = _get_sdb("inventory")
-    async with sdb.session() as session:
+    """Get a single product in a store with stock info and recent history."""
+    from app.catalog.models import Product, Category
+    from app.inventory.models import StockBalance
+
+    sdb_inventory = _get_sdb("inventory")
+    async with sdb_inventory.session() as session:
         result = await session.execute(
-            text("SELECT get_store_product_detail(:tid, :sid, :pid)"),
-            {"tid": UUID(tenant_id), "sid": UUID(store_id), "pid": UUID(product_id)},
+            select(
+                StockBalance,
+                Product.name,
+                Product.sku,
+                Product.selling_price,
+                Product.cost_price,
+                Product.reorder_point,
+                Product.image_url,
+                Product.status,
+                Product.qr_url,
+                Category.name.label("category_name"),
+            )
+            .join(Product, StockBalance.product_id == Product.id)
+            .join(Category, Product.category_id == Category.id, isouter=True)
+            .where(
+                StockBalance.tenant_id == UUID(tenant_id),
+                StockBalance.store_id == UUID(store_id),
+                StockBalance.product_id == UUID(product_id),
+            )
         )
-        row = result.scalar()
-        if not row or row == {}:
+        row = result.one_or_none()
+        if not row:
             return None
-        data = dict(row)
-        prod = data.get("product") or {}
-        stock = data.get("stock") or {}
-        raw_history = data.get("recent_history") or []
+
+        balance = row.StockBalance
+
+        from app.inventory.models import StockAdjustment
+        history_result = await session.execute(
+            select(StockAdjustment)
+            .where(
+                StockAdjustment.tenant_id == UUID(tenant_id),
+                StockAdjustment.store_id == UUID(store_id),
+                StockAdjustment.product_id == UUID(product_id),
+            )
+            .order_by(StockAdjustment.created_at.desc())
+            .limit(20)
+        )
+        adjustments = history_result.scalars().all()
         history = [
             {
-                "id": str(h.get("id", "")),
-                "product_id": product_id,
-                "store_id": store_id,
-                "movement_type": h.get("movement_type", ""),
-                "qty_change": float(h.get("qty_change", 0)),
-                "balance_before": float(h.get("balance_before", 0)),
-                "balance_after": float(h.get("balance_after", 0)),
-                "reason": h.get("reason"),
-                "created_at": h.get("created_at", ""),
+                "id": str(a.id),
+                "product_id": str(a.product_id),
+                "store_id": str(a.store_id),
+                "movement_type": a.reason,
+                "qty_change": float(a.qty_change),
+                "reason": a.reason,
+                "notes": a.notes,
+                "created_at": a.created_at.isoformat() if a.created_at else "",
             }
-            for h in raw_history
+            for a in adjustments
         ]
+
         return {
-            "id": str(prod.get("id", "")),
-            "name": prod.get("name", ""),
-            "sku": prod.get("sku"),
-            "selling_price": float(prod.get("selling_price", 0)),
-            "cost_price": float(prod.get("cost_price", 0)),
-            "image_url": prod.get("image_url"),
-            "status": prod.get("status", "active"),
-            "qty": float(stock.get("qty", 0)),
-            "reserved_qty": float(stock.get("reserved_qty", 0)),
-            "available": float(stock.get("available", 0)),
-            "min_stock_level": float(stock.get("min_stock_level", 0)),
-            "unit_cost": None,
-            "qr_url": data.get("qr_url"),
-            "category": data.get("category"),
+            "id": str(product_id),
+            "name": row.name,
+            "sku": row.sku,
+            "selling_price": float(row.selling_price) if row.selling_price else 0,
+            "cost_price": float(row.cost_price) if row.cost_price else 0,
+            "reorder_point": int(row.reorder_point) if row.reorder_point else 0,
+            "image_url": row.image_url,
+            "status": row.status,
+            "qty": float(balance.qty),
+            "reserved_qty": float(balance.reserved_qty),
+            "available": float(balance.qty) - float(balance.reserved_qty),
+            "min_stock_level": float(balance.min_stock_level),
+            "unit_cost": float(balance.unit_cost) if balance.unit_cost else None,
+            "qr_url": row.qr_url,
+            "category": row.category_name,
             "history": history,
         }
 

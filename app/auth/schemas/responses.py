@@ -193,6 +193,7 @@ class StoreProductDetail(_Base):
     sku: str | None = None
     selling_price: float = 0
     cost_price: float = 0
+    reorder_point: int = 0
     qty: float = 0
     reserved_qty: float = 0
     committed_qty: float = 0
