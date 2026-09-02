@@ -10,7 +10,7 @@ from .models import (
     StockReservation,
     TransferRequest,
 )
-from .repository import list_stores
+from app.stores.repository import list_stores
 
 
 async def get_stock_balance(
