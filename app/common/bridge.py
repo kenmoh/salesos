@@ -2631,8 +2631,8 @@ async def get_store_product(
         )
         balance = result.scalar_one_or_none()
         if not balance:
-            from app.common.logging import get_logger
-            get_logger("bridge").warning(
+            import logging
+            logging.getLogger("bridge").warning(
                 "get_store_product: no StockBalance for product=%s store=%s tenant=%s",
                 product_id, store_id, tenant_id,
             )
