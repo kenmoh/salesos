@@ -2124,7 +2124,6 @@ async def get_store_products(
             .join(Product, StockBalance.product_id == Product.id)
             .join(Category, Product.category_id == Category.id, isouter=True)
             .where(
-                StockBalance.tenant_id == UUID(tenant_id),
                 StockBalance.store_id == UUID(store_id),
             )
         )
@@ -2139,7 +2138,6 @@ async def get_store_products(
             .select_from(StockBalance)
             .join(Product, StockBalance.product_id == Product.id, isouter=True)
             .where(
-                StockBalance.tenant_id == UUID(tenant_id),
                 StockBalance.store_id == UUID(store_id),
             )
         )
@@ -2627,19 +2625,22 @@ async def get_store_product(
     async with sdb_inventory.session() as session:
         result = await session.execute(
             select(StockBalance).where(
-                StockBalance.tenant_id == UUID(tenant_id),
                 StockBalance.store_id == UUID(store_id),
                 StockBalance.product_id == UUID(product_id),
             )
         )
         balance = result.scalar_one_or_none()
         if not balance:
+            from app.common.logging import get_logger
+            get_logger("bridge").warning(
+                "get_store_product: no StockBalance for product=%s store=%s tenant=%s",
+                product_id, store_id, tenant_id,
+            )
             return None
 
         history_result = await session.execute(
             select(StockMovement)
             .where(
-                StockMovement.tenant_id == UUID(tenant_id),
                 StockMovement.store_id == UUID(store_id),
                 StockMovement.product_id == UUID(product_id),
             )
@@ -2671,21 +2672,27 @@ async def get_store_product(
     async with sdb_catalog.session() as session:
         from app.catalog.models import Product, Category
         prod_result = await session.execute(
-            select(Product, Category.name.label("category_name"))
-            .join(Category, Product.category_id == Category.id, isouter=True)
+            select(Product.id, Product.name, Product.sku, Product.selling_price,
+                   Product.cost_price, Product.reorder_point, Product.image_url,
+                   Product.status, Product.qr_url,
+                   Category.name.label("category_name"))
+            .outerjoin(Category, Product.category_id == Category.id)
             .where(Product.id == UUID(product_id))
         )
         row = prod_result.one_or_none()
 
-    name = row.name if row else ""
-    sku = row.sku if row else None
-    selling_price = float(row.selling_price) if row and row.selling_price else 0
-    cost_price = float(row.cost_price) if row and row.cost_price else 0
-    reorder_point = int(row.reorder_point) if row and row.reorder_point else 0
-    image_url = row.image_url if row else None
-    status = row.status if row else "active"
-    qr_url = row.qr_url if row else None
-    category = row.category_name if row else None
+    if not row:
+        return None
+
+    name = row.name or ""
+    sku = row.sku
+    selling_price = float(row.selling_price) if row.selling_price else 0
+    cost_price = float(row.cost_price) if row.cost_price else 0
+    reorder_point = int(row.reorder_point) if row.reorder_point else 0
+    image_url = row.image_url
+    status = row.status or "active"
+    qr_url = row.qr_url
+    category = row.category_name
 
     return {
         "id": str(product_id),
