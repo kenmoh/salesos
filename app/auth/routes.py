@@ -32,6 +32,7 @@ from app.auth.schemas.responses import (
     EmployeeListItem,
     LoginResponse,
     PermissionItem,
+    PinStatusResponse,
     RegistrationResponse,
     RoleCreated,
     RoleDetail,
@@ -324,6 +325,29 @@ async def totp_disable(payload: TOTPDisableRequest, ctx: TenantDep):
 
 class SetPinRequest(BaseModel):
     pin: str
+
+
+@router.get(
+    "/pin/status",
+    response_model=DataMessageResponse[PinStatusResponse],
+    dependencies=[Depends(require_permission("auth:manage_totp"))],
+)
+async def get_pin_status(ctx: TenantDep):
+    from datetime import UTC, datetime
+    from sqlalchemy import select as sa_select
+    from app.identity.models import SupervisorPin
+
+    now = datetime.now(UTC)
+    result = await ctx.session.execute(
+        sa_select(SupervisorPin).where(SupervisorPin.user_id == UUID(ctx.user.user_id))
+    )
+    pin = result.scalar_one_or_none()
+    if not pin:
+        return ok(PinStatusResponse(has_pin=False))
+    return ok(PinStatusResponse(
+        has_pin=True,
+        expires_at=pin.expires_at.isoformat() if pin.expires_at else None,
+    ))
 
 
 @router.post(

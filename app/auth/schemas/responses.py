@@ -16,6 +16,11 @@ class SuccessResponse(_Base):
     success: bool = True
 
 
+class PinStatusResponse(_Base):
+    has_pin: bool = False
+    expires_at: str | None = None
+
+
 # ── Stores ────────────────────────────────────────────────────────────────────
 
 
