@@ -2620,9 +2620,12 @@ async def get_store_product(
 ) -> dict | None:
     """Get a single product in a store with stock info and recent history."""
     from app.inventory.models import StockBalance, StockMovement
+    import logging
+    log = logging.getLogger("bridge")
 
     sdb_inventory = _get_sdb("inventory")
     async with sdb_inventory.session() as session:
+        log.warning("get_store_product: querying store=%s product=%s tenant=%s", store_id, product_id, tenant_id)
         result = await session.execute(
             select(StockBalance).where(
                 StockBalance.store_id == UUID(store_id),
@@ -2631,11 +2634,12 @@ async def get_store_product(
         )
         balance = result.scalar_one_or_none()
         if not balance:
-            import logging
-            logging.getLogger("bridge").warning(
-                "get_store_product: no StockBalance for product=%s store=%s tenant=%s",
-                product_id, store_id, tenant_id,
+            diag = await session.execute(
+                select(StockBalance.id, StockBalance.product_id, StockBalance.store_id)
+                .where(StockBalance.store_id == UUID(store_id))
             )
+            rows = diag.all()
+            log.warning("get_store_product: no match. store balances: %s", [(str(r.id), str(r.product_id), str(r.store_id)) for r in rows])
             return None
 
         history_result = await session.execute(
