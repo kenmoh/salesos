@@ -7,10 +7,12 @@ from app.core.responses import DataResponse, ok
 from app.auth.schemas.responses import SuccessResponse
 import app.common.bridge as bridge
 from app.cart.schemas import (
+    AddItemRequest,
     CartCreateRequest,
     CartCreatedResponse,
     CartDetailResponse,
     CartListItemResponse,
+    CartItemResponse,
     CheckoutRequest,
     CheckoutResultResponse,
     VoidItemRequest,
@@ -126,6 +128,24 @@ async def void_item(item_id: str, body: VoidItemRequest, ctx: TenantDep, request
         if str(e) == "cart_item_not_found":
             raise HTTPException(status_code=404, detail="Cart item not found")
         raise
+
+
+@router.post(
+    "/{cart_id}/items",
+    status_code=201,
+    response_model=DataResponse[CartItemResponse],
+    dependencies=[Depends(require_permission("cart:create"))],
+)
+async def add_item(cart_id: str, body: AddItemRequest, ctx: TenantDep):
+    return ok(
+        await bridge.add_to_cart(
+            tenant_id=ctx.user.business_id,
+            cart_id=cart_id,
+            product_id=body.product_id,
+            qty=body.qty,
+            actor_id=ctx.user.user_id,
+        )
+    )
 
 
 @router.get(

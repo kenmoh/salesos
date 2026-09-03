@@ -89,6 +89,11 @@ class VoidItemRequest(BaseModel):
     supervisor_pin: str
 
 
+class AddItemRequest(BaseModel):
+    product_id: str
+    qty: float = Field(default=1, gt=0)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  ROUTE RESPONSE SCHEMAS
 # ═══════════════════════════════════════════════════════════════════════════════

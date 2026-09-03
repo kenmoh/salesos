@@ -4801,6 +4801,89 @@ async def create_or_resume_cart(
         }
 
 
+async def add_to_cart(
+    tenant_id: str,
+    cart_id: str,
+    product_id: str,
+    qty: float = 1,
+    actor_id: str | None = None,
+) -> dict:
+    """Add a product to an existing cart.
+
+    If the product is already in the cart, increments the quantity.
+    Otherwise, creates a new cart item.
+
+    Returns the cart item as a dict.
+    """
+    from app.cart.repository import (
+        get_cart_by_id,
+        get_cart_item_by_product,
+        add_cart_item,
+    )
+    from app.cart.models import CartItem
+
+    sdb = _get_sdb("cart")
+    async with sdb.session() as session:
+        cart = await get_cart_by_id(session, UUID(cart_id))
+        if not cart:
+            raise ValueError("cart_not_found")
+        if cart.tenant_id != UUID(tenant_id):
+            raise ValueError("cart_not_found")
+        if cart.status != "active":
+            raise ValueError("cart_not_active")
+
+        existing = await get_cart_item_by_product(session, UUID(cart_id), UUID(product_id))
+        if existing:
+            existing.qty = Decimal(str(existing.qty)) + Decimal(str(qty))
+            await session.flush()
+            result = {
+                "id": str(existing.id),
+                "product_id": str(existing.product_id),
+                "product_public_id": existing.product_public_id,
+                "name": existing.name,
+                "unit_price": float(existing.unit_price),
+                "qty": float(existing.qty),
+            }
+        else:
+            # Resolve product info from catalog SDB
+            from app.common.bridge import _get_sdb as __get_sdb
+            from sqlalchemy import select as _select
+
+            catalog_sdb = __get_sdb("catalog")
+            async with catalog_sdb.session() as cat_session:
+                from app.catalog.models import Product as CatalogProduct
+
+                cat_result = await cat_session.execute(
+                    _select(CatalogProduct).where(CatalogProduct.id == UUID(product_id))
+                )
+                product = cat_result.scalar_one_or_none()
+                if not product:
+                    raise ValueError("product_not_found")
+
+            item = CartItem(
+                cart_id=UUID(cart_id),
+                store_id=cart.store_id,
+                product_id=UUID(product_id),
+                product_public_id=product.public_id,
+                name=product.name,
+                unit_price=Decimal(str(product.selling_price)),
+                qty=Decimal(str(qty)),
+                created_by=UUID(actor_id) if actor_id else None,
+            )
+            await add_cart_item(session, item)
+            result = {
+                "id": str(item.id),
+                "product_id": str(item.product_id),
+                "product_public_id": item.product_public_id,
+                "name": item.name,
+                "unit_price": float(item.unit_price),
+                "qty": float(item.qty),
+            }
+
+        await session.commit()
+        return result
+
+
 async def remove_cart_item(tenant_id: str, item_id: str, actor_id: str | None = None) -> None:
     """Remove an item from a shopping cart.
 
