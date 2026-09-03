@@ -10,12 +10,22 @@ from app.cart.schemas import (
     CartCreateRequest,
     CartCreatedResponse,
     CartDetailResponse,
+    CartListItemResponse,
     CheckoutRequest,
     CheckoutResultResponse,
     VoidItemRequest,
 )
 
 router = APIRouter(prefix="/cart", tags=["Cart"])
+
+
+@router.get(
+    "",
+    response_model=DataResponse[list[CartListItemResponse]],
+    dependencies=[Depends(require_permission("cart:read"))],
+)
+async def list_carts(ctx: TenantDep):
+    return ok(await bridge.list_carts(ctx.user.business_id))
 
 
 @router.post(

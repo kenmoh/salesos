@@ -130,3 +130,14 @@ class CheckoutResultResponse(BaseModel):
     amount_paid: float = 0
     status: str = "pending"
     coupon_code: str | None = None
+
+
+class CartListItemResponse(BaseModel):
+    id: str = ""
+    session_id: str = ""
+    status: str = "active"
+    customer_name: str | None = None
+    customer_phone: str | None = None
+    item_count: int = 0
+    total: float = 0
+    created_at: str = ""

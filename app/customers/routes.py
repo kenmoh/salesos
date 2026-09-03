@@ -30,15 +30,20 @@ router = APIRouter(prefix="/customers", tags=["Customers"])
     dependencies=[Depends(require_permission("customers:create"))],
 )
 async def create_customer(payload: CustomerCreate, ctx: TenantDep):
-    return ok(
-        await bridge.create_customer(
-            tenant_id=ctx.user.business_id,
-            name=payload.name,
-            phone=payload.phone,
-            email=payload.email,
-            address=payload.address,
+    try:
+        return ok(
+            await bridge.create_customer(
+                tenant_id=ctx.user.business_id,
+                name=payload.name,
+                phone=payload.phone,
+                email=payload.email,
+                address=payload.address,
+            )
         )
-    )
+    except ValueError as e:
+        if str(e) == "customer_exists":
+            raise HTTPException(status_code=409, detail="Customer with this email or phone already exists")
+        raise
 
 
 @router.get(

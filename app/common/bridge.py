@@ -4698,6 +4698,40 @@ async def _get_or_create_cart(
     }
 
 
+async def list_carts(tenant_id: str) -> list[dict]:
+    """List active carts for a tenant with item counts and totals."""
+    from app.cart.models import Cart, CartItem
+    from sqlalchemy import func
+
+    sdb = _get_sdb("cart")
+    async with sdb.session() as session:
+        result = await session.execute(
+            select(
+                Cart,
+                func.count(CartItem.id).label("item_count"),
+                func.coalesce(func.sum(CartItem.unit_price * CartItem.qty), 0).label("total"),
+            )
+            .outerjoin(CartItem, Cart.id == CartItem.cart_id)
+            .where(Cart.tenant_id == UUID(tenant_id), Cart.status == "active")
+            .group_by(Cart.id)
+            .order_by(Cart.created_at.desc())
+        )
+        rows = result.all()
+        return [
+            {
+                "id": str(row.Cart.id),
+                "session_id": row.Cart.session_id,
+                "status": row.Cart.status,
+                "customer_name": row.Cart.customer_name,
+                "customer_phone": row.Cart.customer_phone,
+                "item_count": row.item_count,
+                "total": float(row.total),
+                "created_at": row.Cart.created_at.isoformat() if row.Cart.created_at else "",
+            }
+            for row in rows
+        ]
+
+
 async def create_or_resume_cart(
     tenant_id: str,
     session_id: str,
@@ -6894,7 +6928,11 @@ async def create_customer(
             address=address,
         )
         session.add(customer)
-        await session.flush()
+        try:
+            await session.flush()
+        except Exception:
+            await session.rollback()
+            raise ValueError("customer_exists")
         result = _customer_to_dict(customer)
         await session.commit()
         await cache.delete_pattern(f"sf:cache:customers:list:{tenant_id}*")

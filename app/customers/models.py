@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, String, Text
+from sqlalchemy import DateTime, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import mapped_column
 
@@ -11,6 +11,10 @@ from app.common.db.base import StoreFlowBase
 
 class Customer(StoreFlowBase):
     __tablename__ = "customers"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "email", name="uq_customer_tenant_email"),
+        UniqueConstraint("tenant_id", "phone", name="uq_customer_tenant_phone"),
+    )
 
 
     id = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
