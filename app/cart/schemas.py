@@ -87,11 +87,16 @@ class CheckoutRequest(BaseModel):
 
 class VoidItemRequest(BaseModel):
     supervisor_pin: str
+    qty: Decimal | None = None
+
+
+class CartClearResponse(BaseModel):
+    cleared: int = 0
 
 
 class AddItemRequest(BaseModel):
     product_id: str
-    qty: float = Field(default=1, gt=0)
+    qty: float | None = Field(default=None, gt=0)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

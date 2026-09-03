@@ -8,11 +8,12 @@ from app.auth.schemas.responses import SuccessResponse
 import app.common.bridge as bridge
 from app.cart.schemas import (
     AddItemRequest,
+    CartClearResponse,
     CartCreateRequest,
     CartCreatedResponse,
     CartDetailResponse,
-    CartListItemResponse,
     CartItemResponse,
+    CartListItemResponse,
     CheckoutRequest,
     CheckoutResultResponse,
     VoidItemRequest,
@@ -106,6 +107,7 @@ async def void_item(item_id: str, body: VoidItemRequest, ctx: TenantDep, request
             item_id=item_id,
             actor_id=ctx.user.user_id,
             supervisor_pin=body.supervisor_pin,
+            qty=body.qty,
         )
         if client:
             try:
@@ -155,6 +157,29 @@ async def add_item(cart_id: str, body: AddItemRequest, ctx: TenantDep):
 )
 async def get_cart(cart_id: str, ctx: TenantDep):
     return ok(await bridge.get_cart(ctx.user.business_id, cart_id))
+
+
+@router.post(
+    "/{cart_id}/clear",
+    response_model=DataResponse[CartClearResponse],
+    dependencies=[Depends(require_permission("cart:delete"))],
+)
+async def clear_cart(cart_id: str, body: VoidItemRequest, ctx: TenantDep):
+    try:
+        return ok(
+            await bridge.clear_cart(
+                tenant_id=ctx.user.business_id,
+                cart_id=cart_id,
+                actor_id=ctx.user.user_id,
+                supervisor_pin=body.supervisor_pin,
+            )
+        )
+    except ValueError as e:
+        if str(e) == "invalid_supervisor_pin":
+            raise HTTPException(status_code=403, detail="Invalid supervisor PIN")
+        if str(e) == "cart_not_found":
+            raise HTTPException(status_code=404, detail="Cart not found")
+        raise
 
 
 @router.post(

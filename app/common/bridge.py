@@ -4805,12 +4805,12 @@ async def add_to_cart(
     tenant_id: str,
     cart_id: str,
     product_id: str,
-    qty: float = 1,
+    qty: float | None = None,
     actor_id: str | None = None,
 ) -> dict:
     """Add a product to an existing cart.
 
-    If the product is already in the cart, increments the quantity.
+    If the product is already in the cart, overrides qty if provided, else increments by 1.
     Otherwise, creates a new cart item.
 
     Returns the cart item as a dict.
@@ -4834,7 +4834,10 @@ async def add_to_cart(
 
         existing = await get_cart_item_by_product(session, UUID(cart_id), UUID(product_id))
         if existing:
-            existing.qty = Decimal(str(existing.qty)) + Decimal(str(qty))
+            if qty is not None:
+                existing.qty = Decimal(str(qty))
+            else:
+                existing.qty = Decimal(str(existing.qty)) + 1
             await session.flush()
             result = {
                 "id": str(existing.id),
@@ -4867,7 +4870,7 @@ async def add_to_cart(
                 product_public_id=product.public_id,
                 name=product.name,
                 unit_price=Decimal(str(product.selling_price)),
-                qty=Decimal(str(qty)),
+                qty=Decimal(str(qty or 1)),
                 created_by=UUID(actor_id) if actor_id else None,
             )
             await add_cart_item(session, item)
@@ -4882,6 +4885,133 @@ async def add_to_cart(
 
         await session.commit()
         return result
+
+
+async def clear_cart(
+    tenant_id: str,
+    cart_id: str,
+    actor_id: str,
+    supervisor_pin: str,
+) -> dict:
+    """Void all items in a cart with supervisor PIN.
+
+    Logs each item individually to AuthAuditLog plus a cart_cleared summary.
+    Returns {"cleared": N}.
+    """
+    from datetime import UTC as _UTC, datetime as _datetime
+    from app.core.security import verify_pin
+    from app.cart.repository import get_cart_by_id, get_cart_items, remove_cart_item
+    from app.cart.schemas import RemoveItemCommand
+    from app.cart.service import plan_remove_item
+    from app.identity.models import (
+        Permission, Role, RolePermission, SupervisorPin, User, UserRole,
+    )
+
+    tid = UUID(tenant_id)
+    supervisor_id: UUID | None = None
+    now = _datetime.now(_UTC)
+
+    sdb_identity = _get_sdb("identity")
+    async with sdb_identity.session() as identity_session:
+        pins = (
+            await identity_session.execute(
+                select(SupervisorPin)
+                .join(User, User.id == SupervisorPin.user_id)
+                .where(
+                    SupervisorPin.expires_at > now,
+                    User.tenant_id == tid,
+                    User.status == "active",
+                )
+            )
+        ).scalars().all()
+
+        for pin_record in pins:
+            if verify_pin(supervisor_pin, pin_record.pin_hash):
+                has_perm = (
+                    await identity_session.execute(
+                        select(Permission.id)
+                        .join(RolePermission, RolePermission.permission_id == Permission.id)
+                        .join(Role, Role.id == RolePermission.role_id)
+                        .join(UserRole, UserRole.role_id == Role.id)
+                        .where(
+                            UserRole.user_id == pin_record.user_id,
+                            Permission.name == "cart:delete",
+                        )
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if has_perm:
+                    supervisor_id = pin_record.user_id
+                    break
+
+    if not supervisor_id:
+        raise ValueError("invalid_supervisor_pin")
+
+    sdb = _get_sdb("cart")
+    cleared = 0
+    async with sdb.session() as session:
+        cart = await get_cart_by_id(session, UUID(cart_id))
+        if not cart:
+            raise ValueError("cart_not_found")
+        if cart.tenant_id != tid:
+            raise ValueError("cart_not_found")
+        if cart.status != "active":
+            raise ValueError("cart_not_active")
+
+        items = await get_cart_items(session, UUID(cart_id))
+        for item in items:
+            command = RemoveItemCommand(
+                cart_id=item.cart_id,
+                tenant_id=tid,
+                item_id=item.id,
+                created_by=UUID(actor_id),
+                approved_by=supervisor_id,
+            )
+            outbox = plan_remove_item(command, item)
+            await remove_cart_item(session, item.id)
+            for write in outbox:
+                session.add(write.to_model())
+            cleared += 1
+
+        await session.commit()
+
+    # Log each item individually
+    sdb_identity = _get_sdb("identity")
+    async with sdb_identity.session() as audit_session:
+        from app.identity.models import AuthAuditLog as _AuditLog
+        for item in items:
+            audit_session.add(
+                _AuditLog(
+                    user_id=UUID(actor_id),
+                    tenant_id=tid,
+                    action="cart_void_approved",
+                    details={
+                        "item_id": str(item.id),
+                        "cart_id": str(item.cart_id),
+                        "product_id": str(item.product_id),
+                        "product_name": item.name,
+                        "qty": str(item.qty),
+                        "unit_price": str(item.unit_price),
+                        "supervisor_id": str(supervisor_id),
+                    },
+                )
+            )
+        # Summary entry
+        audit_session.add(
+            _AuditLog(
+                user_id=UUID(actor_id),
+                tenant_id=tid,
+                action="cart_cleared",
+                details={
+                    "cart_id": cart_id,
+                    "items_cleared": cleared,
+                    "supervisor_id": str(supervisor_id),
+                },
+            )
+        )
+        await audit_session.commit()
+
+    return {"cleared": cleared}
 
 
 async def remove_cart_item(tenant_id: str, item_id: str, actor_id: str | None = None) -> None:
@@ -4949,6 +5079,7 @@ async def void_cart_item(
     item_id: str,
     actor_id: str,
     supervisor_pin: str,
+    qty: float | None = None,
 ) -> None:
     """Remove a cart item with supervisor PIN override.
 
@@ -5030,17 +5161,28 @@ async def void_cart_item(
         if not item:
             raise ValueError("cart_item_not_found")
 
-        command = RemoveItemCommand(
-            cart_id=item.cart_id,
-            tenant_id=tid,
-            item_id=UUID(item_id),
-            created_by=UUID(actor_id),
-            approved_by=supervisor_id,
-        )
-        outbox = plan_remove_item(command, item)
-        await remove_cart_item(session, UUID(item_id))
-        for write in outbox:
-            session.add(write.to_model())
+        item_qty = float(item.qty)
+        void_qty = float(qty) if qty is not None else item_qty
+        void_qty = min(void_qty, item_qty)
+
+        if void_qty >= item_qty:
+            # Full void — delete the item
+            command = RemoveItemCommand(
+                cart_id=item.cart_id,
+                tenant_id=tid,
+                item_id=UUID(item_id),
+                created_by=UUID(actor_id),
+                approved_by=supervisor_id,
+            )
+            outbox = plan_remove_item(command, item)
+            await remove_cart_item(session, UUID(item_id))
+            for write in outbox:
+                session.add(write.to_model())
+        else:
+            # Partial void — reduce qty
+            item.qty = Decimal(str(item_qty - void_qty))
+            await session.flush()
+
         await session.commit()
 
     # Log to tenant audit trail
@@ -5058,8 +5200,9 @@ async def void_cart_item(
                     "cart_id": str(item.cart_id),
                     "product_id": str(item.product_id),
                     "product_name": item.name,
-                    "qty": item.qty,
-                    "unit_price": item.unit_price,
+                    "qty_voided": void_qty,
+                    "qty_remaining": max(0, item_qty - void_qty),
+                    "unit_price": str(item.unit_price),
                     "supervisor_id": str(supervisor_id),
                 },
             )
