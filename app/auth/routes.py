@@ -195,7 +195,7 @@ async def toggle_auto_create_cart(ctx: TenantDep):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     user.auto_create_cart = 0 if user.auto_create_cart else 1
-    await ctx.session.commit()
+    await ctx.session.flush()
     return ok({"auto_create_cart": bool(user.auto_create_cart)})
 
 
