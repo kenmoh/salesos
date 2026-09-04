@@ -240,7 +240,7 @@ async def pending_payments(ctx: TenantDep):
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
-        intents = await get_pending_intents_by_tenant(session, UUID(ctx.business_id))
+        intents = await get_pending_intents_by_tenant(session, UUID(ctx.user.business_id))
 
     results = []
     for intent in intents:
