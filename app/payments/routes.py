@@ -86,7 +86,7 @@ async def cash(payload: CashPayment, ctx: TenantDep):
             sale_id=str(payload.sale_id),
             method="cash",
             amount=payload.amount,
-            reference=payload.reference,
+            reference=None,
         )
     )
 
