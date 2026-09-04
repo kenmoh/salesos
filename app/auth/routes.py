@@ -1,3 +1,4 @@
+import json
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -667,7 +668,7 @@ async def audit(
                 "action": log.action,
                 "ip_address": log.ip_address,
                 "user_agent": log.user_agent,
-                "details": log.details,
+                "details": json.loads(log.details) if isinstance(log.details, str) else log.details,
                 "created_at": log.created_at.isoformat() if log.created_at else None,
             }
             for log in logs
