@@ -53,7 +53,7 @@ def _client() -> httpx.AsyncClient:
         A configured httpx.AsyncClient instance with Flutterwave credentials.
     """
     global _shared_client
-    if _shared_client is None:
+    if _shared_client is None or _shared_client.is_closed:
         _shared_client = httpx.AsyncClient(
             base_url=settings.flutterwave_base_url,
             headers={
