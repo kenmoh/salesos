@@ -3,7 +3,6 @@
 Covers:
 - plan_remove_item with approved_by (planning layer)
 - POST /auth/pin — set supervisor PIN
-- POST /auth/users/{user_id}/pin — force-regenerate
 - POST /cart/items/{id}/void — void with supervisor PIN
 """
 
@@ -242,30 +241,6 @@ class TestSetSupervisorPin:
         assert resp.status_code == 400
 
 
-class TestForceRegeneratePin:
-    """POST /auth/users/{user_id}/pin — owner force-regenerates."""
-
-    async def test_force_regenerate_success(self, client):
-        """Owner can regenerate another user's PIN."""
-        user_id = str(uuid4())
-        resp = await client.post(f"/auth/users/{user_id}/pin", json={"pin": "5678"})
-        assert resp.status_code == 200
-        assert resp.json()["message"] == "Supervisor PIN regenerated"
-
-    async def test_force_regenerate_invalid_pin(self, client):
-        """Short PIN is rejected."""
-        user_id = str(uuid4())
-        resp = await client.post(f"/auth/users/{user_id}/pin", json={"pin": "12"})
-        assert resp.status_code == 400
-        assert "4-6 digits" in resp.json()["detail"]
-
-    async def test_force_regenerate_6_digits(self, client):
-        """6-digit PIN works for force-regenerate."""
-        user_id = str(uuid4())
-        resp = await client.post(f"/auth/users/{user_id}/pin", json={"pin": "999999"})
-        assert resp.status_code == 200
-
-
 class TestVoidCartItem:
     """POST /cart/items/{item_id}/void — supervisor PIN override."""
 
@@ -295,6 +270,10 @@ class TestVoidCartItem:
         mock_item = MagicMock()
         mock_item.id = item_id
         mock_item.cart_id = uuid4()
+        mock_item.product_id = uuid4()
+        mock_item.name = "Test Product"
+        mock_item.qty = 3
+        mock_item.unit_price = "100.00"
 
         with (
             patch("app.cart.repository.get_cart_item", new_callable=AsyncMock, return_value=mock_item),
@@ -433,6 +412,10 @@ class TestVoidCartItem:
         mock_item = MagicMock()
         mock_item.id = item_id
         mock_item.cart_id = uuid4()
+        mock_item.product_id = uuid4()
+        mock_item.name = "Test Product"
+        mock_item.qty = 3
+        mock_item.unit_price = "100.00"
 
         captured_command = None
 

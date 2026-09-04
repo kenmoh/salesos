@@ -392,46 +392,6 @@ async def set_supervisor_pin(payload: SetPinRequest, ctx: TenantDep):
 
 
 @router.post(
-    "/users/{user_id}/pin",
-    response_model=DataMessageResponse[SuccessResponse],
-    dependencies=[Depends(require_permission("employees:update"))],
-)
-async def force_regenerate_pin(user_id: str, payload: SetPinRequest, ctx: TenantDep):
-    import re
-    from datetime import UTC, datetime, timedelta
-
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-    from app.core.config import settings
-    from app.core.security import hash_pin
-    from app.identity.models import SupervisorPin
-
-    pin = payload.pin.strip()
-    if not re.match(r"^\d{4,6}$", pin):
-        raise HTTPException(status_code=400, detail="PIN must be 4-6 digits")
-
-    pin_hashed = hash_pin(pin)
-    now = datetime.now(UTC)
-    expires_at = now + timedelta(days=settings.supervisor_pin_expire_days)
-
-    await ctx.session.execute(
-        pg_insert(SupervisorPin)
-        .values(
-            user_id=UUID(user_id),
-            pin_hash=pin_hashed,
-            expires_at=expires_at,
-            created_at=now,
-        )
-        .on_conflict_do_update(
-            index_elements=["user_id"],
-            set_={"pin_hash": pin_hashed, "expires_at": expires_at, "created_at": now},
-        )
-    )
-    await ctx.session.commit()
-    return ok(None, message="Supervisor PIN regenerated")
-
-
-@router.post(
     "/employees",
     status_code=201,
     response_model=DataResponse[EmployeeCreated],

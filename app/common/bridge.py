@@ -5,6 +5,7 @@ and delegates to the service package's planning functions + repository layer.
 """
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -4985,7 +4986,7 @@ async def clear_cart(
                     user_id=UUID(actor_id),
                     tenant_id=tid,
                     action="cart_void_approved",
-                    details={
+                    details=json.dumps({
                         "item_id": str(item.id),
                         "cart_id": str(item.cart_id),
                         "product_id": str(item.product_id),
@@ -4993,7 +4994,7 @@ async def clear_cart(
                         "qty": str(item.qty),
                         "unit_price": str(item.unit_price),
                         "supervisor_id": str(supervisor_id),
-                    },
+                    }),
                 )
             )
         # Summary entry
@@ -5002,11 +5003,11 @@ async def clear_cart(
                 user_id=UUID(actor_id),
                 tenant_id=tid,
                 action="cart_cleared",
-                details={
+                details=json.dumps({
                     "cart_id": cart_id,
                     "items_cleared": cleared,
                     "supervisor_id": str(supervisor_id),
-                },
+                }),
             )
         )
         await audit_session.commit()
@@ -5195,7 +5196,7 @@ async def void_cart_item(
                 user_id=UUID(actor_id),
                 tenant_id=tid,
                 action="cart_void_approved",
-                details={
+                details=json.dumps({
                     "item_id": item_id,
                     "cart_id": str(item.cart_id),
                     "product_id": str(item.product_id),
@@ -5204,7 +5205,7 @@ async def void_cart_item(
                     "qty_remaining": max(0, item_qty - void_qty),
                     "unit_price": str(item.unit_price),
                     "supervisor_id": str(supervisor_id),
-                },
+                }),
             )
         )
         await audit_session.commit()

@@ -118,7 +118,7 @@ async def login(*, session, email, password, totp_code, req, device_name=None):
                 action="login_failed",
                 ip_address=_ip(req),
                 user_agent=req.headers.get("user-agent", ""),
-                details={"reason": "invalid_password"},
+                details=json.dumps({"reason": "invalid_password"}),
             ),
         )
         raise AuthError("Invalid email or password", "invalid_credentials")
@@ -134,7 +134,7 @@ async def login(*, session, email, password, totp_code, req, device_name=None):
                     action="login_failed",
                     ip_address=_ip(req),
                     user_agent=req.headers.get("user-agent", ""),
-                    details={"reason": "invalid_totp"},
+                    details=json.dumps({"reason": "invalid_totp"}),
                 ),
             )
             raise AuthError("Invalid TOTP code", "invalid_totp")
@@ -233,7 +233,7 @@ async def logout(*, session, access_token, raw_refresh, user_id, all_devices):
         AuthAuditLog(
             user_id=user_id,
             action="logout",
-            details={"all_devices": all_devices},
+            details=json.dumps({"all_devices": all_devices}),
         ),
     )
 
@@ -255,7 +255,7 @@ async def change_password(*, session, user_id, cur_pw, new_pw, revoke_others, cu
             action="password_changed",
             ip_address=_ip(req),
             user_agent=req.headers.get("user-agent", ""),
-            details={"revoked_other_sessions": revoke_others},
+            details=json.dumps({"revoked_other_sessions": revoke_others}),
         ),
     )
 
