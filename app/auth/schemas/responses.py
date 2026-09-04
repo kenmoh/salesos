@@ -461,6 +461,10 @@ class TransferPaymentResult(_Base):
     account_number: str | None = None
     bank_name: str | None = None
     instructions: str | None = None
+    tx_ref: str | None = None
+    transfer_reference: str | None = None
+    account_expiration: str | None = None
+    transfer_note: str | None = None
 
 
 class SplitSuggestion(_Base):
@@ -495,6 +499,21 @@ class ResolvedAccount(_Base):
     account_name: str = ""
     bank_code: str = ""
     bank_name: str | None = None
+
+
+class PaymentIntentStatus(_Base):
+    method: str = ""
+    status: str = ""
+    tx_ref: str | None = None
+    amount: float = 0
+
+
+class PaymentStatusResponse(_Base):
+    sale_id: str = ""
+    status: str = "pending"
+    amount_paid: float = 0
+    total: float = 0
+    intents: list[PaymentIntentStatus] = []
 
 
 # ── Reports ───────────────────────────────────────────────────────────────────

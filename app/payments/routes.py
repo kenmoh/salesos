@@ -11,6 +11,8 @@ from app.auth.schemas.responses import (
     BankInfo,
     CardPaymentResult,
     CashPaymentResult,
+    PaymentIntentStatus,
+    PaymentStatusResponse,
     ResolvedAccount,
     SplitPaymentResult,
     SplitSuggestion,
@@ -19,6 +21,7 @@ from app.auth.schemas.responses import (
     TransferPaymentResult,
 )
 import app.common.bridge as bridge
+from app.common.bridge import _get_sdb
 from app.common import flutterwave_service
 
 
@@ -221,6 +224,58 @@ async def resolve_account(payload: AccountResolve):
             bank_code=payload.bank_code,
         )
     )
+
+
+@router.get(
+    "/status/{sale_id}",
+    response_model=DataResponse[PaymentStatusResponse],
+    dependencies=[Depends(require_permission("payments:read"))],
+)
+async def payment_status(sale_id: str, ctx: TenantDep):
+    from uuid import UUID
+    from sqlalchemy import select
+    from app.payments.models import PaymentIntent, Payment
+    from app.sales.repository import get_sale_by_id
+
+    sdb = _get_sdb("payments")
+    async with sdb.session() as session:
+        sale = await get_sale_by_id(session, UUID(sale_id))
+        if not sale:
+            raise HTTPException(status_code=404, detail="Sale not found")
+
+        intents_result = await session.execute(
+            select(PaymentIntent).where(PaymentIntent.sale_id == UUID(sale_id))
+        )
+        intents = intents_result.scalars().all()
+
+        payments_result = await session.execute(
+            select(Payment).where(Payment.sale_id == UUID(sale_id))
+        )
+        payments = payments_result.scalars().all()
+
+        intent_statuses = []
+        for i in intents:
+            intent_statuses.append(
+                PaymentIntentStatus(
+                    method=i.method,
+                    status=i.status,
+                    tx_ref=i.gateway_reference,
+                    amount=i.amount,
+                )
+            )
+
+        amount_paid = sum(float(p.amount) for p in payments)
+        status = "completed" if amount_paid >= float(sale.total) else "pending" if amount_paid > 0 else "pending"
+
+        return ok(
+            PaymentStatusResponse(
+                sale_id=sale_id,
+                status=status,
+                amount_paid=round(amount_paid, 2),
+                total=float(sale.total),
+                intents=intent_statuses,
+            )
+        )
 
 
 @router.post("/webhook/flutterwave", include_in_schema=False)

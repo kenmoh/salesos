@@ -335,11 +335,15 @@ async def initiate_bank_transfer_charge(
         raise FlutterwaveError(f"Bank transfer charge failed: {data.get('message')}")
 
     charge_data = data["data"]
+    auth = charge_data.get("authorization", {}) or {}
     return {
-        "account_number": charge_data.get("account_number", ""),
-        "bank_name": charge_data.get("bank_name", ""),
+        "account_number": charge_data.get("account_number", auth.get("transfer_account", "")),
+        "bank_name": charge_data.get("bank_name", auth.get("transfer_bank", "")),
         "amount": charge_data.get("amount", amount),
         "tx_ref": tx_ref,
+        "transfer_reference": auth.get("transfer_reference", ""),
+        "account_expiration": auth.get("account_expiration", ""),
+        "transfer_note": auth.get("transfer_note", ""),
         "instructions": charge_data.get("instructions", {}),
     }
 

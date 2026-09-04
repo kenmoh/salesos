@@ -6020,6 +6020,7 @@ async def initiate_card_payment(
         await session.commit()
 
     return {
+        "payment_id": str(intent.id),
         "sale_id": sale_id,
         "payment_url": card_result["link"],
         "qr_code_base64": qr_base64,
@@ -6101,15 +6102,16 @@ async def initiate_transfer_payment(
         await session.commit()
 
     return {
+        "payment_id": str(intent.id),
         "sale_id": sale_id,
         "account_number": transfer_result["account_number"],
         "bank_name": transfer_result["bank_name"],
         "amount": float(amount),
         "tx_ref": tx_ref,
-        "transfer_reference": transfer_result["transfer_reference"],
-        "account_expiration": transfer_result["account_expiration"],
-        "transfer_note": transfer_result["transfer_note"],
-        "instructions": f"Transfer exactly NGN {amount:,.2f} to {transfer_result['bank_name']} account {transfer_result['account_number']}.",
+        "transfer_reference": transfer_result.get("transfer_reference", ""),
+        "account_expiration": transfer_result.get("account_expiration", ""),
+        "transfer_note": transfer_result.get("transfer_note", ""),
+        "instructions": transfer_result.get("instructions", ""),
         "status": "pending",
     }
 
@@ -6247,13 +6249,12 @@ async def process_split_payment(
 
             subaccounts = await _build_subaccounts_for_payment(session, UUID(business_id), total)
 
-            transfer_result = await flutterwave_service.create_payment_link(
+            transfer_result = await flutterwave_service.initiate_bank_transfer_charge(
                 amount=transfer_amount,
+                email=customer_email,
                 tx_ref=tx_ref,
-                customer_email=customer_email,
-                customer_name=customer_name,
-                payment_options="banktransfer",
-                title="StoreFlow Bank Transfer",
+                fullname=customer_name,
+                narration=f"Payment for sale {sale.sale_number}",
                 meta={"business_id": business_id, "sale_id": sale_id},
                 subaccounts=subaccounts,
             )
@@ -6267,16 +6268,21 @@ async def process_split_payment(
                 currency="NGN",
                 status="pending",
                 gateway_reference=tx_ref,
-                authorization_url=transfer_result["link"],
+                intent_metadata=str(transfer_result),
                 expires_at=datetime.now(UTC) + timedelta(hours=24),
             )
             await create_intent(session, intent)
 
             result["transfer"] = {
+                "payment_id": str(intent.id),
                 "amount": float(transfer_amount),
-                "payment_url": transfer_result["link"],
+                "account_number": transfer_result["account_number"],
+                "bank_name": transfer_result["bank_name"],
+                "transfer_reference": transfer_result.get("transfer_reference", ""),
+                "account_expiration": transfer_result.get("account_expiration", ""),
+                "transfer_note": transfer_result.get("transfer_note", ""),
+                "instructions": transfer_result.get("instructions", ""),
                 "tx_ref": tx_ref,
-                "instructions": f"Transfer exactly NGN {transfer_amount:,.2f} via the payment link.",
                 "status": "pending",
             }
 
