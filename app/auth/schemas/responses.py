@@ -516,6 +516,20 @@ class PaymentStatusResponse(_Base):
     intents: list[PaymentIntentStatus] = []
 
 
+class PendingPaymentSummary(_Base):
+    sale_id: str = ""
+    sale_number: str = ""
+    method: str = ""
+    amount: float = 0
+    created_at: str = ""
+    authorization_url: str | None = None
+    qr_code_base64: str | None = None
+    account_number: str | None = None
+    bank_name: str | None = None
+    tx_ref: str | None = None
+    account_expiration: str | None = None
+
+
 # ── Reports ───────────────────────────────────────────────────────────────────
 
 

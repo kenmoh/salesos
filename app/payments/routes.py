@@ -13,6 +13,7 @@ from app.auth.schemas.responses import (
     CashPaymentResult,
     PaymentIntentStatus,
     PaymentStatusResponse,
+    PendingPaymentSummary,
     ResolvedAccount,
     SplitPaymentResult,
     SplitSuggestion,
@@ -224,6 +225,65 @@ async def resolve_account(payload: AccountResolve):
             bank_code=payload.bank_code,
         )
     )
+
+
+@router.get(
+    "/pending",
+    response_model=DataResponse[list[PendingPaymentSummary]],
+    dependencies=[Depends(require_permission("payments:read"))],
+)
+async def pending_payments(ctx: TenantDep):
+    from uuid import UUID
+    from app.payments.repository import get_pending_intents_by_tenant
+    from app.sales.repository import get_sale_by_id
+    from app.catalog.qr import generate_qr_base64
+
+    sdb = _get_sdb("payments")
+    async with sdb.session() as session:
+        intents = await get_pending_intents_by_tenant(session, UUID(ctx.business_id))
+
+    results = []
+    for intent in intents:
+        # Fetch sale details from sales DB
+        sdb_sales = _get_sdb("sales")
+        async with sdb_sales.session() as sales_session:
+            sale = await get_sale_by_id(sales_session, intent.sale_id)
+
+        summary = PendingPaymentSummary(
+            sale_id=str(intent.sale_id),
+            sale_number=sale.sale_number if sale else "",
+            method=intent.method,
+            amount=float(intent.amount),
+            created_at=intent.created_at.isoformat() if intent.created_at else "",
+            authorization_url=intent.authorization_url,
+            tx_ref=intent.gateway_reference,
+            account_number=intent.dva_account_number,
+            bank_name=intent.bank_name,
+        )
+
+        # Generate QR code for card payments if we have authorization_url
+        if intent.method == "card" and intent.authorization_url:
+            try:
+                summary.qr_code_base64 = generate_qr_base64(intent.authorization_url)
+            except Exception:
+                pass
+
+        # Parse metadata for transfer details
+        if intent.method == "transfer" and intent.intent_metadata:
+            try:
+                import json
+                meta = json.loads(intent.intent_metadata) if isinstance(intent.intent_metadata, str) else intent.intent_metadata
+                summary.account_expiration = meta.get("account_expiration")
+                if not summary.account_number:
+                    summary.account_number = meta.get("account_number")
+                if not summary.bank_name:
+                    summary.bank_name = meta.get("bank_name")
+            except Exception:
+                pass
+
+        results.append(summary)
+
+    return ok(results)
 
 
 @router.get(

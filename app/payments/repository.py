@@ -98,6 +98,26 @@ async def update_intent_status(
     await session.flush()
 
 
+async def get_pending_intents_by_tenant(
+    session: AsyncSession, tenant_id: UUID
+) -> list[PaymentIntent]:
+    """Retrieve all pending payment intents for a tenant.
+
+    Args:
+        session: Database session for querying.
+        tenant_id: Unique identifier of the tenant.
+
+    Returns:
+        List of pending PaymentIntent records, newest first.
+    """
+    result = await session.execute(
+        select(PaymentIntent)
+        .where(PaymentIntent.tenant_id == tenant_id, PaymentIntent.status == "pending")
+        .order_by(PaymentIntent.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
 async def create_payment(session: AsyncSession, payment: Payment) -> Payment:
     """Create a new payment record.
 
