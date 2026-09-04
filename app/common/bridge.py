@@ -4715,6 +4715,7 @@ async def list_carts(tenant_id: str) -> list[dict]:
             .outerjoin(CartItem, Cart.id == CartItem.cart_id)
             .where(Cart.tenant_id == UUID(tenant_id), Cart.status == "active")
             .group_by(Cart.id)
+            .having(func.count(CartItem.id) > 0)
             .order_by(Cart.created_at.desc())
         )
         rows = result.all()
