@@ -348,6 +348,69 @@ async def initiate_bank_transfer_charge(
     }
 
 
+async def create_dynamic_virtual_account(
+    *,
+    amount: Decimal,
+    email: str,
+    tx_ref: str,
+    currency: str = "NGN",
+    expires: int = 3600,
+) -> dict:
+    """Create a dynamic virtual account for a bank transfer payment.
+
+    Generates a unique bank account number tied to a specific amount and
+    transaction reference. The customer transfers the exact amount and
+    Flutterwave automatically reconciles via the tx_ref.
+
+    Args:
+        amount: Payment amount in Nigerian Naira.
+        email: Tenant owner's email address.
+        tx_ref: Unique transaction reference for tracking.
+        currency: Currency code (default: "NGN").
+        expires: Account lifetime in seconds (default: 3600 = 1 hour).
+
+    Returns:
+        Dict containing:
+            - "account_number": Virtual bank account number
+            - "bank_name": Bank name
+            - "amount": Payment amount
+            - "tx_ref": Transaction reference
+            - "flw_ref": Flutterwave reference
+            - "order_ref": Order reference
+            - "expiry_date": Account expiry datetime string
+            - "note": Payment note
+
+    Raises:
+        FlutterwaveError: If the virtual account creation fails.
+    """
+    payload = {
+        "email": email,
+        "currency": currency,
+        "amount": _flw_amount(amount),
+        "tx_ref": tx_ref,
+        "expires": str(expires),
+    }
+
+    async with _client() as client:
+        resp = await client.post("/virtual-account-numbers", json=payload)
+        data = resp.json()
+
+    if data.get("status") != "success":
+        raise FlutterwaveError(f"DVA creation failed: {data.get('message')}")
+
+    dva_data = data["data"]
+    return {
+        "account_number": dva_data.get("account_number", ""),
+        "bank_name": dva_data.get("bank_name", ""),
+        "amount": dva_data.get("amount", str(amount)),
+        "tx_ref": tx_ref,
+        "flw_ref": dva_data.get("flw_ref", ""),
+        "order_ref": dva_data.get("order_ref", ""),
+        "expiry_date": dva_data.get("expiry_date", ""),
+        "note": dva_data.get("note", ""),
+    }
+
+
 async def create_subaccount(
     *,
     account_bank: str,

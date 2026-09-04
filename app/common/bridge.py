@@ -6038,24 +6038,22 @@ async def initiate_transfer_payment(
     customer_email: str,
     customer_name: str | None = None,
 ) -> dict:
-    """Initiate a bank transfer payment for a sale via Flutterwave.
+    """Initiate a bank transfer payment for a sale via Flutterwave DVA.
 
-    Creates a Flutterwave bank transfer charge, generates a unique bank
-    account for the customer to transfer to, and persists a payment intent
-    record. The transfer account is temporary and expires after a set period.
+    Creates a dynamic virtual account tied to the sale amount and tx_ref.
+    The customer transfers the exact amount and Flutterwave automatically
+    reconciles via the tx_ref — no manual reference entry needed.
 
     Args:
         business_id: Unique identifier of the tenant processing the payment.
         sale_id: Unique identifier of the sale to collect payment for.
         amount: Amount to charge via bank transfer.
-        customer_email: Email address of the customer for the transfer
-            notification.
+        customer_email: Tenant owner's email address for the DVA.
         customer_name: Optional name of the customer.
 
     Returns:
-        A dictionary containing ``sale_id``, ``account_number``,
-        ``bank_name``, ``amount``, ``tx_ref``, ``transfer_reference``,
-        ``account_expiration``, ``transfer_note``, ``instructions``, and
+        A dictionary containing ``payment_id``, ``sale_id``, ``account_number``,
+        ``bank_name``, ``amount``, ``tx_ref``, ``expiry_date``, and
         ``status: "pending"``.
 
     Raises:
@@ -6073,18 +6071,10 @@ async def initiate_transfer_payment(
 
         tx_ref = f"SF-TRF-{uuid4().hex[:12].upper()}"
 
-        subaccounts = await _build_subaccounts_for_payment(
-            session, UUID(business_id), float(sale.total)
-        )
-
-        transfer_result = await flutterwave_service.initiate_bank_transfer_charge(
+        dva_result = await flutterwave_service.create_dynamic_virtual_account(
             amount=amount,
             email=customer_email,
             tx_ref=tx_ref,
-            fullname=customer_name,
-            narration=f"Payment for sale {sale.sale_number}",
-            meta={"business_id": business_id, "sale_id": sale_id},
-            subaccounts=subaccounts,
         )
 
         intent = PaymentIntent(
@@ -6096,7 +6086,9 @@ async def initiate_transfer_payment(
             currency="NGN",
             status="pending",
             gateway_reference=tx_ref,
-            intent_metadata=str(transfer_result),
+            dva_account_number=dva_result["account_number"],
+            bank_name=dva_result["bank_name"],
+            intent_metadata=str(dva_result),
         )
         await create_intent(session, intent)
         await session.commit()
@@ -6104,14 +6096,11 @@ async def initiate_transfer_payment(
     return {
         "payment_id": str(intent.id),
         "sale_id": sale_id,
-        "account_number": transfer_result["account_number"],
-        "bank_name": transfer_result["bank_name"],
+        "account_number": dva_result["account_number"],
+        "bank_name": dva_result["bank_name"],
         "amount": float(amount),
         "tx_ref": tx_ref,
-        "transfer_reference": transfer_result.get("transfer_reference", ""),
-        "account_expiration": transfer_result.get("account_expiration", ""),
-        "transfer_note": transfer_result.get("transfer_note", ""),
-        "instructions": transfer_result.get("instructions", ""),
+        "expiry_date": dva_result.get("expiry_date", ""),
         "status": "pending",
     }
 
@@ -6247,16 +6236,10 @@ async def process_split_payment(
         if transfer_amount > 0:
             tx_ref = f"SF-TRF-{uuid4().hex[:12].upper()}"
 
-            subaccounts = await _build_subaccounts_for_payment(session, UUID(business_id), total)
-
-            transfer_result = await flutterwave_service.initiate_bank_transfer_charge(
+            dva_result = await flutterwave_service.create_dynamic_virtual_account(
                 amount=transfer_amount,
                 email=customer_email,
                 tx_ref=tx_ref,
-                fullname=customer_name,
-                narration=f"Payment for sale {sale.sale_number}",
-                meta={"business_id": business_id, "sale_id": sale_id},
-                subaccounts=subaccounts,
             )
 
             intent = PaymentIntent(
@@ -6268,21 +6251,19 @@ async def process_split_payment(
                 currency="NGN",
                 status="pending",
                 gateway_reference=tx_ref,
-                intent_metadata=str(transfer_result),
-                expires_at=datetime.now(UTC) + timedelta(hours=24),
+                dva_account_number=dva_result["account_number"],
+                bank_name=dva_result["bank_name"],
+                intent_metadata=str(dva_result),
             )
             await create_intent(session, intent)
 
             result["transfer"] = {
                 "payment_id": str(intent.id),
                 "amount": float(transfer_amount),
-                "account_number": transfer_result["account_number"],
-                "bank_name": transfer_result["bank_name"],
-                "transfer_reference": transfer_result.get("transfer_reference", ""),
-                "account_expiration": transfer_result.get("account_expiration", ""),
-                "transfer_note": transfer_result.get("transfer_note", ""),
-                "instructions": transfer_result.get("instructions", ""),
+                "account_number": dva_result["account_number"],
+                "bank_name": dva_result["bank_name"],
                 "tx_ref": tx_ref,
+                "expiry_date": dva_result.get("expiry_date", ""),
                 "status": "pending",
             }
 
@@ -6380,7 +6361,7 @@ async def confirm_split_card_payment(
         result = await record_payment(
             business_id=business_id,
             sale_id=sale_id,
-            method="card",
+            method=intent.method,
             amount=amount,
             reference=tx_ref,
             gateway_resp=gateway_data,
