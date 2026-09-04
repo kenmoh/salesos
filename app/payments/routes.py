@@ -273,7 +273,7 @@ async def pending_payments(ctx: TenantDep):
             try:
                 import json
                 meta = json.loads(intent.intent_metadata) if isinstance(intent.intent_metadata, str) else intent.intent_metadata
-                summary.account_expiration = meta.get("account_expiration")
+                summary.expiry_date = meta.get("expiry_date")
                 if not summary.account_number:
                     summary.account_number = meta.get("account_number")
                 if not summary.bank_name:

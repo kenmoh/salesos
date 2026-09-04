@@ -460,11 +460,8 @@ class TransferPaymentResult(_Base):
     method: str = "transfer"
     account_number: str | None = None
     bank_name: str | None = None
-    instructions: str | None = None
     tx_ref: str | None = None
-    transfer_reference: str | None = None
-    account_expiration: str | None = None
-    transfer_note: str | None = None
+    expiry_date: str | None = None
 
 
 class SplitSuggestion(_Base):
@@ -527,7 +524,7 @@ class PendingPaymentSummary(_Base):
     account_number: str | None = None
     bank_name: str | None = None
     tx_ref: str | None = None
-    account_expiration: str | None = None
+    expiry_date: str | None = None
 
 
 # ── Reports ───────────────────────────────────────────────────────────────────
