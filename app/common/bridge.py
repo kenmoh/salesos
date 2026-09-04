@@ -5481,6 +5481,7 @@ async def checkout_cart(
             await cart_session.commit()
 
             result_dict = result.model_dump(mode="json")
+            result_dict["sale_id"] = str(result.id)
             result_dict["subtotal"] = round(subtotal, 2)
             result_dict["discount"] = round(float(discount_amount), 2)
             result_dict["coupon_code"] = applied_coupon_code
@@ -5568,6 +5569,7 @@ async def checkout_cart(
         await cart_session.commit()
 
     result_dict = result.model_dump(mode="json")
+    result_dict["sale_id"] = str(result.id)
     result_dict["subtotal"] = round(subtotal, 2)
     result_dict["discount"] = round(float(discount_amount), 2)
     result_dict["coupon_code"] = applied_coupon_code

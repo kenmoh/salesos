@@ -79,7 +79,7 @@ router = APIRouter(prefix="/payments", tags=["Payments"])
     response_model=DataResponse[CashPaymentResult],
     dependencies=[Depends(require_permission("payments:create"))],
 )
-async def cash(payload: PaymentCreate, ctx: TenantDep):
+async def cash(payload: CashPayment, ctx: TenantDep):
     return ok(
         await bridge.record_payment(
             business_id=ctx.user.business_id,
