@@ -354,7 +354,7 @@ async def create_dynamic_virtual_account(
     email: str,
     tx_ref: str,
     currency: str = "NGN",
-    expires: int = 3600,
+    expires: int = 7200,
 ) -> dict:
     """Create a dynamic virtual account for a bank transfer payment.
 
@@ -367,7 +367,7 @@ async def create_dynamic_virtual_account(
         email: Tenant owner's email address.
         tx_ref: Unique transaction reference for tracking.
         currency: Currency code (default: "NGN").
-        expires: Account lifetime in seconds (default: 3600 = 1 hour).
+        expires: Account lifetime in seconds (default: 7200 = 2 hours).
 
     Returns:
         Dict containing:
@@ -388,12 +388,12 @@ async def create_dynamic_virtual_account(
         "currency": currency,
         "amount": _flw_amount(amount),
         "tx_ref": tx_ref,
-        "expires": str(expires),
+        "expires": expires,
     }
 
-    async with _client() as client:
-        resp = await client.post("/virtual-account-numbers", json=payload)
-        data = resp.json()
+    client = _client()
+    resp = await client.post("/virtual-account-numbers", json=payload)
+    data = resp.json()
 
     if data.get("status") != "success":
         raise FlutterwaveError(f"DVA creation failed: {data.get('message')}")
