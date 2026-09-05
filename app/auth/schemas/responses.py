@@ -530,12 +530,21 @@ class PendingPaymentSummary(_Base):
 # ── Reports ───────────────────────────────────────────────────────────────────
 
 
+class _MetricDelta(_Base):
+    current: float = 0
+    previous: float = 0
+    change_pct: float = 0
+
+
 class DashboardSummary(_Base):
-    total_revenue: float = 0
-    total_sales: int = 0
-    avg_order_value: float = 0
-    top_products: list[dict] = []
-    recent_sales: list[dict] = []
+    revenue: _MetricDelta = _MetricDelta()
+    sales_count: _MetricDelta = _MetricDelta()
+    avg_order_value: _MetricDelta = _MetricDelta()
+    top_product: dict | None = None
+    low_stock_count: int = 0
+    active_users: int = 0
+    pending_documents: int = 0
+    payment_collection_rate: float = 0
 
 
 class SalesSummary(_Base):
