@@ -6106,6 +6106,286 @@ async def initiate_transfer_payment(
     }
 
 
+async def initiate_payment(
+    *,
+    business_id: str,
+    cart_id: str,
+    method: str,
+    customer_email: str,
+    customer_name: str | None = None,
+    customer_phone: str | None = None,
+    coupon_code: str | None = None,
+    store_id: str | None = None,
+    actor_id: str | None = None,
+) -> dict:
+    """Create a payment intent from cart state WITHOUT creating a sale.
+
+    Snapshots the cart contents and total, then creates a PaymentIntent.
+    The sale is only created when ``confirm_payment`` is called after
+    payment is confirmed. This prevents orphaned unpaid sales.
+
+    Args:
+        business_id: Tenant identifier.
+        cart_id: Cart to snapshot.
+        method: Payment method ("card", "transfer", "cash").
+        customer_email: Email for Flutterwave payment link / DVA.
+        customer_name: Optional customer name.
+        customer_phone: Optional customer phone.
+        coupon_code: Optional coupon code.
+        store_id: Optional store override.
+        actor_id: Optional cashier user id.
+
+    Returns:
+        Intent details including intent_id, payment URL / DVA details.
+    """
+    from app.cart.repository import get_cart_by_id, get_cart_items
+    from app.cart.models import CartItem as CartItemModel
+    from app.payments.models import PaymentIntent
+    from app.payments.repository import create_intent
+    from app.catalog.qr import generate_qr_base64
+
+    cart_uid = UUID(cart_id)
+    tenant_uid = UUID(business_id)
+
+    sdb_cart = _get_sdb("cart")
+    async with sdb_cart.session() as cart_session:
+        cart = await get_cart_by_id(cart_session, cart_uid)
+        if not cart:
+            raise ValueError("cart_not_found")
+
+        raw_items = await get_cart_items(cart_session, cart_uid)
+        if not raw_items:
+            raise ValueError("cart_empty")
+
+        # Resolve prices from store_products if store_id is available
+        cart_store_id = store_id or (str(cart.store_id) if cart.store_id else None)
+        product_ids = [str(item.product_id) for item in raw_items]
+
+        sdb_catalog = _get_sdb("catalog")
+        async with sdb_catalog.session() as cat_session:
+            from app.catalog.repository import get_product_by_id
+            product_map = {}
+            for pid in product_ids:
+                p = await get_product_by_id(cat_session, UUID(pid))
+                if p:
+                    product_map[pid] = p
+
+        store_product_map = {}
+        if cart_store_id:
+            from app.stores.repository import get_store_product
+            sdb_inv = _get_sdb("inventory")
+            async with sdb_inv.session() as inv_session:
+                for pid in product_ids:
+                    sp = await get_store_product(inv_session, cart_store_id, UUID(pid))
+                    if sp:
+                        store_product_map[pid] = sp
+
+        snapshot_items = []
+        total = Decimal("0")
+        for item in raw_items:
+            pid = str(item.product_id)
+            sp = store_product_map.get(pid)
+            price = float(sp.selling_price) if sp else float(
+                product_map[pid].selling_price if pid in product_map else 0
+            )
+            qty = float(item.qty)
+            snapshot_items.append({
+                "product_id": pid,
+                "qty": qty,
+                "unit_price": price,
+            })
+            total += Decimal(str(price)) * Decimal(str(qty))
+
+        # Resolve discount
+        discount_amount = Decimal("0")
+        if coupon_code:
+            from app.discounts.repository import validate_coupon, increment_coupon_usage
+            coupon_result = await validate_coupon(
+                tenant_id=business_id, code=coupon_code, cart_subtotal=float(total)
+            )
+            if coupon_result.get("valid"):
+                discount_amount = Decimal(str(coupon_result["discount_amount"]))
+                if coupon_result.get("coupon_id"):
+                    await increment_coupon_usage(business_id, coupon_result["coupon_id"])
+            else:
+                raise ValueError(f"invalid_coupon:{coupon_result.get('message', 'Unknown error')}")
+
+        final_total = max(Decimal("0"), total - discount_amount)
+
+    # Create intent
+    tx_ref = f"SF-{method.upper()[:3]}-{uuid4().hex[:12].upper()}"
+    actor_uid = UUID(actor_id) if actor_id else None
+
+    intent = PaymentIntent(
+        id=uuid4(),
+        tenant_id=tenant_uid,
+        sale_id=None,
+        cart_id=cart_uid,
+        method=method,
+        amount=float(final_total),
+        currency="NGN",
+        status="pending",
+        gateway_reference=tx_ref,
+        customer_name=customer_name or cart.customer_name,
+        customer_phone=customer_phone or cart.customer_phone,
+        coupon_code=coupon_code,
+        cart_snapshot=json.dumps({
+            "items": snapshot_items,
+            "store_id": cart_store_id,
+            "actor_id": str(actor_uid) if actor_uid else None,
+            "total": float(total),
+            "discount": float(discount_amount),
+            "final_total": float(final_total),
+        }),
+    )
+
+    sdb_payments = _get_sdb("payments")
+    async with sdb_payments.session() as session:
+        await create_intent(session, intent)
+        await session.commit()
+
+    result = {
+        "intent_id": str(intent.id),
+        "amount": float(final_total),
+        "tx_ref": tx_ref,
+        "method": method,
+        "status": "pending",
+    }
+
+    if method == "card":
+        subaccounts = None
+        async with sdb_payments.session() as session:
+            subaccounts = await _build_subaccounts_for_payment(
+                session, tenant_uid, float(final_total)
+            )
+
+        card_link_result = await flutterwave_service.create_payment_link(
+            amount=final_total,
+            tx_ref=tx_ref,
+            customer_email=customer_email,
+            customer_name=customer_name,
+            payment_options="card",
+            title="StoreFlow Payment",
+            meta={"business_id": business_id, "intent_id": str(intent.id)},
+            subaccounts=subaccounts,
+        )
+
+        qr_base64 = generate_qr_base64(card_link_result["link"])
+
+        async with sdb_payments.session() as session:
+            intent.authorization_url = card_link_result["link"]
+            await session.commit()
+
+        result.update({
+            "payment_url": card_link_result["link"],
+            "qr_code_base64": qr_base64,
+        })
+
+    elif method == "transfer":
+        dva_result = await flutterwave_service.create_dynamic_virtual_account(
+            amount=final_total,
+            email=customer_email,
+            tx_ref=tx_ref,
+        )
+
+        async with sdb_payments.session() as session:
+            intent.dva_account_number = dva_result["account_number"]
+            intent.dva_account_name = dva_result.get("account_name", "")
+            intent.bank_name = dva_result["bank_name"]
+            intent.intent_metadata = json.dumps(dva_result)
+            await session.commit()
+
+        result.update({
+            "account_number": dva_result["account_number"],
+            "bank_name": dva_result["bank_name"],
+            "expiry_date": dva_result.get("expiry_date", ""),
+        })
+
+    return result
+
+
+async def confirm_payment(
+    *,
+    business_id: str,
+    intent_id: str,
+) -> dict:
+    """Confirm a payment intent: create the sale and record the payment.
+
+    Reads the cart snapshot from the intent, calls ``checkout_cart`` to
+    create the sale, then records the payment. Returns the sale details.
+
+    Args:
+        business_id: Tenant identifier.
+        intent_id: Payment intent to confirm.
+
+    Returns:
+        Sale details from ``checkout_cart``.
+
+    Raises:
+        ValueError: If the intent is not found, expired, cancelled, or
+            the cart checkout fails.
+    """
+    from app.payments.models import PaymentIntent
+    from app.payments.repository import update_intent_status
+
+    sdb_payments = _get_sdb("payments")
+    async with sdb_payments.session() as session:
+        intent = await session.get(PaymentIntent, UUID(intent_id))
+        if not intent:
+            raise ValueError("intent_not_found")
+        if intent.status != "pending":
+            raise ValueError(f"intent_not_status:{intent.status}")
+        if intent.expires_at and intent.expires_at < datetime.now(UTC):
+            intent.status = "expired"
+            await session.commit()
+            raise ValueError("intent_expired")
+
+        snapshot = json.loads(intent.cart_snapshot or "{}")
+        intent_cart_id = str(intent.cart_id) if intent.cart_id else None
+        if not intent_cart_id:
+            raise ValueError("intent_no_cart")
+
+    # Create the sale via checkout_cart
+    sale_result = await checkout_cart(
+        tenant_id=business_id,
+        cart_id=intent_cart_id,
+        actor_id=snapshot.get("actor_id"),
+        items=snapshot.get("items"),
+        customer_name=intent.customer_name,
+        customer_phone=intent.customer_phone,
+        store_id=snapshot.get("store_id"),
+        coupon_code=intent.coupon_code,
+    )
+
+    sale_id = str(sale_result["id"])
+
+    # Record the payment
+    payment_result = await record_payment(
+        business_id=business_id,
+        sale_id=sale_id,
+        method=intent.method,
+        amount=Decimal(str(intent.amount)),
+        reference=intent.gateway_reference,
+    )
+
+    # Update intent status
+    async with sdb_payments.session() as session:
+        intent = await session.get(PaymentIntent, UUID(intent_id))
+        if intent:
+            intent.sale_id = UUID(sale_id)
+            intent.status = "completed"
+            await session.commit()
+
+    return {
+        "sale_id": sale_id,
+        "sale_number": sale_result.get("sale_number", ""),
+        "total": sale_result.get("total", 0),
+        "amount_paid": sale_result.get("amount_paid", 0),
+        "status": sale_result.get("status", ""),
+        "payment": payment_result,
+    }
+
+
 async def process_split_payment(
     *,
     business_id: str,

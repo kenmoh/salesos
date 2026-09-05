@@ -147,7 +147,8 @@ class PaymentIntent(StoreFlowBase):
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
-    sale_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    sale_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
+    cart_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
     method: Mapped[str] = mapped_column(String(30), nullable=False)
     amount: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="NGN")
@@ -159,6 +160,10 @@ class PaymentIntent(StoreFlowBase):
     dva_account_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
     dva_account_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     bank_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    customer_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    customer_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    coupon_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    cart_snapshot: Mapped[dict] = mapped_column("cart_snapshot", Text, nullable=True, default="{}")
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     intent_metadata: Mapped[dict] = mapped_column("metadata", Text, nullable=True, default="{}")
     created_at: Mapped[datetime] = mapped_column(

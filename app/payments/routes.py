@@ -125,6 +125,55 @@ async def transfer(payload: TransferPaymentInit, ctx: TenantDep):
     )
 
 
+class InitiatePaymentRequest(BaseModel):
+    cart_id: str
+    method: str
+    customer_email: str
+    customer_name: str | None = None
+    customer_phone: str | None = None
+    coupon_code: str | None = None
+    store_id: str | None = None
+
+
+class ConfirmPaymentRequest(BaseModel):
+    intent_id: str
+
+
+@router.post(
+    "/initiate",
+    response_model=DataResponse[dict],
+    dependencies=[Depends(require_permission("payments:create"))],
+)
+async def initiate_payment_route(payload: InitiatePaymentRequest, ctx: TenantDep):
+    return ok(
+        await bridge.initiate_payment(
+            business_id=ctx.user.business_id,
+            cart_id=payload.cart_id,
+            method=payload.method,
+            customer_email=payload.customer_email,
+            customer_name=payload.customer_name,
+            customer_phone=payload.customer_phone,
+            coupon_code=payload.coupon_code,
+            store_id=payload.store_id,
+            actor_id=ctx.user.user_id,
+        )
+    )
+
+
+@router.post(
+    "/confirm",
+    response_model=DataResponse[dict],
+    dependencies=[Depends(require_permission("payments:create"))],
+)
+async def confirm_payment_route(payload: ConfirmPaymentRequest, ctx: TenantDep):
+    return ok(
+        await bridge.confirm_payment(
+            business_id=ctx.user.business_id,
+            intent_id=payload.intent_id,
+        )
+    )
+
+
 @router.get(
     "/split/suggest/{sale_id}",
     response_model=DataResponse[SplitSuggestion],
@@ -311,10 +360,52 @@ async def payment_status(sale_id: str, ctx: TenantDep):
     from uuid import UUID
     from sqlalchemy import select
     from app.payments.models import PaymentIntent, Payment
-    from app.sales.repository import get_sale_by_id
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
+        # Check if this is an intent_id (no sale exists yet in intent-first flow)
+        intent_result = await session.execute(
+            select(PaymentIntent).where(PaymentIntent.id == UUID(sale_id))
+        )
+        intent = intent_result.scalar_one_or_none()
+
+        if intent:
+            intent_status = PaymentIntentStatus(
+                method=intent.method,
+                status=intent.status,
+                tx_ref=intent.gateway_reference,
+                amount=intent.amount,
+            )
+
+            if intent.sale_id:
+                from app.sales.repository import get_sale_by_id
+                sale = await get_sale_by_id(session, intent.sale_id)
+                payments_result = await session.execute(
+                    select(Payment).where(Payment.sale_id == intent.sale_id)
+                )
+                payments = payments_result.scalars().all()
+                amount_paid = sum(float(p.amount) for p in payments)
+                sale_total = float(sale.total) if sale else float(intent.amount)
+            else:
+                from app.catalog.qr import generate_qr_base64
+                payments = []
+                amount_paid = 0.0
+                sale_total = float(intent.amount)
+
+            status = intent.status
+
+            return ok(
+                PaymentStatusResponse(
+                    sale_id=sale_id,
+                    status=status,
+                    amount_paid=round(amount_paid, 2),
+                    total=sale_total,
+                    intents=[intent_status],
+                )
+            )
+
+        # Legacy: look up by sale_id
+        from app.sales.repository import get_sale_by_id
         sale = await get_sale_by_id(session, UUID(sale_id))
         if not sale:
             raise HTTPException(status_code=404, detail="Sale not found")
@@ -390,7 +481,20 @@ async def flutterwave_webhook(request: Request, verif_hash: str = Header(default
         meta = data.get("meta", {}) or {}
         business_id = meta.get("business_id")
         sale_id = meta.get("sale_id")
+        intent_id = meta.get("intent_id")
 
+        # Intent-first flow: confirm the intent which creates the sale
+        if business_id and intent_id:
+            try:
+                await bridge.confirm_payment(
+                    business_id=business_id,
+                    intent_id=intent_id,
+                )
+                return ok({"received": True, "confirmed": True})
+            except ValueError:
+                pass
+
+        # Legacy flow
         if business_id and sale_id:
             try:
                 await bridge.confirm_split_card_payment(
@@ -406,6 +510,22 @@ async def flutterwave_webhook(request: Request, verif_hash: str = Header(default
         tx_ref = data.get("tx_ref", "")
         meta = data.get("meta", {}) or {}
         business_id = meta.get("business_id")
+        intent_id = meta.get("intent_id")
+
+        # Mark intent as failed
+        if intent_id:
+            try:
+                from uuid import UUID
+                from app.payments.models import PaymentIntent
+                sdb = _get_sdb("payments")
+                async with sdb.session() as session:
+                    intent = await session.get(PaymentIntent, UUID(intent_id))
+                    if intent:
+                        intent.status = "failed"
+                        await session.commit()
+            except Exception:
+                pass
+
         import logging
         logger = logging.getLogger("storeflow.payments.webhook")
         logger.warning("Payment failed: tx_ref=%s business_id=%s", tx_ref, business_id)
@@ -415,7 +535,20 @@ async def flutterwave_webhook(request: Request, verif_hash: str = Header(default
         meta = data.get("meta", {}) or {}
         business_id = meta.get("business_id")
         sale_id = meta.get("sale_id")
+        intent_id = meta.get("intent_id")
 
+        # Intent-first flow
+        if business_id and intent_id:
+            try:
+                await bridge.confirm_payment(
+                    business_id=business_id,
+                    intent_id=intent_id,
+                )
+                return ok({"received": True, "confirmed": True})
+            except ValueError:
+                pass
+
+        # Legacy flow
         if business_id and sale_id:
             try:
                 await bridge.confirm_split_transfer_payment(
