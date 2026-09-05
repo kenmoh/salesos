@@ -1,7 +1,7 @@
 import json
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from app.core.dependencies import TenantDep, require_permission
@@ -225,6 +225,22 @@ async def resolve_account(payload: AccountResolve):
             bank_code=payload.bank_code,
         )
     )
+
+
+@router.post(
+    "/cancel-pending",
+    dependencies=[Depends(require_permission("payments:manage"))],
+)
+async def cancel_pending_intents(ctx: TenantDep, sale_id: str = Body(..., embed=True)):
+    from uuid import UUID
+    from app.payments.repository import cancel_pending_intents_by_sale
+
+    sdb = _get_sdb("payments")
+    async with sdb.session() as session:
+        count = await cancel_pending_intents_by_sale(session, UUID(sale_id))
+        await session.commit()
+
+    return {"cancelled": count}
 
 
 @router.get(
