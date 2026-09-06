@@ -96,6 +96,7 @@ class ApiSettings(BaseSettings):
         default="https://api.flutterwave.com/v3", alias="FLUTTERWAVE_BASE_URL"
     )
 
+
     api_base_url: str = Field(
         default="http://localhost:8000", alias="API_BASE_URL"
     )
