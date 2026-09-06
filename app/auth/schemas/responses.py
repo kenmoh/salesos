@@ -548,17 +548,18 @@ class DashboardSummary(_Base):
 
 
 class SalesSummary(_Base):
-    total_revenue: float = 0
-    total_sales: int = 0
-    avg_order_value: float = 0
-    period: dict = {}
+    items: list[dict] = []
+    totals: dict = {}
 
 
 class TopProduct(_Base):
     product_id: str
     product_name: str
-    total_qty: float = 0
-    total_revenue: float = 0
+    sku: str = ""
+    qty_sold: float = 0
+    revenue: float = 0
+    avg_selling_price: float = 0
+    margin_pct: float = 0
 
 
 class PaymentBreakdown(_Base):
@@ -569,11 +570,11 @@ class PaymentBreakdown(_Base):
 
 
 class CashierPerformanceItem(_Base):
-    cashier_id: str
-    cashier_name: str | None = None
-    total_sales: int = 0
+    user_id: str
+    sales_count: int = 0
     total_revenue: float = 0
-    avg_order_value: float = 0
+    avg_transaction: float = 0
+    void_count: int = 0
 
 
 class InventoryAlertsSummary(_Base):
@@ -598,17 +599,13 @@ class ProfitLossResult(_Base):
 
 
 class CustomerInsightsResult(_Base):
-    total_customers: int = 0
-    repeat_customers: int = 0
-    avg_order_value: float = 0
+    summary: dict = {}
     top_customers: list[dict] = []
 
 
 class DocumentSummaryResult(_Base):
-    total_invoices: int = 0
-    total_quotes: int = 0
-    total_receipts: int = 0
-    outstanding_amount: float = 0
+    summary: dict = {}
+    aging: list[dict] = []
 
 
 # ── Documents ─────────────────────────────────────────────────────────────────
