@@ -96,6 +96,10 @@ class ApiSettings(BaseSettings):
         default="https://api.flutterwave.com/v3", alias="FLUTTERWAVE_BASE_URL"
     )
 
+    google_client_id: str = Field(default="", alias="GOOGLE_CLIENT_ID")
+    google_client_secret: str = Field(default="", alias="GOOGLE_CLIENT_SECRET")
+    apple_client_id: str = Field(default="", alias="APPLE_CLIENT_ID")
+
 
     api_base_url: str = Field(
         default="http://localhost:8000", alias="API_BASE_URL"

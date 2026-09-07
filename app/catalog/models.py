@@ -82,7 +82,9 @@ class Product(StoreFlowBase):
     unit: Mapped[str] = mapped_column(String(20), nullable=False, default="unit")
     cost_price: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False, default=0)
     selling_price: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
-    tax_rate: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    tax_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("taxes.id"), nullable=True
+    )
     reorder_point: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     track_inventory: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)

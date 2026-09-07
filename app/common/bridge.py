@@ -275,6 +275,8 @@ async def create_tenant(
                 "coupons:read",
                 "coupons:update",
                 "coupons:delete",
+                "taxes:read",
+                "taxes:manage",
             ],
             "cashier": [
                 "auth:login",
@@ -372,6 +374,11 @@ async def create_tenant(
         from app.accounting.seed import seed_chart_of_accounts
 
         await seed_chart_of_accounts(tenant_uid, session)
+
+        # Seed default tax types for the new tenant
+        from app.taxes.seed import seed_default_taxes
+
+        await seed_default_taxes(tenant_uid, session)
 
         await session.commit()
 
@@ -821,7 +828,7 @@ async def create_products(
                 store_id=store_id or "",
                 product_id=str(result.product_id),
             )
-            png_bytes = generate_qr_png(qr_url, box_size=20, border=4)
+            png_bytes = generate_qr_png(qr_url, box_size=6, border=3)
             upload_result = upload_qr_png(
                 tenant_id=tenant_id,
                 product_id=str(result.product_id),
@@ -1864,6 +1871,7 @@ async def create_store(
     name: str,
     address: str | None = None,
     is_warehouse: bool = False,
+    tax_enabled: bool = False,
     actor_id: str | None = None,
     correlation_id: str | None = None,
 ) -> dict:
@@ -1907,6 +1915,7 @@ async def create_store(
         name=name,
         address=address,
         is_warehouse=is_warehouse,
+        tax_enabled=tax_enabled,
     )
 
     result, store_model = plan_create_store(command, existing_main_count=main_count)
@@ -2345,7 +2354,7 @@ async def create_product_for_store(
             store_id=store_id,
             product_id=str(product.id),
         )
-        png_bytes = generate_qr_png(qr_payload, box_size=20, border=4)
+        png_bytes = generate_qr_png(qr_payload, box_size=6, border=3)
         upload = upload_qr_png(
             tenant_id=tenant_id,
             product_id=str(product.id),
@@ -4302,22 +4311,22 @@ async def get_product_by_id(tenant_id: str, product_id: str) -> dict | None:
         }
 
 
-SIZE_PRESETS = {"small": 6, "medium": 10, "large": 20}
+SIZE_PRESETS = {"small": 6, "medium": 8, "large": 10}
 
 
 async def get_product_qr_download(
-    tenant_id: str, product_id: str, box_size: int = 20
+    tenant_id: str, product_id: str, box_size: int = 6
 ) -> str | tuple[bytes, str] | None:
     """Retrieve the QR code for a product, either as a URL or generated PNG bytes.
 
-    When box_size matches the stored image (20), returns the Cloudinary URL.
+    When box_size matches the stored image (6), returns the Cloudinary URL.
     For any other size, generates a fresh PNG from the qr_payload.
 
     Args:
         tenant_id: Unique identifier of the tenant that owns the product.
         product_id: Unique identifier of the product whose QR code is
             being requested.
-        box_size: QR image box size (6=small, 10=medium, 20=large).
+        box_size: QR image box size (6=small, 8=medium, 10=large).
 
     Returns:
         A URL string, a tuple of ``(png_bytes, public_id)``, or ``None``.
@@ -4330,7 +4339,7 @@ async def get_product_qr_download(
         product = await get_product_by_id(session, UUID(product_id))
         if not product or str(product.tenant_id) != tenant_id:
             return None
-        if box_size == 20 and product.qr_url and product.qr_url.startswith("http"):
+        if box_size == 6 and product.qr_url and product.qr_url.startswith("http"):
             return product.qr_url
         if product.qr_payload:
             png_bytes = generate_qr_png(product.qr_payload, box_size=box_size, border=4)
@@ -5378,6 +5387,42 @@ async def checkout_cart(
                             store_product_map[p.public_id] = sp
 
             product_map = {p.public_id: p for p in products}
+            cost_map = {}
+            for pid, sp in store_product_map.items():
+                cost_map[pid] = float(sp.cost_price) if hasattr(sp, "cost_price") else 0
+
+            # Resolve tax info: check store tax_enabled + collect tax_ids
+            tax_enabled = False
+            tax_rate_map: dict[UUID, float] = {}
+            if cart_store_id:
+                from app.stores.repository import get_store
+                sdb_inv = _get_sdb("inventory")
+                async with sdb_inv.session() as inv_session:
+                    store = await get_store(inv_session, UUID(str(cart_store_id)))
+                    if store:
+                        tax_enabled = getattr(store, "tax_enabled", False)
+
+                if tax_enabled:
+                    # Collect unique tax_ids from store_products and catalog products
+                    tax_ids: set[UUID] = set()
+                    for sp in store_product_map.values():
+                        if hasattr(sp, "tax_id") and sp.tax_id:
+                            tax_ids.add(sp.tax_id)
+                    for p in products:
+                        if hasattr(p, "tax_id") and p.tax_id:
+                            tax_ids.add(p.tax_id)
+
+                    # Batch-fetch tax rates
+                    if tax_ids:
+                        from app.taxes.models import Tax
+                        from sqlalchemy import select as sa_select
+                        async with sdb_inv.session() as tax_session:
+                            result = await tax_session.execute(
+                                sa_select(Tax).where(Tax.id.in_(tax_ids), Tax.is_active == True)
+                            )
+                            for tax in result.scalars().all():
+                                tax_rate_map[tax.id] = float(tax.rate)
+
             resolved = []
             for i in validated:
                 sp = store_product_map.get(i.product_public_id)
@@ -5406,15 +5451,29 @@ async def checkout_cart(
             cart_items, cart_item_outbox = plan_bulk_add_items(checkout_command, resolved)
 
             # Build sale items
-            sale_items = [
-                SaleItemLine(
-                    product_id=product_map[i.product_public_id].id,
+            sale_items = []
+            for i in validated:
+                pid = product_map[i.product_public_id].id
+                sp = store_product_map.get(i.product_public_id)
+                # Resolve tax_id: prefer store_product, fallback to catalog product
+                item_tax_id = None
+                item_tax_rate = None
+                if tax_enabled:
+                    if sp and hasattr(sp, "tax_id") and sp.tax_id:
+                        item_tax_id = sp.tax_id
+                    elif hasattr(product_map[i.product_public_id], "tax_id") and product_map[i.product_public_id].tax_id:
+                        item_tax_id = product_map[i.product_public_id].tax_id
+                    if item_tax_id and item_tax_id in tax_rate_map:
+                        item_tax_rate = tax_rate_map[item_tax_id]
+
+                sale_items.append(SaleItemLine(
+                    product_id=pid,
                     product_name=product_map[i.product_public_id].name,
                     qty=i.qty,
                     unit_price=Decimal(str(product_map[i.product_public_id].selling_price)),
-                )
-                for i in validated
-            ]
+                    tax_id=item_tax_id,
+                    tax_rate=Decimal(str(item_tax_rate)) if item_tax_rate else None,
+                ))
 
             # Calculate subtotal
             subtotal = sum(
@@ -5470,6 +5529,56 @@ async def checkout_cart(
                     sales_session.add(write.to_model())
                 await sales_session.commit()
 
+            # Auto-journal: create accounting entries for the sale
+            from app.accounting.service import plan_sale_journal
+            from app.accounting.repository import (
+                create_journal,
+                create_journal_entry,
+                get_account_by_code,
+            )
+            from app.accounting.repository import post_journal as repo_post_journal
+
+            sdb_acct = _get_sdb("accounting")
+            async with sdb_acct.session() as acct_session:
+                journal_items = [
+                    {
+                        "product_name": si.product_name,
+                        "qty": float(si.qty),
+                        "unit_price": float(si.unit_price),
+                        "cost_price": cost_map.get(str(pid), 0),
+                    }
+                    for pid, si in zip(
+                        [product_map[i.product_public_id].id for i in validated],
+                        sale_items,
+                    )
+                ]
+                journal, journal_entries = plan_sale_journal(
+                    tenant_id=UUID(tenant_id),
+                    sale_id=result.id,
+                    sale_number=result.sale_number,
+                    sale_items=journal_items,
+                    total=float(result.total),
+                    discount=float(discount_amount),
+                    tax_amount=float(result.tax),
+                    cashier_id=UUID(actor_id) if actor_id else None,
+                )
+
+                # Resolve account IDs from Chart of Accounts
+                for acct_code in ["1000", "2300", "4000", "5000", "1200"]:
+                    acct = await get_account_by_code(acct_session, UUID(tenant_id), acct_code)
+                    if acct:
+                        for entry in journal_entries:
+                            if entry.account_code == acct_code:
+                                entry.account_id = acct.id
+
+                await create_journal(acct_session, journal)
+                for entry in journal_entries:
+                    entry.status = "posted"
+                    entry.posted_at = journal.posted_at
+                    await create_journal_entry(acct_session, entry)
+                await repo_post_journal(acct_session, journal.id, UUID(actor_id) if actor_id else None)
+                await acct_session.commit()
+
             # Bulk-insert cart items + checkout in one cart transaction
             if cart_items:
                 await bulk_add_cart_items(cart_session, cart_items)
@@ -5491,12 +5600,40 @@ async def checkout_cart(
         if not existing_items:
             raise ValueError("cart_empty")
 
+        # Resolve tax for legacy flow
+        legacy_tax_enabled = False
+        legacy_tax_rate_map: dict[UUID, float] = {}
+        cart_store_id_legacy = getattr(cart, "store_id", None)
+        if cart_store_id_legacy:
+            from app.stores.repository import get_store
+            sdb_inv_legacy = _get_sdb("inventory")
+            async with sdb_inv_legacy.session() as inv_session:
+                store = await get_store(inv_session, UUID(str(cart_store_id_legacy)))
+                if store:
+                    legacy_tax_enabled = getattr(store, "tax_enabled", False)
+            if legacy_tax_enabled:
+                tax_ids_legacy: set[UUID] = set()
+                for ci in existing_items:
+                    if hasattr(ci, "tax_id") and ci.tax_id:
+                        tax_ids_legacy.add(ci.tax_id)
+                if tax_ids_legacy:
+                    from app.taxes.models import Tax
+                    from sqlalchemy import select as sa_select
+                    async with sdb_inv_legacy.session() as tax_session:
+                        result = await tax_session.execute(
+                            sa_select(Tax).where(Tax.id.in_(tax_ids_legacy), Tax.is_active == True)
+                        )
+                        for tax in result.scalars().all():
+                            legacy_tax_rate_map[tax.id] = float(tax.rate)
+
         sale_items = [
             SaleItemLine(
                 product_id=i.product_id,
                 product_name=i.name,
                 qty=Decimal(str(i.qty)),
                 unit_price=Decimal(str(i.unit_price)),
+                tax_id=getattr(i, "tax_id", None),
+                tax_rate=Decimal(str(legacy_tax_rate_map[getattr(i, "tax_id", None)])) if getattr(i, "tax_id", None) and getattr(i, "tax_id", None) in legacy_tax_rate_map else None,
             )
             for i in existing_items
         ]
@@ -5560,6 +5697,52 @@ async def checkout_cart(
         for write in outbox:
             sales_session.add(write.to_model())
         await sales_session.commit()
+
+    # Auto-journal: create accounting entries for the sale
+    from app.accounting.service import plan_sale_journal
+    from app.accounting.repository import (
+        create_journal,
+        create_journal_entry,
+        get_account_by_code,
+    )
+    from app.accounting.repository import post_journal as repo_post_journal
+
+    sdb_acct = _get_sdb("accounting")
+    async with sdb_acct.session() as acct_session:
+        journal_items = [
+            {
+                "product_name": si.product_name,
+                "qty": float(si.qty),
+                "unit_price": float(si.unit_price),
+                "cost_price": 0,  # Legacy flow has no cost data
+            }
+            for si in sale_items
+        ]
+        journal, journal_entries = plan_sale_journal(
+            tenant_id=UUID(tenant_id),
+            sale_id=result.id,
+            sale_number=result.sale_number,
+            sale_items=journal_items,
+            total=float(result.total),
+            discount=float(discount_amount),
+            tax_amount=float(result.tax),
+            cashier_id=UUID(actor_id) if actor_id else None,
+        )
+
+        for acct_code in ["1000", "2300", "4000", "5000", "1200"]:
+            acct = await get_account_by_code(acct_session, UUID(tenant_id), acct_code)
+            if acct:
+                for entry in journal_entries:
+                    if entry.account_code == acct_code:
+                        entry.account_id = acct.id
+
+        await create_journal(acct_session, journal)
+        for entry in journal_entries:
+            entry.status = "posted"
+            entry.posted_at = journal.posted_at
+            await create_journal_entry(acct_session, entry)
+        await repo_post_journal(acct_session, journal.id, UUID(actor_id) if actor_id else None)
+        await acct_session.commit()
 
     async with sdb_cart.session() as cart_session:
         await update_cart_status(cart_session, cart_uid, "checked_out")
@@ -6304,6 +6487,99 @@ async def initiate_payment(
     return result
 
 
+async def build_receipt_data(
+    *,
+    business_id: str,
+    sale_id: str,
+    store_id: str | None = None,
+    payment_method: str = "cash",
+) -> dict:
+    """Build complete receipt data for a completed sale.
+
+    Queries business info, store info, sale items, and generates a
+    receipt number. Returns a dict ready for the frontend to render
+    a thermal receipt and trigger printing.
+
+    Args:
+        business_id: Tenant identifier.
+        sale_id: The completed sale's identifier.
+        store_id: Optional store identifier for store details.
+        payment_method: Payment method used (cash, card, transfer).
+
+    Returns:
+        Dictionary with business, store, sale, items, and receipt data.
+    """
+    from app.tenancy.repository import get_tenant_by_id
+    from app.sales.repository import get_sale_by_id, get_sale_items
+    from app.sales.models import Sale
+
+    # Fetch business info
+    business_name = ""
+    business_phone = ""
+    business_logo_url = ""
+    sdb_tenancy = _get_sdb("tenancy")
+    async with sdb_tenancy.session() as session:
+        tenant = await get_tenant_by_id(session, UUID(business_id))
+        if tenant:
+            business_name = tenant.business_name or ""
+            business_phone = tenant.owner_phone or ""
+            settings = json.loads(tenant.settings) if isinstance(tenant.settings, str) else (tenant.settings or {})
+            business_logo_url = settings.get("logo_url", "")
+
+    # Fetch store info
+    store_name = ""
+    store_address = ""
+    if store_id:
+        from app.stores.repository import get_store_by_id
+        sdb_inventory = _get_sdb("inventory")
+        async with sdb_inventory.session() as session:
+            store = await get_store_by_id(session, UUID(store_id))
+            if store:
+                store_name = store.name or ""
+                store_address = store.address or ""
+
+    # Fetch sale and items
+    sdb_sales = _get_sdb("sales")
+    async with sdb_sales.session() as session:
+        sale = await session.get(Sale, UUID(sale_id))
+        items_raw = await get_sale_items(session, UUID(sale_id))
+
+    items = [
+        {
+            "product_name": si.product_name,
+            "qty": float(si.qty),
+            "unit_price": float(si.unit_price),
+            "discount_pct": float(si.discount_pct or 0),
+            "tax_rate": float(si.tax_rate) if si.tax_rate else None,
+            "line_total": float(si.line_total),
+        }
+        for si in items_raw
+    ]
+
+    # Generate receipt number
+    receipt_number = f"RCP-{datetime.now(UTC).strftime('%Y%m%d')}-{uuid4().hex[:8].upper()}"
+
+    return {
+        "receipt_number": receipt_number,
+        "business_name": business_name,
+        "business_phone": business_phone,
+        "business_address": "",  # Business-level address not on Tenant model
+        "logo_url": business_logo_url,
+        "store_name": store_name,
+        "store_address": store_address,
+        "sale_number": sale.sale_number if sale else "",
+        "created_at": sale.created_at.isoformat() if sale and sale.created_at else datetime.now(UTC).isoformat(),
+        "customer_name": sale.customer_name if sale else None,
+        "items": items,
+        "subtotal": float(sale.subtotal) if sale else 0,
+        "discount": float(sale.discount) if sale else 0,
+        "tax": float(sale.tax) if sale else 0,
+        "total": float(sale.total) if sale else 0,
+        "amount_paid": float(sale.amount_paid) if sale else 0,
+        "payment_method": payment_method,
+    }
+
+
 async def confirm_payment(
     *,
     business_id: str,
@@ -6312,14 +6588,15 @@ async def confirm_payment(
     """Confirm a payment intent: create the sale and record the payment.
 
     Reads the cart snapshot from the intent, calls ``checkout_cart`` to
-    create the sale, then records the payment. Returns the sale details.
+    create the sale, then records the payment. Returns the sale details
+    and complete receipt data for auto-printing.
 
     Args:
         business_id: Tenant identifier.
         intent_id: Payment intent to confirm.
 
     Returns:
-        Sale details from ``checkout_cart``.
+        Sale details and receipt data from ``checkout_cart``.
 
     Raises:
         ValueError: If the intent is not found, expired, cancelled, or
@@ -6376,6 +6653,14 @@ async def confirm_payment(
             intent.status = "completed"
             await session.commit()
 
+    # Build receipt data for auto-printing
+    receipt_data = await build_receipt_data(
+        business_id=business_id,
+        sale_id=sale_id,
+        store_id=snapshot.get("store_id"),
+        payment_method=intent.method,
+    )
+
     return {
         "sale_id": sale_id,
         "sale_number": sale_result.get("sale_number", ""),
@@ -6383,6 +6668,7 @@ async def confirm_payment(
         "amount_paid": sale_result.get("amount_paid", 0),
         "status": sale_result.get("status", ""),
         "payment": payment_result,
+        "receipt": receipt_data,
     }
 
 

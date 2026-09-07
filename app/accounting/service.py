@@ -710,6 +710,141 @@ def plan_create_expense(
     return result, expense, journal, [expense_entry, cash_entry], []
 
 
+def plan_sale_journal(
+    tenant_id: UUID,
+    sale_id: UUID,
+    sale_number: str,
+    sale_items: list[dict],
+    total: float,
+    discount: float,
+    tax_amount: float = 0,
+    cashier_id: UUID | None = None,
+) -> tuple[Journal, list[JournalEntry]]:
+    """Plan automatic journal entries for a completed sale.
+
+    Creates double-entry bookkeeping records:
+        1. Debit:  Cash/Bank (1000) -- increases cash
+        2. Credit: Sales Revenue (4000) -- records revenue (total minus tax)
+        3. Credit: VAT Payable (2300) -- tax collected, owed to government
+        4. Debit:  Cost of Goods Sold (5000) -- records cost
+        5. Credit: Inventory (1200) -- decreases inventory
+
+    Args:
+        tenant_id: The business tenant UUID.
+        sale_id: The sale UUID to link the journal to.
+        sale_number: The sale number for the journal description.
+        sale_items: List of dicts with keys: product_name, qty, unit_price, cost_price.
+        total: The total sale amount (after discount, including tax).
+        discount: The discount amount applied.
+        tax_amount: The tax amount collected (goes to VAT Payable liability).
+        cashier_id: The user who processed the sale.
+
+    Returns:
+        A tuple of (Journal, list[JournalEntry]).
+    """
+    journal_id = uuid4()
+    journal_number = f"JRN-{datetime.now(UTC).strftime('%Y%m%d')}-{str(journal_id)[:8].upper()}"
+
+    journal = Journal(
+        id=journal_id,
+        tenant_id=tenant_id,
+        journal_number=journal_number,
+        description=f"Sale: {sale_number}",
+        reference_id=sale_id,
+        reference_type="sale",
+        status="draft",
+    )
+
+    entries: list[JournalEntry] = []
+    revenue = total - tax_amount
+
+    # 1. Debit: Cash/Bank (1000) -- money received
+    entries.append(JournalEntry(
+        id=uuid4(),
+        journal_id=journal_id,
+        tenant_id=tenant_id,
+        account_id=uuid4(),  # Resolved by bridge layer
+        account_code="1000",
+        debit=total,
+        credit=0,
+        description=f"Cash received: {sale_number}",
+        type="asset",
+        status="draft",
+        amount=total,
+    ))
+
+    # 2. Credit: Sales Revenue (4000) -- revenue earned (excluding tax)
+    entries.append(JournalEntry(
+        id=uuid4(),
+        journal_id=journal_id,
+        tenant_id=tenant_id,
+        account_id=uuid4(),  # Resolved by bridge layer
+        account_code="4000",
+        debit=0,
+        credit=revenue,
+        description=f"Revenue: {sale_number}",
+        type="revenue",
+        status="draft",
+        amount=revenue,
+    ))
+
+    # 3. Credit: VAT Payable (2300) -- tax liability (if tax > 0)
+    if tax_amount > 0:
+        entries.append(JournalEntry(
+            id=uuid4(),
+            journal_id=journal_id,
+            tenant_id=tenant_id,
+            account_id=uuid4(),  # Resolved by bridge layer
+            account_code="2300",
+            debit=0,
+            credit=tax_amount,
+            description=f"VAT collected: {sale_number}",
+            type="liability",
+            status="draft",
+            amount=tax_amount,
+        ))
+
+    # 3 & 4. COGS + Inventory (only if cost data available)
+    total_cost = sum(
+        float(item.get("cost_price", 0)) * float(item.get("qty", 0))
+        for item in sale_items
+        if item.get("cost_price")
+    )
+
+    if total_cost > 0:
+        # 3. Debit: COGS (5000) -- cost of items sold
+        entries.append(JournalEntry(
+            id=uuid4(),
+            journal_id=journal_id,
+            tenant_id=tenant_id,
+            account_id=uuid4(),  # Resolved by bridge layer
+            account_code="5000",
+            debit=total_cost,
+            credit=0,
+            description=f"COGS: {sale_number}",
+            type="expense",
+            status="draft",
+            amount=total_cost,
+        ))
+
+        # 4. Credit: Inventory (1200) -- inventory reduced
+        entries.append(JournalEntry(
+            id=uuid4(),
+            journal_id=journal_id,
+            tenant_id=tenant_id,
+            account_id=uuid4(),  # Resolved by bridge layer
+            account_code="1200",
+            debit=0,
+            credit=total_cost,
+            description=f"Inventory reduction: {sale_number}",
+            type="asset",
+            status="draft",
+            amount=total_cost,
+        ))
+
+    return journal, entries
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  HELPER FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════════

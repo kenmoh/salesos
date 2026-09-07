@@ -144,6 +144,7 @@ def create_app() -> FastAPI:
     from app.ai.routes import router as ai_router
     from app.discounts.routes import router as discounts_router
     from app.discounts.routes import coupon_router
+    from app.taxes.routes import router as taxes_router
 
     for router in (
         auth_router,
@@ -160,6 +161,7 @@ def create_app() -> FastAPI:
         ai_router,
         discounts_router,
         coupon_router,
+        taxes_router,
     ):
         app.include_router(router, prefix=prefix)
 
@@ -174,6 +176,10 @@ def create_app() -> FastAPI:
     from app.stores.routes_sync import sync_router
 
     app.include_router(sync_router, prefix=prefix)
+
+    from app.notifications.routes import notif_router
+
+    app.include_router(notif_router, prefix=prefix)
 
     # --- Health / Readiness ---
 

@@ -27,6 +27,7 @@ async def create_store(payload: StoreCreate, ctx: TenantDep):
             name=payload.name,
             address=payload.address,
             is_warehouse=payload.is_warehouse,
+            tax_enabled=payload.tax_enabled,
             actor_id=ctx.user.user_id,
         )
         return ok(result)

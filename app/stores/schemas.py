@@ -8,12 +8,14 @@ class StoreCreateCommand(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     address: str | None = None
     is_warehouse: bool = False
+    tax_enabled: bool = False
 
 
 class StoreUpdateCommand(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     address: str | None = None
     is_warehouse: bool | None = None
+    tax_enabled: bool | None = None
 
 
 class StoreResult(BaseModel):
@@ -23,6 +25,7 @@ class StoreResult(BaseModel):
     address: str | None
     is_warehouse: bool
     status: str
+    tax_enabled: bool
 
 
 
@@ -47,7 +50,7 @@ class StoreProductCreateCommand(BaseModel):
     sku: str | None = None
     selling_price: float = Field(..., ge=0)
     cost_price: float = Field(default=0, ge=0)
-    tax_rate: float | None = None
+    tax_id: UUID | None = None
     reorder_point: int = Field(default=0, ge=0)
     image_url: str | None = None
     status: str = "active"
@@ -64,7 +67,7 @@ class StoreProductUpdateCommand(BaseModel):
     sku: str | None = None
     selling_price: float | None = Field(default=None, ge=0)
     cost_price: float | None = Field(default=None, ge=0)
-    tax_rate: float | None = None
+    tax_id: UUID | None = None
     reorder_point: int | None = Field(default=None, ge=0)
     image_url: str | None = None
     status: str | None = None
@@ -82,7 +85,7 @@ class StoreProductResult(BaseModel):
     sku: str | None
     selling_price: float
     cost_price: float
-    tax_rate: float | None
+    tax_id: UUID | None
     reorder_point: int
     image_url: str | None
     status: str

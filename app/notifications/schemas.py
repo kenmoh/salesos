@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -36,3 +37,32 @@ class NotificationResult(BaseModel):
     recipient: str
     status: str
     attempts: int
+
+
+class PushTokenRegisterCommand(BaseModel):
+    token: str = Field(..., min_length=1)
+    platform: str = Field(..., pattern=r"^(ios|android)$")
+
+
+class InAppNotificationResult(BaseModel):
+    id: UUID
+    type: str
+    title: str
+    body: str
+    is_read: bool
+    meta: dict | None = None
+    created_at: datetime
+
+
+class NotificationListResult(BaseModel):
+    items: list[InAppNotificationResult]
+    unread_count: int
+    total: int
+
+
+class MarkReadCommand(BaseModel):
+    notification_ids: list[UUID]
+
+
+class NotificationPreferencesUpdate(BaseModel):
+    notification_types: dict[str, bool]

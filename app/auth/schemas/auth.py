@@ -203,3 +203,8 @@ class EmployeeListItem(Base):
 class Msg(Base):
     message: str
     success: bool = True
+
+
+class SocialSignInRequest(Base):
+    id_token: str = Field(..., min_length=1)
+    provider: str = Field(..., pattern=r"^(google|apple)$")

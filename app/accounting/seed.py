@@ -90,6 +90,11 @@ DEFAULT_ACCOUNTS: list[dict[str, str]] = [
         "name": "Unearned Revenue",
         "account_type": "liability",
     },
+    {
+        "code": "2300",
+        "name": "VAT Payable",
+        "account_type": "liability",
+    },
     # ─────────────────────────────────────────────────────────────────────────
     #  EQUITY ACCOUNTS (3xxx)
     #  Equity represents the owner's claim on the business assets.

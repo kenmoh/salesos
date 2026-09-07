@@ -10,6 +10,7 @@ class SaleItemLine(BaseModel):
     qty: Decimal = Field(..., gt=0)
     unit_price: Decimal = Field(..., ge=0)
     discount_pct: Decimal = Decimal("0")
+    tax_id: UUID | None = None
     tax_rate: Decimal | None = None
 
 

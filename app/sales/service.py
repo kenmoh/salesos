@@ -69,6 +69,7 @@ def plan_sale_creation(
             qty=qty,
             unit_price=unit_price,
             discount_pct=discount_pct,
+            tax_id=line.tax_id,
             tax_rate=tax_rate if tax_rate else None,
             line_total=line_total,
         )

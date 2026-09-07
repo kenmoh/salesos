@@ -1,6 +1,8 @@
 from datetime import datetime
+import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 
 from app.core.dependencies import TenantDep, require_permission
 from app.core.responses import DataResponse, ok
@@ -74,10 +76,25 @@ async def trigger_sync(ctx: TenantDep):
 
 @sync_router.get("/business/settings", response_model=DataResponse[BusinessSettings])
 async def business_settings(ctx: TenantDep):
-    rows = await services.call(ctx.session, "api.fn_business_settings", p_bid=ctx.user.business_id)
-    if not rows:
-        return ok({})
-    return ok(rows[0].get("settings", {}))
+    from app.tenancy.models import Tenant
+
+    result = await ctx.session.execute(
+        select(Tenant).where(Tenant.id == ctx.user.business_id)
+    )
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        return ok(BusinessSettings())
+
+    settings = json.loads(tenant.settings) if isinstance(tenant.settings, str) else (tenant.settings or {})
+    return ok(BusinessSettings(
+        name=tenant.business_name,
+        phone=tenant.owner_phone,
+        address=settings.get("address"),
+        tax_rate=settings.get("tax_rate"),
+        currency=settings.get("currency"),
+        logo_url=settings.get("logo_url"),
+        settings=settings,
+    ))
 
 
 @sync_router.patch(
@@ -86,15 +103,101 @@ async def business_settings(ctx: TenantDep):
     dependencies=[Depends(require_permission("sync:manage"))],
 )
 async def update_business_settings(payload: BusinessUpdate, ctx: TenantDep):
-    from app.common.services import exec_fn
+    from app.tenancy.models import Tenant
 
-    await exec_fn(
-        ctx.session,
-        "api.fn_update_business_settings",
-        p_bid=ctx.user.business_id,
-        p_settings=payload.model_dump(exclude_unset=True, exclude_none=True),
+    result = await ctx.session.execute(
+        select(Tenant).where(Tenant.id == ctx.user.business_id)
     )
-    return ok(payload.model_dump(exclude_unset=True, exclude_none=True))
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    # Update top-level columns
+    if payload.name is not None:
+        tenant.business_name = payload.name
+    if payload.phone is not None:
+        tenant.owner_phone = payload.phone
+
+    # Merge into settings JSON
+    settings = json.loads(tenant.settings) if isinstance(tenant.settings, str) else (tenant.settings or {})
+    if payload.address is not None:
+        settings["address"] = payload.address
+    if payload.tax_rate is not None:
+        settings["tax_rate"] = float(payload.tax_rate)
+    if payload.currency is not None:
+        settings["currency"] = payload.currency
+    if payload.logo_url is not None:
+        settings["logo_url"] = payload.logo_url
+    if payload.settings is not None:
+        settings.update(payload.settings)
+    tenant.settings = json.dumps(settings)
+
+    await ctx.session.flush()
+
+    return ok(BusinessSettings(
+        name=tenant.business_name,
+        phone=tenant.owner_phone,
+        address=settings.get("address"),
+        tax_rate=settings.get("tax_rate"),
+        currency=settings.get("currency"),
+        logo_url=settings.get("logo_url"),
+        settings=settings,
+    ))
+
+
+@sync_router.post(
+    "/business/logo",
+    response_model=DataResponse[BusinessSettings],
+    dependencies=[Depends(require_permission("sync:manage"))],
+)
+async def upload_business_logo(
+    file: "UploadFile",
+    ctx: TenantDep,
+):
+    from fastapi import UploadFile as _UploadFile
+    from app.tenancy.models import Tenant
+    from app.catalog.cloudinary_upload import _ensure_configured, _configured
+    import cloudinary.uploader
+
+    _ensure_configured()
+    if not _configured:
+        raise HTTPException(status_code=500, detail="Cloudinary not configured")
+
+    contents = await file.read()
+    if len(contents) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (max 5MB)")
+
+    public_id = f"storeflow/{ctx.user.business_id}/logo"
+    upload_result = cloudinary.uploader.upload(
+        contents,
+        public_id=public_id,
+        resource_type="image",
+        overwrite=True,
+    )
+    logo_url = str(upload_result.get("secure_url", ""))
+
+    # Save to tenant settings
+    result = await ctx.session.execute(
+        select(Tenant).where(Tenant.id == ctx.user.business_id)
+    )
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    settings = json.loads(tenant.settings) if isinstance(tenant.settings, str) else (tenant.settings or {})
+    settings["logo_url"] = logo_url
+    tenant.settings = json.dumps(settings)
+    await ctx.session.flush()
+
+    return ok(BusinessSettings(
+        name=tenant.business_name,
+        phone=tenant.owner_phone,
+        address=settings.get("address"),
+        tax_rate=settings.get("tax_rate"),
+        currency=settings.get("currency"),
+        logo_url=logo_url,
+        settings=settings,
+    ))
 
 
 @sync_router.get(

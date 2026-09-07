@@ -32,6 +32,7 @@ celery_app.conf.update(
         "app.worker.tasks.task_check_suspicious_login": {"queue": "notifications"},
         "app.worker.tasks.task_generate_product_qr": {"queue": "catalog"},
         "app.worker.tasks.task_refresh_analytics_mvs": {"queue": "analytics"},
+        "app.worker.tasks.task_cleanup_in_app_notifications": {"queue": "notifications"},
     },
     # Beat schedule for periodic tasks
     beat_schedule={
@@ -46,6 +47,10 @@ celery_app.conf.update(
         "refresh-analytics": {
             "task": "app.worker.tasks.task_refresh_analytics_mvs",
             "schedule": crontab(minute=0, hour="*/2"),  # Every 2 hours
+        },
+        "cleanup-in-app-notifications": {
+            "task": "app.worker.tasks.task_cleanup_in_app_notifications",
+            "schedule": crontab(minute=0, hour="*/1"),  # Every hour
         },
     },
 )

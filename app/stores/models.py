@@ -13,7 +13,7 @@ product settings while sharing a common catalog template.
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Integer, Numeric, String, Text, UniqueConstraint, ForeignKey
 from sqlalchemy.dialects.postgresql import JSON, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -48,6 +48,7 @@ class Store(StoreFlowBase):
     address: Mapped[str | None] = mapped_column(String(500), nullable=True)
     is_warehouse: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
+    tax_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
@@ -104,7 +105,9 @@ class StoreProduct(StoreFlowBase):
     sku: Mapped[str | None] = mapped_column(String(80), nullable=True)
     selling_price: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
     cost_price: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False, default=0)
-    tax_rate: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    tax_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("taxes.id"), nullable=True
+    )
     reorder_point: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")

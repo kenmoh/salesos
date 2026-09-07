@@ -33,6 +33,8 @@ SERVICE_QUEUES: dict[str, list[str]] = {
         "tenancy.tenant_created",
         "identity.user_created",
         "inventory.low_stock_detected",
+        "sales.sale_confirmed",
+        "payment.succeeded",
     ],
     "reporting": ["reporting.#", "sales.#", "payment.#", "tenancy.tier_changed"],
 }

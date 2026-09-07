@@ -19,6 +19,7 @@ def plan_create_store(
         address=command.address,
         is_warehouse=command.is_warehouse,
         status="active",
+        tax_enabled=command.tax_enabled,
     )
     result = StoreResult(
         id=store_id,
@@ -27,5 +28,6 @@ def plan_create_store(
         address=command.address,
         is_warehouse=command.is_warehouse,
         status="active",
+        tax_enabled=command.tax_enabled,
     )
     return result, store

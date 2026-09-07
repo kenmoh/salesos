@@ -15,6 +15,7 @@ class BusinessUpdate(Base):
     address: str | None = None
     tax_rate: Decimal | None = None
     currency: str | None = None
+    logo_url: str | None = None
     settings: dict | None = None
 
 
@@ -22,12 +23,14 @@ class StoreCreate(Base):
     name: str = Field(..., min_length=2)
     address: str | None = None
     is_warehouse: bool = False
+    tax_enabled: bool = False
 
 
 class StoreUpdate(Base):
     name: str | None = Field(default=None, min_length=2)
     address: str | None = None
     is_warehouse: bool | None = None
+    tax_enabled: bool | None = None
 
 
 class StoreDistribute(Base):

@@ -20,6 +20,7 @@ from app.auth.schemas.auth import (
     RoleCreateRequest,
     RoleSetPermissionsRequest,
     RoleUpdateRequest,
+    SocialSignInRequest,
     TOTPDisableRequest,
     TOTPVerifyRequest,
     UpdateEmployeeRequest,
@@ -110,6 +111,25 @@ async def login(
                 "requires_totp": True,
             }
         )
+    except auth_service.AuthError as exc:
+        raise HTTPException(status_code=401, detail=exc.message)
+
+
+@router.post("/social", response_model=DataResponse[LoginResponse])
+async def social_sign_in(
+    payload: SocialSignInRequest,
+    request: Request,
+    session=Depends(get_db),
+    _=Depends(auth_rate_limit(20, 900)),
+):
+    try:
+        tokens, user = await auth_service.login_with_social(
+            session=session,
+            id_token=payload.id_token,
+            provider=payload.provider,
+            req=request,
+        )
+        return ok({"tokens": tokens, "user": user, "requires_totp": False})
     except auth_service.AuthError as exc:
         raise HTTPException(status_code=401, detail=exc.message)
 

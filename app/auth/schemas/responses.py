@@ -30,6 +30,7 @@ class StoreCreated(_Base):
     address: str | None = None
     is_warehouse: bool = False
     status: str = "active"
+    tax_enabled: bool = False
     created_at: str | None = None
 
 
@@ -39,6 +40,7 @@ class StoreSummary(_Base):
     address: str | None = None
     is_warehouse: bool = False
     status: str = "active"
+    tax_enabled: bool = False
     created_at: str | None = None
 
 
@@ -675,6 +677,7 @@ class BusinessSettings(_Base):
     address: str | None = None
     tax_rate: float | None = None
     currency: str | None = None
+    logo_url: str | None = None
     settings: dict = {}
 
 

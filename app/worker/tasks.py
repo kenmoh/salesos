@@ -110,7 +110,7 @@ def task_generate_product_qr(self, product_id: str, tenant_id: str, qr_payload: 
     import asyncio
 
     async def _generate():
-        png_bytes = generate_qr_png(qr_payload, box_size=12, border=4)
+        png_bytes = generate_qr_png(qr_payload, box_size=6, border=3)
         upload = upload_qr_png(
             tenant_id=tenant_id,
             product_id=product_id,
@@ -487,3 +487,35 @@ def task_check_suspicious_login(
         "user_agent": user_agent,
         **analysis,
     }
+
+
+@celery_app.task(name="app.worker.tasks.task_cleanup_in_app_notifications")
+def task_cleanup_in_app_notifications() -> dict:
+    """Clean up expired in-app notifications.
+
+    Deletes read notifications older than 24 hours and
+    unread notifications older than 48 hours.
+
+    Returns:
+        Dict with counts of deleted read and unread notifications.
+    """
+    logger.info("Cleaning up expired in-app notifications")
+    from app.notifications.repository import delete_expired_notifications
+    from app.common.db.engine import create_service_database
+
+    sdb = create_service_database(settings.database_url)
+    import asyncio
+
+    async def _cleanup():
+        async with sdb.session() as session:
+            result = await delete_expired_notifications(session)
+            await session.commit()
+            return result
+
+    result = asyncio.run(_cleanup())
+    logger.info(
+        "Cleaned up notifications: %d read, %d unread",
+        result["deleted_read"],
+        result["deleted_unread"],
+    )
+    return result

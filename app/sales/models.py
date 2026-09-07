@@ -121,6 +121,9 @@ class SaleItem(StoreFlowBase):
     qty: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
     unit_price: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
     discount_pct: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False, default=0)
+    tax_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True
+    )
     tax_rate: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
     line_total: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
 

@@ -280,7 +280,7 @@ async def download_product_qr(
     elif size and size in SIZE_PRESETS:
         bs = SIZE_PRESETS[size]
     else:
-        bs = 20
+        bs = 6
 
     result = await bridge.get_product_qr_download(ctx.user.business_id, product_id, box_size=bs)
     if not result:
