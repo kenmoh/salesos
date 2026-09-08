@@ -2076,11 +2076,11 @@ async def get_store_details(
     store_id: str,
     from_date: str | None = None,
     to_date: str | None = None,
-) -> dict:
-    """RPC: Get everything about a store in one call via Postgres stored function.
+) -> dict | None:
+    """Get everything about a store: info, products, categories, and stats.
 
-    Returns store info, products with stock levels, categories, and stats
-    (sales, top products, inventory health).
+    Reshapes the stored function result into a nested structure and
+    enriches it with product/category lists from the inventory DB.
     """
     from uuid import UUID
     from sqlalchemy import text
@@ -2102,7 +2102,157 @@ async def get_store_details(
             },
         )
         row = result.scalar()
-        return row if row else {}
+
+    if not row or isinstance(row, dict) and row.get("error"):
+        return None
+
+    store_info = {
+        "id": str(row["store_id"]),
+        "name": row["name"],
+        "address": row.get("address"),
+        "is_warehouse": row.get("is_warehouse", False),
+        "status": row.get("status", "active"),
+        "created_at": None,
+    }
+
+    total_products = int(row.get("total_products", 0))
+    total_revenue = float(row.get("total_revenue", 0))
+    total_sales = int(row.get("total_sales", 0))
+    avg_order_value = round(total_revenue / total_sales, 2) if total_sales > 0 else 0
+
+    stats = {
+        "revenue": total_revenue,
+        "sales_count": total_sales,
+        "avg_order_value": avg_order_value,
+        "top_products": [],
+        "inventory_health": {
+            "total_products": total_products,
+            "low_stock": int(row.get("low_stock_count", 0)),
+            "out_of_stock": 0,
+        },
+        "period": {"from_date": from_date, "to_date": to_date},
+    }
+
+    products, categories, top_products, out_of_stock = await _fetch_store_extras(
+        store_id, tenant_id, from_date, to_date
+    )
+
+    stats["top_products"] = top_products
+    stats["inventory_health"]["out_of_stock"] = out_of_stock
+
+    return {
+        "store": store_info,
+        "categories": categories,
+        "products": products,
+        "stats": stats,
+    }
+
+
+async def _fetch_store_extras(
+    store_id: str,
+    tenant_id: str,
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> tuple[list, list, list, int]:
+    """Fetch products, categories, top products, and out_of_stock count for a store."""
+    from app.catalog.models import Product, Category
+    from app.inventory.models import StockBalance
+
+    sid = UUID(store_id)
+
+    sdb = _get_sdb("inventory")
+    async with sdb.session() as session:
+        query = (
+            select(
+                StockBalance,
+                Product.name,
+                Product.sku,
+                Product.selling_price,
+                Product.reorder_point,
+                Product.status.label("product_status"),
+                Category.name.label("category_name"),
+                Category.id.label("category_id"),
+            )
+            .join(Product, StockBalance.product_id == Product.id)
+            .join(Category, Product.category_id == Category.id, isouter=True)
+            .where(StockBalance.store_id == sid)
+            .order_by(Product.name)
+        )
+        result = await session.execute(query)
+        rows = result.all()
+
+    products = []
+    categories_seen: dict[str, dict] = {}
+    out_of_stock = 0
+
+    for row in rows:
+        qty = float(row.StockBalance.qty)
+        reserved = float(row.StockBalance.reserved_qty)
+        available = qty - reserved
+
+        if qty == 0:
+            out_of_stock += 1
+
+        products.append({
+            "id": str(row.StockBalance.product_id),
+            "name": row.name,
+            "sku": row.sku,
+            "selling_price": float(row.selling_price) if row.selling_price else 0,
+            "qty": qty,
+            "reserved_qty": reserved,
+            "committed_qty": 0,
+            "available": available,
+            "status": row.product_status or "active",
+        })
+
+        if row.category_id and str(row.category_id) not in categories_seen:
+            categories_seen[str(row.category_id)] = {
+                "id": str(row.category_id),
+                "name": row.category_name or "Uncategorized",
+                "description": None,
+            }
+
+    categories = list(categories_seen.values())
+
+    # Top products from sales
+    top_products = []
+    from app.sales.models import Sale, SaleItem
+
+    sdb_sales = _get_sdb("sales")
+    async with sdb_sales.session() as session:
+        sale_filter = [
+            Sale.store_id == sid,
+            Sale.tenant_id == UUID(tenant_id),
+            Sale.status == "completed",
+        ]
+        if from_date:
+            sale_filter.append(Sale.created_at >= from_date)
+        if to_date:
+            sale_filter.append(Sale.created_at <= to_date)
+
+        top_q = (
+            select(
+                SaleItem.product_id,
+                SaleItem.product_name,
+                func.sum(SaleItem.qty).label("total_qty"),
+                func.sum(SaleItem.line_total).label("total_revenue"),
+            )
+            .join(Sale, SaleItem.sale_id == Sale.id)
+            .where(*sale_filter)
+            .group_by(SaleItem.product_id, SaleItem.product_name)
+            .order_by(func.sum(SaleItem.line_total).desc())
+            .limit(5)
+        )
+        result = await session.execute(top_q)
+        for r in result.all():
+            top_products.append({
+                "product_id": str(r.product_id),
+                "product_name": r.product_name,
+                "total_qty": float(r.total_qty),
+                "total_revenue": float(r.total_revenue),
+            })
+
+    return products, categories, top_products, out_of_stock
 
 
 async def sync_store_products(tenant_id: str, store_id: str) -> dict:
