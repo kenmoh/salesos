@@ -7218,7 +7218,7 @@ async def list_documents(
         A dictionary containing ``items`` (list of document dictionaries),
         ``total`` count, ``page``, and ``page_size``.
     """
-    from app.documents.repository import list_documents_by_tenant
+    from app.documents.repository import list_documents_by_tenant, count_items_by_documents
 
     sdb = _get_sdb("documents")
     async with sdb.session() as session:
@@ -7230,6 +7230,8 @@ async def list_documents(
             limit=page_size,
             offset=(page - 1) * page_size,
         )
+        doc_ids = [d.id for d in items]
+        counts = await count_items_by_documents(session, doc_ids)
         return {
             "items": [
                 {
@@ -7239,8 +7241,7 @@ async def list_documents(
                     "status": d.status,
                     "customer_name": d.customer_name,
                     "total": float(d.total),
-                    "due_date": d.due_date.isoformat() if d.due_date else None,
-                    "linked_sale_id": str(d.linked_sale_id) if d.linked_sale_id else None,
+                    "item_count": counts.get(d.id, 0),
                     "created_at": d.created_at.isoformat() if d.created_at else None,
                 }
                 for d in items

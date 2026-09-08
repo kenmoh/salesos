@@ -640,6 +640,7 @@ class DocumentListItem(_Base):
     status: str = "draft"
     customer_name: str | None = None
     total: float = 0
+    item_count: int = 0
     created_at: datetime | None = None
 
 

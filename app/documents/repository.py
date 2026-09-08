@@ -17,7 +17,7 @@ Abbreviations Used in This Module
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.documents.models import Document, DocumentItem
@@ -133,6 +133,23 @@ async def get_document_items(session: AsyncSession, document_id: UUID) -> list[D
         .order_by(DocumentItem.id)
     )
     return list(result.scalars().all())
+
+
+async def count_items_by_documents(
+    session: AsyncSession, document_ids: list[UUID]
+) -> dict[UUID, int]:
+    """Return a mapping of document_id → item count for the given documents."""
+    if not document_ids:
+        return {}
+    result = await session.execute(
+        select(
+            DocumentItem.document_id,
+            func.count(DocumentItem.id).label("cnt"),
+        )
+        .where(DocumentItem.document_id.in_(document_ids))
+        .group_by(DocumentItem.document_id)
+    )
+    return {row.document_id: row.cnt for row in result}
 
 
 async def update_document_status(session: AsyncSession, document_id: UUID, status: str) -> Document:
