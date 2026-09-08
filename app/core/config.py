@@ -106,7 +106,7 @@ class ApiSettings(BaseSettings):
     )
 
     ai_groq_api_key: str = Field(default="", alias="AI_GROQ_API_KEY")
-    ai_model: str = Field(default="gemini-2.5-flash-lite", alias="AI_MODEL")
+    ai_model: str = Field(default="gemini-3.5-flash-lite", alias="AI_MODEL")
     llm_provider: str = Field(default="google", alias="LLM_PROVIDER")
     llm_api_key: str = Field(default="", alias="LLM_API_KEY")
     llm_model: str = Field(default="", alias="LLM_MODEL")

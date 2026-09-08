@@ -64,7 +64,7 @@ class LLMProvider(ABC):
 class GoogleProvider(LLMProvider):
     """Google Gemini provider -- fast, free tier available."""
 
-    def __init__(self, api_key: str, model: str = "gemini-2.5-flash-lite"):
+    def __init__(self, api_key: str, model: str = "gemini-3.5-flash-lite"):
         self.api_key = api_key
         self.model = model
 
