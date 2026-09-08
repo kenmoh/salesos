@@ -82,6 +82,8 @@ async def _prepare_chat(payload: ChatRequest, tenant_id: UUID, user_id: UUID):
 
         prompt = build_agent_prompt(history, tool_results)
 
+        await session.commit()
+
         return conversation_id, prompt, tool_results
 
 
