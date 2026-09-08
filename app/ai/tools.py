@@ -918,6 +918,572 @@ async def get_expenses_list(
         logger.warning("get_expenses_list failed: %s", e)
         return json.dumps({"count": 0, "total": 0, "expenses": [], "error": str(e)})
 
+
+# --- Advanced Analytics Tools ----------------------------------------------------------
+
+
+async def get_product_performance(
+    session: AsyncSession,
+    tenant_id: UUID,
+    period: str = "month",
+    limit: int = 10,
+) -> str:
+    """Get product performance metrics: revenue, quantity sold, margin.
+
+    Args:
+        session: The async SQLAlchemy database session.
+        tenant_id: The business tenant to filter by.
+        period: Time period -- "week", "month", "year".
+        limit: Number of products to return (default: 10).
+
+    Returns:
+        JSON string with product performance data.
+    """
+    try:
+        now = datetime.now(UTC)
+        if period == "week":
+            start = now - timedelta(days=7)
+        elif period == "year":
+            start = now - timedelta(days=365)
+        else:
+            start = now - timedelta(days=30)
+
+        result = await session.execute(
+            text(
+                "SELECT p.name, p.sku, p.cost_price, p.selling_price, "
+                "COALESCE(SUM(si.qty), 0) as total_qty, "
+                "COALESCE(SUM(si.line_total), 0) as total_revenue, "
+                "COUNT(DISTINCT s.id) as sale_count "
+                "FROM products p "
+                "LEFT JOIN sale_items si ON si.product_id = p.id "
+                "LEFT JOIN sales s ON s.id = si.sale_id AND s.status = 'confirmed' AND s.created_at >= :start "
+                "WHERE p.tenant_id = :tid "
+                "GROUP BY p.id, p.name, p.sku, p.cost_price, p.selling_price "
+                "ORDER BY total_revenue DESC "
+                "LIMIT :limit"
+            ),
+            {"tid": tenant_id, "start": start, "limit": limit},
+        )
+        rows = result.fetchall()
+        products = []
+        for r in rows:
+            cost = float(r[3]) if r[3] else 0
+            revenue = float(r[5])
+            qty = float(r[4])
+            margin = ((revenue - cost * qty) / revenue * 100) if revenue > 0 and cost > 0 else 0
+            products.append({
+                "name": r[0],
+                "sku": r[1],
+                "total_qty": qty,
+                "total_revenue": revenue,
+                "sale_count": int(r[6]),
+                "margin_pct": round(margin, 1),
+            })
+        return json.dumps({"period": period, "count": len(products), "products": products})
+    except Exception as e:
+        logger.warning("get_product_performance failed: %s", e)
+        return json.dumps({"period": period, "count": 0, "products": [], "error": str(e)})
+
+
+async def get_customer_detail(
+    session: AsyncSession,
+    tenant_id: UUID,
+    customer_name: str,
+) -> str:
+    """Get detailed purchase history for a specific customer.
+
+    Args:
+        session: The async SQLAlchemy database session.
+        tenant_id: The business tenant to filter by.
+        customer_name: Name of the customer to look up.
+
+    Returns:
+        JSON string with customer purchase history.
+    """
+    try:
+        result = await session.execute(
+            text(
+                "SELECT customer_name, customer_phone, "
+                "COUNT(*) as total_orders, SUM(total) as total_spent, "
+                "AVG(total) as avg_order, "
+                "MIN(created_at) as first_order, MAX(created_at) as last_order "
+                "FROM sales "
+                "WHERE tenant_id = :tid AND status = 'confirmed' "
+                "AND LOWER(customer_name) LIKE LOWER(:name) "
+                "GROUP BY customer_name, customer_phone "
+                "ORDER BY total_spent DESC "
+                "LIMIT 1"
+            ),
+            {"tid": tenant_id, "name": f"%{customer_name}%"},
+        )
+        row = result.fetchone()
+        if not row:
+            return json.dumps({"error": f"Customer '{customer_name}' not found"})
+
+        result2 = await session.execute(
+            text(
+                "SELECT s.sale_number, s.total, s.payment_methods, s.created_at "
+                "FROM sales s "
+                "WHERE s.tenant_id = :tid AND s.status = 'confirmed' "
+                "AND LOWER(s.customer_name) LIKE LOWER(:name) "
+                "ORDER BY s.created_at DESC "
+                "LIMIT 10"
+            ),
+            {"tid": tenant_id, "name": f"%{customer_name}%"},
+        )
+        recent = result2.fetchall()
+        return json.dumps({
+            "customer_name": row[0],
+            "phone": row[1],
+            "total_orders": int(row[2]),
+            "total_spent": float(row[3]) if row[3] else 0,
+            "avg_order": float(row[4]) if row[4] else 0,
+            "first_order": row[5].isoformat() if row[5] else None,
+            "last_order": row[6].isoformat() if row[6] else None,
+            "recent_orders": [
+                {"sale_number": r[0], "total": float(r[1]) if r[1] else 0, "created_at": r[3].isoformat() if r[3] else None}
+                for r in recent
+            ],
+        })
+    except Exception as e:
+        logger.warning("get_customer_detail failed: %s", e)
+        return json.dumps({"error": str(e)})
+
+
+async def get_inventory_value(
+    session: AsyncSession,
+    tenant_id: UUID,
+) -> str:
+    """Get total inventory value across all stores.
+
+    Args:
+        session: The async SQLAlchemy database session.
+        tenant_id: The business tenant to filter by.
+
+    Returns:
+        JSON string with inventory value breakdown by store.
+    """
+    try:
+        result = await session.execute(
+            text(
+                "SELECT s.name, "
+                "COUNT(DISTINCT sb.product_id) as total_products, "
+                "SUM(sb.qty) as total_units, "
+                "SUM(sb.qty * sb.unit_cost) as total_value "
+                "FROM stock_balances sb "
+                "JOIN stores s ON s.id = sb.store_id "
+                "WHERE sb.tenant_id = :tid AND sb.qty > 0 "
+                "GROUP BY s.name "
+                "ORDER BY total_value DESC"
+            ),
+            {"tid": tenant_id},
+        )
+        rows = result.fetchall()
+        stores = [
+            {
+                "store_name": r[0],
+                "total_products": int(r[1]),
+                "total_units": float(r[2]),
+                "total_value": float(r[3]) if r[3] else 0,
+            }
+            for r in rows
+        ]
+        grand_total = sum(s["total_value"] for s in stores)
+        return json.dumps({"grand_total": grand_total, "stores": stores})
+    except Exception as e:
+        logger.warning("get_inventory_value failed: %s", e)
+        return json.dumps({"grand_total": 0, "stores": [], "error": str(e)})
+
+
+async def get_payment_methods(
+    session: AsyncSession,
+    tenant_id: UUID,
+    period: str = "month",
+) -> str:
+    """Get payment method breakdown (cash, transfer, card, etc).
+
+    Args:
+        session: The async SQLAlchemy database session.
+        tenant_id: The business tenant to filter by.
+        period: Time period -- "week", "month", "year".
+
+    Returns:
+        JSON string with payment method breakdown.
+    """
+    try:
+        now = datetime.now(UTC)
+        if period == "week":
+            start = now - timedelta(days=7)
+        elif period == "year":
+            start = now - timedelta(days=365)
+        else:
+            start = now - timedelta(days=30)
+
+        result = await session.execute(
+            text(
+                "SELECT payment_methods, total "
+                "FROM sales "
+                "WHERE tenant_id = :tid AND status = 'confirmed' AND created_at >= :start"
+            ),
+            {"tid": tenant_id, "start": start},
+        )
+        rows = result.fetchall()
+        method_totals: dict[str, float] = {}
+        for row in rows:
+            methods = row[0] if row[0] else {}
+            total = float(row[1]) if row[1] else 0
+            if isinstance(methods, dict):
+                for method, amount in methods.items():
+                    method_totals[method] = method_totals.get(method, 0) + float(amount)
+            else:
+                method_totals["cash"] = method_totals.get("cash", 0) + total
+        grand_total = sum(method_totals.values())
+        breakdown = [
+            {"method": m, "amount": round(a, 2), "percentage": round(a / grand_total * 100, 1) if grand_total > 0 else 0}
+            for m, a in sorted(method_totals.items(), key=lambda x: -x[1])
+        ]
+        return json.dumps({"period": period, "grand_total": grand_total, "methods": breakdown})
+    except Exception as e:
+        logger.warning("get_payment_methods failed: %s", e)
+        return json.dumps({"period": period, "grand_total": 0, "methods": [], "error": str(e)})
+
+
+async def get_category_performance(
+    session: AsyncSession,
+    tenant_id: UUID,
+    period: str = "month",
+) -> str:
+    """Get sales performance by product category.
+
+    Args:
+        session: The async SQLAlchemy database session.
+        tenant_id: The business tenant to filter by.
+        period: Time period -- "week", "month", "year".
+
+    Returns:
+        JSON string with category performance breakdown.
+    """
+    try:
+        now = datetime.now(UTC)
+        if period == "week":
+            start = now - timedelta(days=7)
+        elif period == "year":
+            start = now - timedelta(days=365)
+        else:
+            start = now - timedelta(days=30)
+
+        result = await session.execute(
+            text(
+                "SELECT COALESCE(c.name, 'Uncategorized') as category, "
+                "COUNT(DISTINCT p.id) as product_count, "
+                "SUM(si.qty) as total_qty, "
+                "SUM(si.line_total) as total_revenue "
+                "FROM sale_items si "
+                "JOIN sales s ON s.id = si.sale_id AND s.status = 'confirmed' "
+                "JOIN products p ON p.id = si.product_id "
+                "LEFT JOIN categories c ON c.id = p.category_id "
+                "WHERE s.tenant_id = :tid AND s.created_at >= :start "
+                "GROUP BY c.name "
+                "ORDER BY total_revenue DESC"
+            ),
+            {"tid": tenant_id, "start": start},
+        )
+        rows = result.fetchall()
+        categories = [
+            {
+                "category": r[0],
+                "product_count": int(r[1]),
+                "total_qty": float(r[2]),
+                "total_revenue": float(r[3]) if r[3] else 0,
+            }
+            for r in rows
+        ]
+        return json.dumps({"period": period, "categories": categories})
+    except Exception as e:
+        logger.warning("get_category_performance failed: %s", e)
+        return json.dumps({"period": period, "categories": [], "error": str(e)})
+
+
+async def get_daily_summary(
+    session: AsyncSession,
+    tenant_id: UUID,
+) -> str:
+    """Get today's business summary: sales, revenue, top product, average.
+
+    Args:
+        session: The async SQLAlchemy database session.
+        tenant_id: The business tenant to filter by.
+
+    Returns:
+        JSON string with daily summary.
+    """
+    try:
+        now = datetime.now(UTC)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        result = await session.execute(
+            text(
+                "SELECT COUNT(*), COALESCE(SUM(total), 0), COALESCE(AVG(total), 0) "
+                "FROM sales "
+                "WHERE tenant_id = :tid AND status = 'confirmed' "
+                "AND created_at >= :start"
+            ),
+            {"tid": tenant_id, "start": today_start},
+        )
+        row = result.fetchone()
+
+        top = await session.execute(
+            text(
+                "SELECT p.name, SUM(si.qty) as qty, SUM(si.line_total) as revenue "
+                "FROM sale_items si "
+                "JOIN sales s ON s.id = si.sale_id "
+                "JOIN products p ON p.id = si.product_id "
+                "WHERE s.tenant_id = :tid AND s.status = 'confirmed' "
+                "AND s.created_at >= :start "
+                "GROUP BY p.name ORDER BY revenue DESC LIMIT 3"
+            ),
+            {"tid": tenant_id, "start": today_start},
+        )
+        top_rows = top.fetchall()
+        top_products = [
+            {"name": r[0], "qty": float(r[1]), "revenue": float(r[2]) if r[2] else 0}
+            for r in top_rows
+        ]
+
+        return json.dumps({
+            "date": today_start.date().isoformat(),
+            "total_sales": int(row[0]),
+            "total_revenue": float(row[1]),
+            "average_sale": float(row[2]),
+            "top_products": top_products,
+        })
+    except Exception as e:
+        logger.warning("get_daily_summary failed: %s", e)
+        return json.dumps({"error": str(e)})
+
+
+async def get_comparison(
+    session: AsyncSession,
+    tenant_id: UUID,
+    period: str = "month",
+) -> str:
+    """Compare current period vs previous period (sales, revenue, customers).
+
+    Args:
+        session: The async SQLAlchemy database session.
+        tenant_id: The business tenant to filter by.
+        period: Comparison period -- "week", "month".
+
+    Returns:
+        JSON string with period comparison.
+    """
+    try:
+        now = datetime.now(UTC)
+        if period == "week":
+            current_start = now - timedelta(days=7)
+            prev_start = now - timedelta(days=14)
+            prev_end = now - timedelta(days=7)
+        else:
+            current_start = now - timedelta(days=30)
+            prev_start = now - timedelta(days=60)
+            prev_end = now - timedelta(days=30)
+
+        async def _get_stats(start, end):
+            result = await session.execute(
+                text(
+                    "SELECT COUNT(*), COALESCE(SUM(total), 0), "
+                    "COUNT(DISTINCT customer_name) "
+                    "FROM sales "
+                    "WHERE tenant_id = :tid AND status = 'confirmed' "
+                    "AND created_at >= :start AND created_at < :end"
+                ),
+                {"tid": tenant_id, "start": start, "end": end},
+            )
+            return result.fetchone()
+
+        current = await _get_stats(current_start, now)
+        prev = await _get_stats(prev_start, prev_end)
+
+        def _pct(curr, prv):
+            if prv == 0:
+                return 100.0 if curr > 0 else 0.0
+            return round((curr - prv) / prv * 100, 1)
+
+        return json.dumps({
+            "period": period,
+            "current": {"total_sales": int(current[0]), "total_revenue": float(current[1]), "unique_customers": int(current[2])},
+            "previous": {"total_sales": int(prev[0]), "total_revenue": float(prev[1]), "unique_customers": int(prev[2])},
+            "change": {
+                "sales_pct": _pct(int(current[0]), int(prev[0])),
+                "revenue_pct": _pct(float(current[1]), float(prev[1])),
+                "customers_pct": _pct(int(current[2]), int(prev[2])),
+            },
+        })
+    except Exception as e:
+        logger.warning("get_comparison failed: %s", e)
+        return json.dumps({"error": str(e)})
+
+
+async def get_tax_summary(
+    session: AsyncSession,
+    tenant_id: UUID,
+    period: str = "month",
+) -> str:
+    """Get VAT/tax collected this period.
+
+    Args:
+        session: The async SQLAlchemy database session.
+        tenant_id: The business tenant to filter by.
+        period: Time period -- "week", "month", "year".
+
+    Returns:
+        JSON string with tax summary.
+    """
+    try:
+        now = datetime.now(UTC)
+        if period == "week":
+            start = now - timedelta(days=7)
+        elif period == "year":
+            start = now - timedelta(days=365)
+        else:
+            start = now - timedelta(days=30)
+
+        result = await session.execute(
+            text(
+                "SELECT COALESCE(SUM(tax), 0), COALESCE(SUM(subtotal), 0), COUNT(*) "
+                "FROM sales "
+                "WHERE tenant_id = :tid AND status = 'confirmed' AND created_at >= :start"
+            ),
+            {"tid": tenant_id, "start": start},
+        )
+        row = result.fetchone()
+        return json.dumps({
+            "period": period,
+            "total_tax_collected": float(row[0]),
+            "total_subtotal": float(row[1]),
+            "total_transactions": int(row[2]),
+        })
+    except Exception as e:
+        logger.warning("get_tax_summary failed: %s", e)
+        return json.dumps({"period": period, "error": str(e)})
+
+
+async def get_void_summary(
+    session: AsyncSession,
+    tenant_id: UUID,
+    period: str = "month",
+) -> str:
+    """Get void/refund summary.
+
+    Args:
+        session: The async SQLAlchemy database session.
+        tenant_id: The business tenant to filter by.
+        period: Time period -- "week", "month", "year".
+
+    Returns:
+        JSON string with void summary.
+    """
+    try:
+        now = datetime.now(UTC)
+        if period == "week":
+            start = now - timedelta(days=7)
+        elif period == "year":
+            start = now - timedelta(days=365)
+        else:
+            start = now - timedelta(days=30)
+
+        result = await session.execute(
+            text(
+                "SELECT COUNT(*), COALESCE(SUM(total), 0) "
+                "FROM sales "
+                "WHERE tenant_id = :tid AND status = 'voided' "
+                "AND created_at >= :start"
+            ),
+            {"tid": tenant_id, "start": start},
+        )
+        row = result.fetchone()
+        return json.dumps({
+            "period": period,
+            "total_voids": int(row[0]),
+            "total_voided_amount": float(row[1]) if row[1] else 0,
+        })
+    except Exception as e:
+        logger.warning("get_void_summary failed: %s", e)
+        return json.dumps({"period": period, "error": str(e)})
+
+
+async def get_business_health(
+    session: AsyncSession,
+    tenant_id: UUID,
+) -> str:
+    """Get overall business health score combining sales, stock, receivables.
+
+    Returns a health score (0-100) and breakdown of each factor.
+
+    Args:
+        session: The async SQLAlchemy database session.
+        tenant_id: The business tenant to filter by.
+
+    Returns:
+        JSON string with business health assessment.
+    """
+    try:
+        now = datetime.now(UTC)
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        prev_month_start = (month_start - timedelta(days=1)).replace(day=1)
+
+        curr = await session.execute(
+            text("SELECT COUNT(*), COALESCE(SUM(total), 0) FROM sales "
+                 "WHERE tenant_id = :tid AND status = 'confirmed' AND created_at >= :start"),
+            {"tid": tenant_id, "start": month_start},
+        )
+        curr_row = curr.fetchone()
+        prev = await session.execute(
+            text("SELECT COUNT(*), COALESCE(SUM(total), 0) FROM sales "
+                 "WHERE tenant_id = :tid AND status = 'confirmed' AND created_at >= :start AND created_at < :end"),
+            {"tid": tenant_id, "start": prev_month_start, "end": month_start},
+        )
+        prev_row = prev.fetchone()
+        sales_growth = 0.0
+        if prev_row[1] > 0:
+            sales_growth = round((float(curr_row[1]) - float(prev_row[1])) / float(prev_row[1]) * 100, 1)
+
+        low_stock = await session.execute(
+            text("SELECT COUNT(*) FROM ("
+                 "  SELECT p.id FROM stock_balances sb "
+                 "  JOIN products p ON p.id = sb.product_id "
+                 "  WHERE sb.tenant_id = :tid "
+                 "  GROUP BY p.id, p.reorder_point "
+                 "  HAVING SUM(sb.qty) - SUM(sb.reserved_qty) <= p.reorder_point"
+                 ") sub"),
+            {"tid": tenant_id},
+        )
+        low_stock_count = low_stock.scalar() or 0
+
+        ar = await session.execute(
+            text("SELECT COALESCE(SUM(balance), 0) FROM accounts_receivable "
+                 "WHERE tenant_id = :tid AND status != 'paid'"),
+            {"tid": tenant_id},
+        )
+        outstanding_ar = float(ar.scalar() or 0)
+
+        sales_score = min(100, max(0, 50 + sales_growth))
+        stock_score = max(0, 100 - low_stock_count * 10)
+        ar_score = 100 if outstanding_ar == 0 else max(0, 100 - outstanding_ar / 1000 * 10)
+        overall = round((sales_score * 0.4 + stock_score * 0.3 + ar_score * 0.3), 1)
+
+        return json.dumps({
+            "health_score": overall,
+            "factors": {
+                "sales_trend": {"score": round(sales_score, 1), "sales_growth_pct": sales_growth},
+                "inventory_health": {"score": round(stock_score, 1), "low_stock_products": low_stock_count},
+                "receivables": {"score": round(ar_score, 1), "outstanding_amount": outstanding_ar},
+            },
+        })
+    except Exception as e:
+        logger.warning("get_business_health failed: %s", e)
+        return json.dumps({"error": str(e)})
+
 TOOL_REGISTRY: dict[str, Any] = {
     "search_products": search_products,
     "get_product_details": get_product_details,
@@ -935,6 +1501,16 @@ TOOL_REGISTRY: dict[str, Any] = {
     "get_store_analytics": get_store_analytics,
     "get_employees": get_employees,
     "get_expenses_list": get_expenses_list,
+    "get_product_performance": get_product_performance,
+    "get_customer_detail": get_customer_detail,
+    "get_inventory_value": get_inventory_value,
+    "get_payment_methods": get_payment_methods,
+    "get_category_performance": get_category_performance,
+    "get_daily_summary": get_daily_summary,
+    "get_comparison": get_comparison,
+    "get_tax_summary": get_tax_summary,
+    "get_void_summary": get_void_summary,
+    "get_business_health": get_business_health,
 }
 
 TOOL_DESCRIPTIONS = {
@@ -954,6 +1530,16 @@ TOOL_DESCRIPTIONS = {
     "get_store_analytics": "Get sales analytics by store this month. Args: store_id (str UUID, optional)",
     "get_employees": "List employees with roles and last login. Args: none",
     "get_expenses_list": "Get recent expenses. Args: limit (int, default 20)",
+    "get_product_performance": "Product performance with revenue and margins. Args: period (str: week/month/year), limit (int)",
+    "get_customer_detail": "Detailed customer purchase history. Args: customer_name (str)",
+    "get_inventory_value": "Total inventory value across stores. Args: none",
+    "get_payment_methods": "Payment method breakdown (cash/transfer/card). Args: period (str: week/month/year)",
+    "get_category_performance": "Sales by product category. Args: period (str: week/month/year)",
+    "get_daily_summary": "Today's business overview. Args: none",
+    "get_comparison": "Current vs previous period comparison. Args: period (str: week/month)",
+    "get_tax_summary": "VAT/tax collected. Args: period (str: week/month/year)",
+    "get_void_summary": "Voids and refunds tracking. Args: period (str: week/month/year)",
+    "get_business_health": "Overall business health score (0-100). Args: none",
     "compare_product_prices": "Web search for product prices. Args: product_name (str)",
     "search_product_info": "Wikipedia product info. Args: query (str)",
 }

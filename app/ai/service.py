@@ -98,6 +98,28 @@ def select_tools(message: str) -> list[str]:
     if any(w in message_lower for w in ["expense list", "recent expenses", "expenses detail"]):
         tools.append("get_expenses_list")
 
+    # Advanced analytics
+    if any(w in message_lower for w in ["performance", "margin", "slow-moving", "dead stock", "profit margin"]):
+        tools.append("get_product_performance")
+    if any(w in message_lower for w in ["customer detail", "customer history", "purchase history", "bought"]):
+        tools.append("get_customer_detail")
+    if any(w in message_lower for w in ["inventory value", "stock value", "total inventory"]):
+        tools.append("get_inventory_value")
+    if any(w in message_lower for w in ["payment", "cash", "transfer", "card", "how do people pay"]):
+        tools.append("get_payment_methods")
+    if any(w in message_lower for w in ["category", "categories", "product type"]):
+        tools.append("get_category_performance")
+    if any(w in message_lower for w in ["today", "daily", "how am i doing", "summary"]):
+        tools.append("get_daily_summary")
+    if any(w in message_lower for w in ["compare", "vs", "better", "worse", "last month", "last week"]):
+        tools.append("get_comparison")
+    if any(w in message_lower for w in ["tax", "vat", "tax summary"]):
+        tools.append("get_tax_summary")
+    if any(w in message_lower for w in ["void", "refund", "voids"]):
+        tools.append("get_void_summary")
+    if any(w in message_lower for w in ["health", "score", "overall", "how is business"]):
+        tools.append("get_business_health")
+
     # Web tools
     if any(w in message_lower for w in ["price", "cost", "compare", "how much does"]):
         tools.append("compare_product_prices")
@@ -187,6 +209,31 @@ async def invoke_tools(
                     pass
                 elif tool_name == "get_expenses_list":
                     kwargs["limit"] = 20
+                elif tool_name == "get_product_performance":
+                    kwargs["period"] = _extract_period(message)
+                    kwargs["limit"] = 10
+                elif tool_name == "get_customer_detail":
+                    name = _extract_search_query(message)
+                    if name:
+                        kwargs["customer_name"] = name
+                    else:
+                        continue
+                elif tool_name == "get_inventory_value":
+                    pass
+                elif tool_name == "get_payment_methods":
+                    kwargs["period"] = _extract_period(message)
+                elif tool_name == "get_category_performance":
+                    kwargs["period"] = _extract_period(message)
+                elif tool_name == "get_daily_summary":
+                    pass
+                elif tool_name == "get_comparison":
+                    kwargs["period"] = _extract_period(message)
+                elif tool_name == "get_tax_summary":
+                    kwargs["period"] = _extract_period(message)
+                elif tool_name == "get_void_summary":
+                    kwargs["period"] = _extract_period(message)
+                elif tool_name == "get_business_health":
+                    pass
 
                 result_str = await func(**kwargs)
                 result_summary = f"Retrieved data from {tool_name}"
