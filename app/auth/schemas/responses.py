@@ -422,6 +422,7 @@ class SaleListItem(_Base):
     customer_name: str | None = None
     total: float = 0
     amount_paid: float = 0
+    item_count: int = 0
     created_at: datetime | None = None
 
 

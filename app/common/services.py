@@ -232,12 +232,26 @@ async def list_sales(
     page=1,
     page_size=50,
 ) -> dict:
-    from app.sales.models import Sale
+    from app.sales.models import Sale, SaleItem
     from sqlalchemy import select, func
     from uuid import UUID
 
     tid = UUID(business_id)
-    query = select(Sale).where(Sale.tenant_id == tid)
+
+    item_count_sub = (
+        select(
+            SaleItem.sale_id,
+            func.coalesce(func.sum(SaleItem.qty), 0).label("item_count"),
+        )
+        .group_by(SaleItem.sale_id)
+        .subquery()
+    )
+
+    query = (
+        select(Sale, item_count_sub.c.item_count.label("item_count"))
+        .outerjoin(item_count_sub, Sale.id == item_count_sub.c.sale_id)
+        .where(Sale.tenant_id == tid)
+    )
     count_query = select(func.count()).select_from(Sale).where(Sale.tenant_id == tid)
 
     if status:
@@ -258,19 +272,20 @@ async def list_sales(
 
     query = query.order_by(Sale.created_at.desc()).limit(page_size).offset((page - 1) * page_size)
     result = await session.execute(query)
-    sales = list(result.scalars().all())
+    rows = result.all()
 
     items = [
         {
-            "id": str(s.id),
-            "sale_number": s.sale_number or "",
-            "status": s.status or "pending",
-            "customer_name": s.customer_name,
-            "total": float(s.total) if s.total else 0,
-            "amount_paid": float(s.amount_paid) if s.amount_paid else 0,
-            "created_at": s.created_at.isoformat() if s.created_at else None,
+            "id": str(row.Sale.id),
+            "sale_number": row.Sale.sale_number or "",
+            "status": row.Sale.status or "pending",
+            "customer_name": row.Sale.customer_name,
+            "total": float(row.Sale.total) if row.Sale.total else 0,
+            "amount_paid": float(row.Sale.amount_paid) if row.Sale.amount_paid else 0,
+            "item_count": int(row.item_count) if row.item_count else 0,
+            "created_at": row.Sale.created_at.isoformat() if row.Sale.created_at else None,
         }
-        for s in sales
+        for row in rows
     ]
 
     return {
