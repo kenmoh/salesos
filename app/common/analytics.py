@@ -397,21 +397,43 @@ async def inventory_alerts(
 ) -> dict:
     tid = UUID(tenant_id)
 
-    base = select(MvInventoryStatus).where(MvInventoryStatus.tenant_id == tid)
+    base = (
+        select(
+            MvInventoryStatus.product_id,
+            MvInventoryStatus.product_name,
+            MvInventoryStatus.sku,
+            func.sum(MvInventoryStatus.current_qty).label("qty"),
+            func.max(MvInventoryStatus.reorder_point).label("min_stock_level"),
+            func.min(MvInventoryStatus.status).label("status"),
+        )
+        .where(MvInventoryStatus.tenant_id == tid)
+        .group_by(MvInventoryStatus.product_id, MvInventoryStatus.product_name, MvInventoryStatus.sku)
+    )
+
     if alert_type and alert_type != "all":
-        base = base.where(MvInventoryStatus.status == alert_type)
+        if alert_type == "low_stock":
+            base = base.having(
+                or_(
+                    func.min(MvInventoryStatus.status) == "low_stock",
+                    func.min(MvInventoryStatus.status) == "out_of_stock",
+                )
+            )
+        else:
+            base = base.having(func.min(MvInventoryStatus.status) == alert_type)
 
     rows = await session.execute(base.order_by(MvInventoryStatus.product_name))
     items = []
-    for r in rows.scalars():
+    for r in rows.mappings():
+        qty_val = float(r["qty"])
+        min_val = float(r["min_stock_level"]) if r["min_stock_level"] else 0
         items.append(
             {
-                "product_id": str(r.product_id),
-                "product_name": r.product_name,
-                "sku": r.sku,
-                "qty": float(r.current_qty),
-                "min_stock_level": float(r.reorder_point) if r.reorder_point else 0,
-                "status": r.status,
+                "product_id": str(r["product_id"]),
+                "product_name": r["product_name"],
+                "sku": r["sku"],
+                "qty": qty_val,
+                "min_stock_level": min_val,
+                "status": r["status"],
             }
         )
 
@@ -419,7 +441,7 @@ async def inventory_alerts(
         await session.execute(
             select(
                 MvInventoryStatus.status,
-                func.count(MvInventoryStatus.product_id),
+                func.count(func.distinct(MvInventoryStatus.product_id)),
             )
             .where(MvInventoryStatus.tenant_id == tid)
             .group_by(MvInventoryStatus.status)

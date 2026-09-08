@@ -97,6 +97,51 @@ async def _refresh_analytics_views():
         pass
 
 
+async def _deduct_stock_for_sale(
+    business_id: str,
+    store_id: str | None,
+    sale_items: list,
+):
+    """Deduct stock for each item in a completed sale.
+
+    Iterates through sale items, fetches the current stock balance for
+    each product in the store, and decrements the quantity. Creates
+    stock movement records for audit trail.
+    """
+    if not store_id:
+        return
+
+    from app.inventory.models import StockBalance
+    from app.inventory.repository import get_stock_balance, upsert_stock_balance
+
+    sdb_inv = _get_sdb("inventory")
+    async with sdb_inv.session() as session:
+        for si in sale_items:
+            product_id = si.product_id if hasattr(si, "product_id") else UUID(str(si.get("product_id", "")))
+            qty = float(si.qty) if hasattr(si, "qty") else float(si.get("qty", 0))
+            if not product_id or qty <= 0:
+                continue
+
+            current = await get_stock_balance(session, product_id, UUID(store_id))
+            if current:
+                new_qty = float(current.qty) - qty
+                current.qty = Decimal(str(max(new_qty, 0)))
+                await session.flush()
+            else:
+                balance = StockBalance(
+                    tenant_id=UUID(business_id),
+                    product_id=product_id,
+                    store_id=UUID(store_id),
+                    qty=Decimal(str(max(-qty, 0))),
+                    reserved_qty=Decimal("0"),
+                    unit_cost=Decimal("0"),
+                )
+                session.add(balance)
+                await session.flush()
+
+        await session.commit()
+
+
 async def _record_movement(
     session,
     *,
@@ -5584,6 +5629,13 @@ async def checkout_cart(
                     sales_session.add(write.to_model())
                 await sales_session.commit()
 
+            # Deduct stock for sold items
+            await _deduct_stock_for_sale(
+                business_id=tenant_id,
+                store_id=str(cart_store_id) if cart_store_id else store_id,
+                sale_items=sale_items,
+            )
+
             # Auto-journal: create accounting entries for the sale
             from app.accounting.service import plan_sale_journal
             from app.accounting.repository import (
@@ -5752,6 +5804,14 @@ async def checkout_cart(
         for write in outbox:
             sales_session.add(write.to_model())
         await sales_session.commit()
+
+    # Deduct stock for sold items
+    legacy_store_id = str(getattr(cart, "store_id", None) or cart_id)
+    await _deduct_stock_for_sale(
+        business_id=tenant_id,
+        store_id=legacy_store_id,
+        sale_items=sale_items,
+    )
 
     # Auto-journal: create accounting entries for the sale
     from app.accounting.service import plan_sale_journal
