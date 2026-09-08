@@ -130,6 +130,9 @@ async def update_business_settings(payload: BusinessUpdate, ctx: TenantDep):
         settings["logo_url"] = payload.logo_url
     if payload.settings is not None:
         settings.update(payload.settings)
+        # System notifications are always enabled
+        if "notification_types" in settings:
+            settings["notification_types"]["system"] = True
     tenant.settings = json.dumps(settings)
 
     await ctx.session.flush()

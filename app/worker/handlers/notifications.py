@@ -16,17 +16,23 @@ logger = logging.getLogger("storeflow.notifications.handlers")
 
 
 def _get_notification_type_preferences(tenant_settings: dict) -> dict[str, bool]:
-    """Extract notification type preferences from tenant settings."""
+    """Extract notification type preferences from tenant settings.
+    System is always enabled and cannot be disabled.
+    """
     if isinstance(tenant_settings, str):
         try:
             tenant_settings = json.loads(tenant_settings)
         except (json.JSONDecodeError, TypeError):
             return {}
-    return tenant_settings.get("notification_types", {})
+    prefs = tenant_settings.get("notification_types", {})
+    prefs["system"] = True
+    return prefs
 
 
 def _is_type_enabled(prefs: dict[str, bool], ntype: str) -> bool:
-    """Check if a notification type is enabled. Defaults to True if not set."""
+    """Check if a notification type is enabled. System is always enabled."""
+    if ntype == "system":
+        return True
     return prefs.get(ntype, True)
 
 

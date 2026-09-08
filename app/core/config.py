@@ -102,16 +102,17 @@ class ApiSettings(BaseSettings):
 
 
     api_base_url: str = Field(
-        default="http://localhost:8000", alias="API_BASE_URL"
+        default="https://salesos.fastapicloud.dev", alias="API_BASE_URL"
     )
 
     ai_groq_api_key: str = Field(default="", alias="AI_GROQ_API_KEY")
-    ai_model: str = Field(default="llama-3.3-70b-versatile", alias="AI_MODEL")
-    llm_provider: str = Field(default="groq", alias="LLM_PROVIDER")
+    ai_model: str = Field(default="gemini-2.0-flash", alias="AI_MODEL")
+    llm_provider: str = Field(default="google", alias="LLM_PROVIDER")
     llm_api_key: str = Field(default="", alias="LLM_API_KEY")
     llm_model: str = Field(default="", alias="LLM_MODEL")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
+    google_api_key: str = Field(default="", alias="GOOGLE_API_KEY")
     serpapi_key: str = Field(default="", alias="SERPAPI_KEY")
 
     supervisor_pin_expire_days: int = 7

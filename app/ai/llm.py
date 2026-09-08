@@ -1,10 +1,11 @@
 """LLM provider abstraction layer using LangChain.
 
 This module provides a provider-agnostic interface for LLM operations.
-Switching between providers (Groq, OpenAI, Anthropic, etc.) requires only
+Switching between providers (Google, Groq, OpenAI, Anthropic) requires only
 a config change -- no code changes in the agent or tools.
 
 Supported Providers:
+    - google: Google Gemini (gemini-2.0-flash) -- fast, free tier available.
     - groq: Groq cloud (llama-3.3-70b-versatile) -- fast, free tier available.
     - openai: OpenAI (gpt-4o, gpt-4o-mini) -- most capable, paid.
     - anthropic: Anthropic (claude-sonnet-4-20250514) -- strong reasoning, paid.
@@ -26,6 +27,7 @@ logger = logging.getLogger("app.ai.llm")
 class ProviderType(str, Enum):
     """Supported LLM providers."""
 
+    GOOGLE = "google"
     GROQ = "groq"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
@@ -57,6 +59,48 @@ class LLMProvider(ABC):
     ):
         """Stream a response from the LLM, yielding chunks."""
         ...
+
+
+class GoogleProvider(LLMProvider):
+    """Google Gemini provider -- fast, free tier available."""
+
+    def __init__(self, api_key: str, model: str = "gemini-2.0-flash"):
+        self.api_key = api_key
+        self.model = model
+
+    def generate(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.1,
+        max_tokens: int = 2048,
+    ) -> Any:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        llm = ChatGoogleGenerativeAI(
+            google_api_key=self.api_key,
+            model=self.model,
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+        )
+        return llm.invoke(messages)
+
+    def stream(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.1,
+        max_tokens: int = 2048,
+    ):
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        llm = ChatGoogleGenerativeAI(
+            google_api_key=self.api_key,
+            model=self.model,
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+        )
+        for chunk in llm.stream(messages):
+            if chunk.content:
+                yield chunk.content
 
 
 class GroqProvider(LLMProvider):
@@ -186,6 +230,7 @@ class AnthropicProvider(LLMProvider):
 
 
 _PROVIDER_MAP: dict[ProviderType, type[LLMProvider]] = {
+    ProviderType.GOOGLE: GoogleProvider,
     ProviderType.GROQ: GroqProvider,
     ProviderType.OPENAI: OpenAIProvider,
     ProviderType.ANTHROPIC: AnthropicProvider,
@@ -196,7 +241,7 @@ def create_provider() -> LLMProvider:
     """Create an LLM provider based on environment configuration.
 
     Environment Variables:
-        LLM_PROVIDER: The provider to use (groq, openai, anthropic). Default: groq.
+        LLM_PROVIDER: The provider to use (google, groq, openai, anthropic). Default: google.
         LLM_API_KEY: The API key for the selected provider.
         LLM_MODEL: Optional model override for the selected provider.
 
@@ -209,7 +254,7 @@ def create_provider() -> LLMProvider:
     from app.core.config import get_settings
 
     s = get_settings()
-    provider_name = getattr(s, "llm_provider", "groq") or "groq"
+    provider_name = getattr(s, "llm_provider", "google") or "google"
 
     try:
         provider_type = ProviderType(provider_name)
@@ -236,7 +281,13 @@ def create_provider() -> LLMProvider:
 
 def _get_api_key(provider_type: ProviderType, settings: Any) -> str:
     """Get the API key for a provider with fallback logic."""
-    if provider_type == ProviderType.GROQ:
+    if provider_type == ProviderType.GOOGLE:
+        return (
+            getattr(settings, "google_api_key", None)
+            or getattr(settings, "llm_api_key", None)
+            or ""
+        )
+    elif provider_type == ProviderType.GROQ:
         return (
             getattr(settings, "ai_groq_api_key", None)
             or getattr(settings, "llm_api_key", None)
