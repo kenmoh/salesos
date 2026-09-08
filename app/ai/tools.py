@@ -246,7 +246,7 @@ async def get_sales_summary(
                 "SELECT COUNT(*), COALESCE(SUM(total), 0), COALESCE(AVG(total), 0) "
                 "FROM sales "
                 "WHERE tenant_id = :tid "
-                "AND status = 'confirmed' "
+                "AND status = 'completed' "
                 "AND created_at >= :start AND created_at < :end"
             ),
             {"tid": tenant_id, "start": start, "end": now},
@@ -297,7 +297,7 @@ async def get_top_products(
                 "JOIN sales s ON s.id = si.sale_id "
                 "JOIN products p ON p.id = si.product_id "
                 "WHERE s.tenant_id = :tid "
-                "AND s.status = 'confirmed' "
+                "AND s.status = 'completed' "
                 "AND s.created_at >= :start "
                 "GROUP BY p.name "
                 "ORDER BY total_revenue DESC "
@@ -343,7 +343,7 @@ async def get_revenue_trend(
                 "SELECT DATE(created_at) as sale_date, SUM(total) as daily_revenue, COUNT(*) as sale_count "
                 "FROM sales "
                 "WHERE tenant_id = :tid "
-                "AND status = 'confirmed' "
+                "AND status = 'completed' "
                 "AND created_at >= :start "
                 "GROUP BY DATE(created_at) "
                 "ORDER BY sale_date"
@@ -434,7 +434,7 @@ async def get_customer_insights(
                 "SELECT customer_name, COUNT(*) as order_count, SUM(total) as total_spent "
                 "FROM sales "
                 "WHERE tenant_id = :tid "
-                "AND status = 'confirmed' "
+                "AND status = 'completed' "
                 "AND customer_name IS NOT NULL "
                 "GROUP BY customer_name "
                 "ORDER BY total_spent DESC "
@@ -558,7 +558,7 @@ async def get_profit_loss(
             text(
                 "SELECT COALESCE(SUM(total), 0) "
                 "FROM sales "
-                "WHERE tenant_id = :tid AND status = 'confirmed' "
+                "WHERE tenant_id = :tid AND status = 'completed' "
                 "AND created_at >= :start"
             ),
             {"tid": tenant_id, "start": start},
@@ -793,7 +793,7 @@ async def get_store_analytics(
                 f"COALESCE(AVG(s.total), 0) as avg_sale, "
                 f"COUNT(DISTINCT DATE(s.created_at)) as active_days "
                 f"FROM stores st "
-                f"LEFT JOIN sales s ON s.store_id = st.id AND s.status = 'confirmed' AND s.created_at >= :month_start "
+                f"LEFT JOIN sales s ON s.store_id = st.id AND s.status = 'completed' AND s.created_at >= :month_start "
                 f"WHERE st.tenant_id = :tid {store_clause} "
                 f"GROUP BY st.id, st.name "
                 f"ORDER BY total_revenue DESC"
@@ -956,7 +956,7 @@ async def get_product_performance(
                 "COUNT(DISTINCT s.id) as sale_count "
                 "FROM products p "
                 "LEFT JOIN sale_items si ON si.product_id = p.id "
-                "LEFT JOIN sales s ON s.id = si.sale_id AND s.status = 'confirmed' AND s.created_at >= :start "
+                "LEFT JOIN sales s ON s.id = si.sale_id AND s.status = 'completed' AND s.created_at >= :start "
                 "WHERE p.tenant_id = :tid "
                 "GROUP BY p.id, p.name, p.sku, p.cost_price, p.selling_price "
                 "ORDER BY total_revenue DESC "
@@ -1008,7 +1008,7 @@ async def get_customer_detail(
                 "AVG(total) as avg_order, "
                 "MIN(created_at) as first_order, MAX(created_at) as last_order "
                 "FROM sales "
-                "WHERE tenant_id = :tid AND status = 'confirmed' "
+                "WHERE tenant_id = :tid AND status = 'completed' "
                 "AND LOWER(customer_name) LIKE LOWER(:name) "
                 "GROUP BY customer_name, customer_phone "
                 "ORDER BY total_spent DESC "
@@ -1024,7 +1024,7 @@ async def get_customer_detail(
             text(
                 "SELECT s.sale_number, s.total, s.payment_methods, s.created_at "
                 "FROM sales s "
-                "WHERE s.tenant_id = :tid AND s.status = 'confirmed' "
+                "WHERE s.tenant_id = :tid AND s.status = 'completed' "
                 "AND LOWER(s.customer_name) LIKE LOWER(:name) "
                 "ORDER BY s.created_at DESC "
                 "LIMIT 10"
@@ -1123,7 +1123,7 @@ async def get_payment_methods(
             text(
                 "SELECT payment_methods, total "
                 "FROM sales "
-                "WHERE tenant_id = :tid AND status = 'confirmed' AND created_at >= :start"
+                "WHERE tenant_id = :tid AND status = 'completed' AND created_at >= :start"
             ),
             {"tid": tenant_id, "start": start},
         )
@@ -1179,7 +1179,7 @@ async def get_category_performance(
                 "SUM(si.qty) as total_qty, "
                 "SUM(si.line_total) as total_revenue "
                 "FROM sale_items si "
-                "JOIN sales s ON s.id = si.sale_id AND s.status = 'confirmed' "
+                "JOIN sales s ON s.id = si.sale_id AND s.status = 'completed' "
                 "JOIN products p ON p.id = si.product_id "
                 "LEFT JOIN categories c ON c.id = p.category_id "
                 "WHERE s.tenant_id = :tid AND s.created_at >= :start "
@@ -1225,7 +1225,7 @@ async def get_daily_summary(
             text(
                 "SELECT COUNT(*), COALESCE(SUM(total), 0), COALESCE(AVG(total), 0) "
                 "FROM sales "
-                "WHERE tenant_id = :tid AND status = 'confirmed' "
+                "WHERE tenant_id = :tid AND status = 'completed' "
                 "AND created_at >= :start"
             ),
             {"tid": tenant_id, "start": today_start},
@@ -1238,7 +1238,7 @@ async def get_daily_summary(
                 "FROM sale_items si "
                 "JOIN sales s ON s.id = si.sale_id "
                 "JOIN products p ON p.id = si.product_id "
-                "WHERE s.tenant_id = :tid AND s.status = 'confirmed' "
+                "WHERE s.tenant_id = :tid AND s.status = 'completed' "
                 "AND s.created_at >= :start "
                 "GROUP BY p.name ORDER BY revenue DESC LIMIT 3"
             ),
@@ -1294,7 +1294,7 @@ async def get_comparison(
                     "SELECT COUNT(*), COALESCE(SUM(total), 0), "
                     "COUNT(DISTINCT customer_name) "
                     "FROM sales "
-                    "WHERE tenant_id = :tid AND status = 'confirmed' "
+                    "WHERE tenant_id = :tid AND status = 'completed' "
                     "AND created_at >= :start AND created_at < :end"
                 ),
                 {"tid": tenant_id, "start": start, "end": end},
@@ -1352,7 +1352,7 @@ async def get_tax_summary(
             text(
                 "SELECT COALESCE(SUM(tax), 0), COALESCE(SUM(subtotal), 0), COUNT(*) "
                 "FROM sales "
-                "WHERE tenant_id = :tid AND status = 'confirmed' AND created_at >= :start"
+                "WHERE tenant_id = :tid AND status = 'completed' AND created_at >= :start"
             ),
             {"tid": tenant_id, "start": start},
         )
@@ -1434,13 +1434,13 @@ async def get_business_health(
 
         curr = await session.execute(
             text("SELECT COUNT(*), COALESCE(SUM(total), 0) FROM sales "
-                 "WHERE tenant_id = :tid AND status = 'confirmed' AND created_at >= :start"),
+                 "WHERE tenant_id = :tid AND status = 'completed' AND created_at >= :start"),
             {"tid": tenant_id, "start": month_start},
         )
         curr_row = curr.fetchone()
         prev = await session.execute(
             text("SELECT COUNT(*), COALESCE(SUM(total), 0) FROM sales "
-                 "WHERE tenant_id = :tid AND status = 'confirmed' AND created_at >= :start AND created_at < :end"),
+                 "WHERE tenant_id = :tid AND status = 'completed' AND created_at >= :start AND created_at < :end"),
             {"tid": tenant_id, "start": prev_month_start, "end": month_start},
         )
         prev_row = prev.fetchone()
