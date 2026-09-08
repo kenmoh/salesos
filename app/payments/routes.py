@@ -449,14 +449,19 @@ async def payment_status(sale_id: str, ctx: TenantDep):
     from uuid import UUID
     from sqlalchemy import select
     from app.payments.models import PaymentIntent, Payment
+    from app.sales.repository import get_sale_by_id
 
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
-        # Check if this is an intent_id (no sale exists yet in intent-first flow)
-        intent_result = await session.execute(
-            select(PaymentIntent).where(PaymentIntent.id == UUID(sale_id))
-        )
-        intent = intent_result.scalar_one_or_none()
+        # Try as intent_id first (for intent-first flow polling)
+        intent = None
+        try:
+            intent_result = await session.execute(
+                select(PaymentIntent).where(PaymentIntent.id == UUID(sale_id))
+            )
+            intent = intent_result.scalar_one_or_none()
+        except (ValueError, AttributeError):
+            pass
 
         if intent:
             intent_status = PaymentIntentStatus(
@@ -467,7 +472,6 @@ async def payment_status(sale_id: str, ctx: TenantDep):
             )
 
             if intent.sale_id:
-                from app.sales.repository import get_sale_by_id
                 sale = await get_sale_by_id(session, intent.sale_id)
                 payments_result = await session.execute(
                     select(Payment).where(Payment.sale_id == intent.sale_id)
@@ -476,17 +480,14 @@ async def payment_status(sale_id: str, ctx: TenantDep):
                 amount_paid = sum(float(p.amount) for p in payments)
                 sale_total = float(sale.total) if sale else float(intent.amount)
             else:
-                from app.catalog.qr import generate_qr_base64
                 payments = []
                 amount_paid = 0.0
                 sale_total = float(intent.amount)
 
-            status = intent.status
-
             return ok(
                 PaymentStatusResponse(
                     sale_id=sale_id,
-                    status=status,
+                    status=intent.status,
                     amount_paid=round(amount_paid, 2),
                     total=sale_total,
                     intents=[intent_status],
@@ -494,8 +495,12 @@ async def payment_status(sale_id: str, ctx: TenantDep):
             )
 
         # Legacy: look up by sale_id
-        from app.sales.repository import get_sale_by_id
-        sale = await get_sale_by_id(session, UUID(sale_id))
+        try:
+            sale_uuid = UUID(sale_id)
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=404, detail="Sale not found")
+
+        sale = await get_sale_by_id(session, sale_uuid)
         if not sale:
             raise HTTPException(status_code=404, detail="Sale not found")
 
