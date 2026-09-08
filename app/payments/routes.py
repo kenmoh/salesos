@@ -298,6 +298,7 @@ async def cancel_pending_intents(ctx: TenantDep, sale_id: str = Body(..., embed=
     dependencies=[Depends(require_permission("payments:manage"))],
 )
 async def cancel_intent(intent_id: str, ctx: TenantDep):
+    from uuid import UUID
     from app.payments.repository import cancel_intent as cancel_intent_fn
 
     sdb = _get_sdb("payments")
@@ -321,6 +322,7 @@ async def switch_payment_method(intent_id: str, payload: SwitchMethodRequest, ct
     Returns the new intent details (intent_id, payment_url, etc.) so the
     frontend can show the appropriate UI for the new method.
     """
+    from uuid import UUID
     from app.payments.repository import cancel_intent as cancel_intent_fn
     from app.payments.models import PaymentIntent
 
