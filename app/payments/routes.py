@@ -386,15 +386,26 @@ async def pending_payments(ctx: TenantDep):
 
     results = []
     for intent in intents:
-        # Fetch sale details from sales DB
-        sdb_sales = _get_sdb("sales")
-        async with sdb_sales.session() as sales_session:
-            sale = await get_sale_by_id(sales_session, intent.sale_id)
+        # Fetch sale details from sales DB (may be null for intent-first flow)
+        sale = None
+        if intent.sale_id:
+            sdb_sales = _get_sdb("sales")
+            async with sdb_sales.session() as sales_session:
+                sale = await get_sale_by_id(sales_session, intent.sale_id)
+
+        # Extract sale number from cart snapshot if no sale yet
+        sale_number = sale.sale_number if sale else ""
+        if not sale_number and intent.cart_snapshot:
+            try:
+                snap = json.loads(intent.cart_snapshot)
+                sale_number = snap.get("sale_number", "")
+            except Exception:
+                pass
 
         summary = PendingPaymentSummary(
             intent_id=str(intent.id),
-            sale_id=str(intent.sale_id),
-            sale_number=sale.sale_number if sale else "",
+            sale_id=str(intent.sale_id) if intent.sale_id else "",
+            sale_number=sale_number,
             method=intent.method,
             amount=float(intent.amount),
             created_at=intent.created_at.isoformat() if intent.created_at else "",
