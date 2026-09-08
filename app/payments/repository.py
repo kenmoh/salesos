@@ -118,6 +118,22 @@ async def cancel_pending_intents_by_sale(
     return len(intents)
 
 
+async def cancel_intent(session: AsyncSession, intent_id: UUID) -> bool:
+    """Cancel a single pending payment intent by ID."""
+    result = await session.execute(
+        select(PaymentIntent).where(
+            PaymentIntent.id == intent_id,
+            PaymentIntent.status == "pending",
+        )
+    )
+    intent = result.scalar_one_or_none()
+    if not intent:
+        return False
+    intent.status = "cancelled"
+    await session.flush()
+    return True
+
+
 async def get_pending_intents_by_tenant(
     session: AsyncSession, tenant_id: UUID
 ) -> list[PaymentIntent]:

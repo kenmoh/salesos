@@ -23,6 +23,7 @@ from app.auth.schemas.responses import (
 )
 import app.common.bridge as bridge
 from app.common.bridge import _get_sdb
+from app.payments.schemas import SwitchMethodRequest
 from app.common import flutterwave_service
 
 
@@ -292,6 +293,82 @@ async def cancel_pending_intents(ctx: TenantDep, sale_id: str = Body(..., embed=
     return {"cancelled": count}
 
 
+@router.post(
+    "/cancel/{intent_id}",
+    dependencies=[Depends(require_permission("payments:manage"))],
+)
+async def cancel_intent(intent_id: str, ctx: TenantDep):
+    from app.payments.repository import cancel_intent as cancel_intent_fn
+
+    sdb = _get_sdb("payments")
+    async with sdb.session() as session:
+        cancelled = await cancel_intent_fn(session, UUID(intent_id))
+        await session.commit()
+
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="Pending intent not found")
+    return {"cancelled": True}
+
+
+@router.post(
+    "/switch-method/{intent_id}",
+    response_model=DataResponse[dict],
+    dependencies=[Depends(require_permission("payments:create"))],
+)
+async def switch_payment_method(intent_id: str, payload: SwitchMethodRequest, ctx: TenantDep):
+    """Cancel the current intent and re-initiate with a new payment method.
+
+    Returns the new intent details (intent_id, payment_url, etc.) so the
+    frontend can show the appropriate UI for the new method.
+    """
+    from app.payments.repository import cancel_intent as cancel_intent_fn
+    from app.payments.models import PaymentIntent
+
+    new_method = payload.method
+    sdb = _get_sdb("payments")
+    async with sdb.session() as session:
+        intent = await session.get(PaymentIntent, UUID(intent_id))
+        if not intent:
+            raise HTTPException(status_code=404, detail="Intent not found")
+        if intent.status != "pending":
+            raise HTTPException(status_code=400, detail=f"Intent is {intent.status}, not pending")
+
+        cart_id = str(intent.cart_id) if intent.cart_id else None
+        customer_name = intent.customer_name
+        customer_phone = intent.customer_phone
+        coupon_code = intent.coupon_code
+        store_id = None
+        actor_id = None
+
+        snapshot = json.loads(intent.cart_snapshot or "{}")
+        store_id = snapshot.get("store_id")
+        actor_id = snapshot.get("actor_id")
+
+        # Cancel the old intent
+        await cancel_intent_fn(session, UUID(intent_id))
+        await session.commit()
+
+    if not cart_id:
+        raise HTTPException(status_code=400, detail="Intent has no cart")
+
+    # Re-initiate with the new method
+    from app.common.bridge import initiate_payment
+
+    result = await initiate_payment(
+        business_id=ctx.user.business_id,
+        cart_id=cart_id,
+        method=new_method,
+        customer_email=payload.customer_email or "",
+        customer_name=customer_name,
+        customer_phone=customer_phone,
+        coupon_code=coupon_code,
+        store_id=store_id,
+        actor_id=actor_id,
+    )
+
+    return ok(result)
+
+
 @router.get(
     "/pending",
     response_model=DataResponse[list[PendingPaymentSummary]],
@@ -315,6 +392,7 @@ async def pending_payments(ctx: TenantDep):
             sale = await get_sale_by_id(sales_session, intent.sale_id)
 
         summary = PendingPaymentSummary(
+            intent_id=str(intent.id),
             sale_id=str(intent.sale_id),
             sale_number=sale.sale_number if sale else "",
             method=intent.method,

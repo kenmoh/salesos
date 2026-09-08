@@ -27,6 +27,11 @@ class PaymentIntentResult(BaseModel):
     expires_at: str | None
 
 
+class SwitchMethodRequest(BaseModel):
+    method: str = Field(..., min_length=1, max_length=30)
+    customer_email: str | None = None
+
+
 class WebhookPayload(BaseModel):
     event: str
     data: dict

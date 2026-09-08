@@ -516,6 +516,7 @@ class PaymentStatusResponse(_Base):
 
 
 class PendingPaymentSummary(_Base):
+    intent_id: str = ""
     sale_id: str = ""
     sale_number: str = ""
     method: str = ""
