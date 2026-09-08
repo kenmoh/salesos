@@ -84,6 +84,20 @@ def select_tools(message: str) -> list[str]:
     if any(w in message_lower for w in ["receivable", "unpaid", "outstanding", "owed"]):
         tools.append("get_accounts_receivable")
 
+    # Store tools
+    if any(w in message_lower for w in ["store", "shops", "branches", "outlets"]):
+        tools.append("list_stores")
+    if any(w in message_lower for w in ["store analytics", "store performance", "store sales"]):
+        tools.append("get_store_analytics")
+
+    # Employee tools
+    if any(w in message_lower for w in ["employee", "staff", "team", "worker", "cashier"]):
+        tools.append("get_employees")
+
+    # Expense list
+    if any(w in message_lower for w in ["expense list", "recent expenses", "expenses detail"]):
+        tools.append("get_expenses_list")
+
     # Web tools
     if any(w in message_lower for w in ["price", "cost", "compare", "how much does"]):
         tools.append("compare_product_prices")
@@ -164,6 +178,15 @@ async def invoke_tools(
                     kwargs["period"] = _extract_period(message)
                 elif tool_name == "get_accounts_receivable":
                     pass
+                elif tool_name == "list_stores":
+                    pass
+                elif tool_name == "get_store_analytics":
+                    if tool_args and tool_args.get("store_id"):
+                        kwargs["store_id"] = tool_args["store_id"]
+                elif tool_name == "get_employees":
+                    pass
+                elif tool_name == "get_expenses_list":
+                    kwargs["limit"] = 20
 
                 result_str = await func(**kwargs)
                 result_summary = f"Retrieved data from {tool_name}"

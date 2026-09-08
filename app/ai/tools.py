@@ -704,7 +704,219 @@ async def get_accounts_receivable(
         return json.dumps({"count": 0, "records": [], "error": str(e)})
 
 
-# --- Tool Registry --------------------------------------------------------------------
+# --- Store Tools ----------------------------------------------------------------------
+
+
+async def list_stores(
+    session: AsyncSession,
+    tenant_id: UUID,
+) -> str:
+    """List all stores for the tenant with stock summary.
+
+    Args:
+        session: The async SQLAlchemy database session.
+        tenant_id: The business tenant to filter by.
+
+    Returns:
+        JSON string with store listing.
+    """
+    try:
+        result = await session.execute(
+            text(
+                "SELECT s.id, s.name, s.address, s.is_warehouse, s.status, s.created_at, "
+                "COALESCE(sb_agg.total_products, 0) as total_products, "
+                "COALESCE(sb_agg.total_stock_value, 0) as total_stock_value "
+                "FROM stores s "
+                "LEFT JOIN ("
+                "  SELECT store_id, COUNT(DISTINCT product_id) as total_products, "
+                "  SUM(qty * unit_cost) as total_stock_value "
+                "  FROM stock_balances "
+                "  WHERE tenant_id = :tid AND qty > 0 "
+                "  GROUP BY store_id"
+                ") sb_agg ON sb_agg.store_id = s.id "
+                "WHERE s.tenant_id = :tid "
+                "ORDER BY s.name"
+            ),
+            {"tid": tenant_id},
+        )
+        rows = result.fetchall()
+        stores = [
+            {
+                "id": str(r[0]),
+                "name": r[1],
+                "address": r[2],
+                "is_warehouse": r[3],
+                "status": r[4],
+                "created_at": r[5].isoformat() if r[5] else None,
+                "total_products": int(r[6]),
+                "total_stock_value": float(r[7]),
+            }
+            for r in rows
+        ]
+        return json.dumps({"count": len(stores), "stores": stores})
+    except Exception as e:
+        logger.warning("list_stores failed: %s", e)
+        return json.dumps({"count": 0, "stores": [], "error": str(e)})
+
+
+async def get_store_analytics(
+    session: AsyncSession,
+    tenant_id: UUID,
+    store_id: str | None = None,
+) -> str:
+    """Get sales analytics for a store or all stores this month.
+
+    Args:
+        session: The async SQLAlchemy database session.
+        tenant_id: The business tenant to filter by.
+        store_id: Optional UUID of a specific store.
+
+    Returns:
+        JSON string with store sales analytics.
+    """
+    try:
+        now = datetime.now(UTC)
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        if store_id:
+            store_clause = "AND s.store_id = :sid"
+            params: dict[str, Any] = {"tid": tenant_id, "sid": UUID(store_id), "month_start": month_start}
+        else:
+            store_clause = ""
+            params = {"tid": tenant_id, "month_start": month_start}
+
+        result = await session.execute(
+            text(
+                f"SELECT st.id, st.name, "
+                f"COUNT(s.id) as total_sales, "
+                f"COALESCE(SUM(s.total), 0) as total_revenue, "
+                f"COALESCE(AVG(s.total), 0) as avg_sale, "
+                f"COUNT(DISTINCT DATE(s.created_at)) as active_days "
+                f"FROM stores st "
+                f"LEFT JOIN sales s ON s.store_id = st.id AND s.status = 'confirmed' AND s.created_at >= :month_start "
+                f"WHERE st.tenant_id = :tid {store_clause} "
+                f"GROUP BY st.id, st.name "
+                f"ORDER BY total_revenue DESC"
+            ),
+            params,
+        )
+        rows = result.fetchall()
+        analytics = [
+            {
+                "store_id": str(r[0]),
+                "store_name": r[1],
+                "total_sales": int(r[2]),
+                "total_revenue": float(r[3]),
+                "avg_sale": float(r[4]),
+                "active_days": int(r[5]),
+            }
+            for r in rows
+        ]
+        return json.dumps({"period": "this_month", "stores": analytics})
+    except Exception as e:
+        logger.warning("get_store_analytics failed: %s", e)
+        return json.dumps({"period": "this_month", "stores": [], "error": str(e)})
+
+
+# --- Employee Tools --------------------------------------------------------------------
+
+
+async def get_employees(
+    session: AsyncSession,
+    tenant_id: UUID,
+) -> str:
+    """List employees (users) for the tenant with their roles and last login.
+
+    Args:
+        session: The async SQLAlchemy database session.
+        tenant_id: The business tenant to filter by.
+
+    Returns:
+        JSON string with employee listing.
+    """
+    try:
+        result = await session.execute(
+            text(
+                "SELECT u.id, u.full_name, u.email, u.phone, u.status, u.last_login_at, "
+                "u.created_at, "
+                "COALESCE(r.name, 'No Role') as role_name "
+                "FROM users u "
+                "LEFT JOIN user_roles ur ON ur.user_id = u.id "
+                "LEFT JOIN roles r ON r.id = ur.role_id "
+                "WHERE u.tenant_id = :tid "
+                "ORDER BY u.full_name"
+            ),
+            {"tid": tenant_id},
+        )
+        rows = result.fetchall()
+        employees = [
+            {
+                "id": str(r[0]),
+                "full_name": r[1],
+                "email": r[2],
+                "phone": r[3],
+                "status": r[4],
+                "last_login_at": r[5].isoformat() if r[5] else None,
+                "created_at": r[6].isoformat() if r[6] else None,
+                "role": r[7],
+            }
+            for r in rows
+        ]
+        return json.dumps({"count": len(employees), "employees": employees})
+    except Exception as e:
+        logger.warning("get_employees failed: %s", e)
+        return json.dumps({"count": 0, "employees": [], "error": str(e)})
+
+
+# --- Expense Tools ---------------------------------------------------------------------
+
+
+async def get_expenses_list(
+    session: AsyncSession,
+    tenant_id: UUID,
+    limit: int = 20,
+) -> str:
+    """Get recent expenses with details.
+
+    Args:
+        session: The async SQLAlchemy database session.
+        tenant_id: The business tenant to filter by.
+        limit: Maximum expenses to return (default: 20).
+
+    Returns:
+        JSON string with recent expenses.
+    """
+    try:
+        result = await session.execute(
+            text(
+                "SELECT id, expense_number, category, description, amount, "
+                "vendor, expense_date, created_at "
+                "FROM expenses "
+                "WHERE tenant_id = :tid "
+                "ORDER BY expense_date DESC "
+                "LIMIT :limit"
+            ),
+            {"tid": tenant_id, "limit": limit},
+        )
+        rows = result.fetchall()
+        expenses = [
+            {
+                "id": str(r[0]),
+                "expense_number": r[1],
+                "category": r[2],
+                "description": r[3],
+                "amount": float(r[4]) if r[4] else 0,
+                "vendor": r[5],
+                "expense_date": r[6].isoformat() if r[6] else None,
+                "created_at": r[7].isoformat() if r[7] else None,
+            }
+            for r in rows
+        ]
+        total = sum(e["amount"] for e in expenses)
+        return json.dumps({"count": len(expenses), "total": total, "expenses": expenses})
+    except Exception as e:
+        logger.warning("get_expenses_list failed: %s", e)
+        return json.dumps({"count": 0, "total": 0, "expenses": [], "error": str(e)})
 
 TOOL_REGISTRY: dict[str, Any] = {
     "search_products": search_products,
@@ -719,6 +931,10 @@ TOOL_REGISTRY: dict[str, Any] = {
     "get_profit_loss": get_profit_loss,
     "get_expenses_by_category": get_expenses_by_category,
     "get_accounts_receivable": get_accounts_receivable,
+    "list_stores": list_stores,
+    "get_store_analytics": get_store_analytics,
+    "get_employees": get_employees,
+    "get_expenses_list": get_expenses_list,
 }
 
 TOOL_DESCRIPTIONS = {
@@ -734,6 +950,10 @@ TOOL_DESCRIPTIONS = {
     "get_profit_loss": "Get P&L summary. Args: period (str: week/month/year)",
     "get_expenses_by_category": "Get expense breakdown. Args: period (str: week/month/year)",
     "get_accounts_receivable": "Get unpaid invoices. Args: status_filter (str, optional)",
+    "list_stores": "List all stores with stock summary. Args: none",
+    "get_store_analytics": "Get sales analytics by store this month. Args: store_id (str UUID, optional)",
+    "get_employees": "List employees with roles and last login. Args: none",
+    "get_expenses_list": "Get recent expenses. Args: limit (int, default 20)",
     "compare_product_prices": "Web search for product prices. Args: product_name (str)",
     "search_product_info": "Wikipedia product info. Args: query (str)",
 }
