@@ -99,8 +99,16 @@ class GoogleProvider(LLMProvider):
             max_output_tokens=max_tokens,
         )
         for chunk in llm.stream(messages):
-            if chunk.content:
-                yield chunk.content
+            content = chunk.content
+            if content:
+                if isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and "text" in part:
+                            yield part["text"]
+                        elif isinstance(part, str):
+                            yield part
+                else:
+                    yield str(content)
 
 
 class GroqProvider(LLMProvider):
