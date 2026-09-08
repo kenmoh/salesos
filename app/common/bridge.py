@@ -6372,8 +6372,9 @@ async def initiate_payment(
                 product_map[pid].selling_price if pid in product_map else 0
             )
             qty = float(item.qty)
+            public_id = product_map[pid].public_id if pid in product_map else pid
             snapshot_items.append({
-                "product_id": pid,
+                "product_public_id": public_id,
                 "qty": qty,
                 "unit_price": price,
             })
