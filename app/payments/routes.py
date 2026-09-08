@@ -327,7 +327,11 @@ async def switch_payment_method(intent_id: str, payload: SwitchMethodRequest, ct
     new_method = payload.method
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
-        intent = await session.get(PaymentIntent, UUID(intent_id))
+        try:
+            intent_uuid = UUID(intent_id)
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=400, detail="Invalid intent ID")
+        intent = await session.get(PaymentIntent, intent_uuid)
         if not intent:
             raise HTTPException(status_code=404, detail="Intent not found")
         if intent.status != "pending":
