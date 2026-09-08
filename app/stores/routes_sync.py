@@ -1,7 +1,7 @@
 from datetime import datetime
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile
 from sqlalchemy import select
 
 from app.core.dependencies import TenantDep, require_permission
@@ -154,10 +154,9 @@ async def update_business_settings(payload: BusinessUpdate, ctx: TenantDep):
     dependencies=[Depends(require_permission("sync:manage"))],
 )
 async def upload_business_logo(
-    file: "UploadFile",
-    ctx: TenantDep,
+    file: UploadFile = File(...),
+    ctx: TenantDep = Depends(),
 ):
-    from fastapi import UploadFile as _UploadFile
     from app.tenancy.models import Tenant
     from app.catalog.cloudinary_upload import _ensure_configured, _configured
     import cloudinary.uploader
