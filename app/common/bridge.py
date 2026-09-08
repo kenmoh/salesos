@@ -5357,29 +5357,33 @@ async def checkout_cart(
                 raise ValueError("cart_empty")
 
             # Support both product_public_id (new) and product_id (old snapshots)
-            raw_public_ids = [
+            raw_ids = [
                 i.get("product_public_id") or i.get("product_id", "")
                 for i in items
             ]
-            validated = [
-                CheckoutItem(product_public_id=pid, qty=Decimal(str(i["qty"])))
-                for pid, i in zip(raw_public_ids, items)
-            ]
 
             # Batch-resolve UUID product_ids to public_ids (old snapshot format)
-            uuid_pids = [
-                v.product_public_id for v in validated
-                if v.product_public_id and len(v.product_public_id) == 36 and v.product_public_id.count("-") == 4
+            resolved_ids = list(raw_ids)
+            uuid_indices = [
+                idx for idx, pid in enumerate(resolved_ids)
+                if pid and len(pid) == 36 and pid.count("-") == 4
             ]
-            if uuid_pids:
+            if uuid_indices:
                 sdb_cat = _get_sdb("catalog")
                 async with sdb_cat.session() as cat_session:
                     from app.catalog.repository import get_products_by_ids
-                    prods = await get_products_by_ids(cat_session, [UUID(p) for p in uuid_pids])
+                    uuid_vals = [UUID(resolved_ids[idx]) for idx in uuid_indices]
+                    prods = await get_products_by_ids(cat_session, uuid_vals)
                     id_to_pub = {str(p.id): p.public_id for p in prods}
-                    for v in validated:
-                        if v.product_public_id in id_to_pub:
-                            v.product_public_id = id_to_pub[v.product_public_id]
+                    for idx in uuid_indices:
+                        pub = id_to_pub.get(resolved_ids[idx])
+                        if pub:
+                            resolved_ids[idx] = pub
+
+            validated = [
+                CheckoutItem(product_public_id=pid, qty=Decimal(str(i["qty"])))
+                for pid, i in zip(resolved_ids, items)
+            ]
 
             # Batch-lookup all products from catalog (1 query)
             public_ids = [i.product_public_id for i in validated]
