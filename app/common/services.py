@@ -177,10 +177,48 @@ async def create_sale(*, session: AsyncSession, business_id: str, user_id: str, 
 
 
 async def get_sale(*, session: AsyncSession, business_id: str, sale_id: str) -> dict:
-    rows = await call(session, "api.fn_get_sale", p_bid=business_id, p_sale_id=sale_id)
-    if not rows:
+    from app.sales.models import Sale, SaleItem
+    from sqlalchemy import select
+    from uuid import UUID
+
+    result = await session.execute(
+        select(Sale).where(Sale.id == UUID(sale_id), Sale.tenant_id == UUID(business_id))
+    )
+    sale = result.scalars().first()
+    if not sale:
         raise ValueError("sale_not_found")
-    return rows[0]
+
+    items_result = await session.execute(
+        select(SaleItem).where(SaleItem.sale_id == sale.id).order_by(SaleItem.id)
+    )
+    items = [
+        {
+            "product_id": str(si.product_id),
+            "product_name": si.product_name,
+            "qty": float(si.qty),
+            "unit_price": float(si.unit_price),
+            "discount": float(si.discount_pct) if si.discount_pct else 0,
+            "tax_rate": float(si.tax_rate) if si.tax_rate else None,
+        }
+        for si in items_result.scalars().all()
+    ]
+
+    return {
+        "id": str(sale.id),
+        "sale_number": sale.sale_number or "",
+        "status": sale.status or "pending",
+        "customer_name": sale.customer_name,
+        "customer_phone": None,
+        "subtotal": float(sale.subtotal) if sale.subtotal else 0,
+        "discount": float(sale.discount) if sale.discount else 0,
+        "tax": float(sale.tax) if sale.tax else 0,
+        "total": float(sale.total) if sale.total else 0,
+        "amount_paid": float(sale.amount_paid) if sale.amount_paid else 0,
+        "payment_methods": sale.payment_methods if isinstance(sale.payment_methods, dict) else None,
+        "notes": sale.notes,
+        "items": items,
+        "created_at": sale.created_at.isoformat() if sale.created_at else None,
+    }
 
 
 async def list_sales(
@@ -194,20 +232,50 @@ async def list_sales(
     page=1,
     page_size=50,
 ) -> dict:
-    rows = await call(
-        session,
-        "api.fn_list_sales",
-        p_bid=business_id,
-        p_status=status,
-        p_from=from_date,
-        p_to=to_date,
-        p_cashier=cashier_id,
-        p_limit=page_size,
-        p_offset=(page - 1) * page_size,
-    )
+    from app.sales.models import Sale
+    from sqlalchemy import select, func
+    from uuid import UUID
+
+    tid = UUID(business_id)
+    query = select(Sale).where(Sale.tenant_id == tid)
+    count_query = select(func.count()).select_from(Sale).where(Sale.tenant_id == tid)
+
+    if status:
+        query = query.where(Sale.status == status)
+        count_query = count_query.where(Sale.status == status)
+    if cashier_id:
+        query = query.where(Sale.cashier_id == UUID(cashier_id))
+        count_query = count_query.where(Sale.cashier_id == UUID(cashier_id))
+    if from_date:
+        query = query.where(Sale.created_at >= from_date)
+        count_query = count_query.where(Sale.created_at >= from_date)
+    if to_date:
+        query = query.where(Sale.created_at <= to_date)
+        count_query = count_query.where(Sale.created_at <= to_date)
+
+    total_result = await session.execute(count_query)
+    total = total_result.scalar() or 0
+
+    query = query.order_by(Sale.created_at.desc()).limit(page_size).offset((page - 1) * page_size)
+    result = await session.execute(query)
+    sales = list(result.scalars().all())
+
+    items = [
+        {
+            "id": str(s.id),
+            "sale_number": s.sale_number or "",
+            "status": s.status or "pending",
+            "customer_name": s.customer_name,
+            "total": float(s.total) if s.total else 0,
+            "amount_paid": float(s.amount_paid) if s.amount_paid else 0,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+        }
+        for s in sales
+    ]
+
     return {
-        "items": rows,
-        "total": rows[0].get("total_count") if rows else None,
+        "items": items,
+        "total": total,
         "page": page,
         "page_size": page_size,
     }
