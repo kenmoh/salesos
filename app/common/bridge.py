@@ -141,6 +141,8 @@ async def _deduct_stock_for_sale(
 
         await session.commit()
 
+    await cache.delete_pattern(f"sf:cache:store_products:list:{business_id}:{store_id}*")
+
 
 async def _record_movement(
     session,
@@ -1934,6 +1936,8 @@ async def adjust_stock(
             session.add(write.to_model())
         await session.commit()
 
+    await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{store_id}*")
+
     return {"adjustment_id": str(adjustment.id), "new_balance": balance.qty}
 
 
@@ -3210,6 +3214,9 @@ async def transfer_stock(
             session.add(write.to_model())
         await session.commit()
 
+    await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{from_store_id}*")
+    await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{to_store_id}*")
+
     return {
         "from_adjustment_id": str(from_adj.id),
         "to_adjustment_id": str(to_adj.id),
@@ -3536,6 +3543,11 @@ async def fulfill_transfer_request(
         for write in outbox:
             session.add(write.to_model())
         await session.commit()
+
+    supplying_store_id = str(request.supplying_store_id)
+    requesting_store_id = str(request.requesting_store_id)
+    await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{supplying_store_id}*")
+    await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{requesting_store_id}*")
 
     return {
         "request_id": str(updated_request.id),
