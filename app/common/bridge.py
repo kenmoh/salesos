@@ -5395,10 +5395,10 @@ async def checkout_cart(
             tax_enabled = False
             tax_rate_map: dict[UUID, float] = {}
             if cart_store_id:
-                from app.stores.repository import get_store
+                from app.stores.repository import get_store_by_id
                 sdb_inv = _get_sdb("inventory")
                 async with sdb_inv.session() as inv_session:
-                    store = await get_store(inv_session, UUID(str(cart_store_id)))
+                    store = await get_store_by_id(inv_session, UUID(str(cart_store_id)))
                     if store:
                         tax_enabled = getattr(store, "tax_enabled", False)
 
