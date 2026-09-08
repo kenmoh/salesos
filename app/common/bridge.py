@@ -66,6 +66,37 @@ def _get_sdb(service: str) -> ServiceDatabase:
     return _databases[service]
 
 
+_MV_NAMES = [
+    "mv_daily_sales",
+    "mv_product_rankings",
+    "mv_payment_methods",
+    "mv_cashier_performance",
+    "mv_customer_summary",
+    "mv_inventory_status",
+    "mv_store_sales",
+    "mv_store_product_rankings",
+    "mv_store_inventory",
+]
+
+
+async def _refresh_analytics_views():
+    """Refresh analytics materialized views after a sale.
+
+    Runs as a background task so it doesn't block the response.
+    Errors are logged but not raised — stale analytics are acceptable.
+    """
+    try:
+        engine = _get_shared_engine()
+        async with engine.begin() as conn:
+            for mv in _MV_NAMES:
+                try:
+                    await conn.execute(text(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {mv}"))
+                except Exception:
+                    await conn.execute(text(f"REFRESH MATERIALIZED VIEW {mv}"))
+    except Exception:
+        pass
+
+
 async def _record_movement(
     session,
     *,
@@ -6686,6 +6717,8 @@ async def confirm_payment(
         payment_method=intent.method,
     )
 
+    asyncio.create_task(_refresh_analytics_views())
+
     return {
         "sale_id": sale_id,
         "sale_number": sale_result.get("sale_number", ""),
@@ -6906,6 +6939,9 @@ async def process_split_payment(
         result["sale_status"] = sale.status
         result["amount_paid"] = float(sale.amount_paid)
         result["balance"] = total - float(sale.amount_paid)
+
+        asyncio.create_task(_refresh_analytics_views())
+
         return result
 
 

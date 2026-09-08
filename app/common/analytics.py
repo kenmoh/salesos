@@ -303,39 +303,43 @@ async def payment_breakdown(
     from_date: str,
     to_date: str,
 ) -> dict:
+    from app.sales.models import Sale
+
     tid = UUID(tenant_id)
     d_from = date.fromisoformat(from_date)
     d_to = date.fromisoformat(to_date)
 
     rows = await session.execute(
         select(
-            MvPaymentMethod.method,
-            func.sum(MvPaymentMethod.payment_count).label("count"),
-            func.sum(MvPaymentMethod.total_amount).label("total"),
+            Sale.payment_methods,
         )
         .where(
-            MvPaymentMethod.tenant_id == tid,
-            MvPaymentMethod.date >= d_from,
-            MvPaymentMethod.date <= d_to,
+            Sale.tenant_id == tid,
+            Sale.status == "completed",
+            cast(Sale.created_at, Date) >= d_from,
+            cast(Sale.created_at, Date) <= d_to,
         )
-        .group_by(MvPaymentMethod.method)
-        .order_by(desc("total"))
     )
 
-    items = []
-    tot_count = 0
-    tot_amount = 0
-    for r in rows.mappings():
-        cnt = int(r["count"])
-        amt = float(r["total"])
-        items.append({"method": r["method"], "count": cnt, "total": amt, "percentage": 0})
-        tot_count += cnt
-        tot_amount += amt
+    cash_total = 0.0
+    card_total = 0.0
+    transfer_total = 0.0
 
-    for item in items:
-        item["percentage"] = round(item["total"] / tot_amount * 100, 1) if tot_amount else 0
+    for (pm,) in rows:
+        if not pm:
+            continue
+        split = pm.get("split") if isinstance(pm, dict) else None
+        if split:
+            cash_total += float(split.get("cash", 0) or 0)
+            card_total += float(split.get("card", 0) or 0)
+            transfer_total += float(split.get("transfer", 0) or 0)
+        else:
+            total_val = float(pm.get("compare_total", 0) or 0)
+            cash_total += total_val
 
-    return {"items": items, "total_count": tot_count, "total_amount": tot_amount}
+    total = cash_total + card_total + transfer_total
+
+    return {"cash": cash_total, "card": card_total, "transfer": transfer_total, "total": total}
 
 
 async def cashier_performance(
@@ -405,8 +409,8 @@ async def inventory_alerts(
                 "product_id": str(r.product_id),
                 "product_name": r.product_name,
                 "sku": r.sku,
-                "current_qty": float(r.current_qty),
-                "reorder_point": float(r.reorder_point) if r.reorder_point else 0,
+                "qty": float(r.current_qty),
+                "min_stock_level": float(r.reorder_point) if r.reorder_point else 0,
                 "status": r.status,
             }
         )
