@@ -22,6 +22,11 @@ async def get_products_by_public_ids(session: AsyncSession, public_ids: list[str
     return list(result.scalars().all())
 
 
+async def get_products_by_ids(session: AsyncSession, product_ids: list[UUID]) -> list[Product]:
+    result = await session.execute(select(Product).where(Product.id.in_(product_ids)))
+    return list(result.scalars().all())
+
+
 async def get_product_by_sku(session: AsyncSession, tenant_id: UUID, sku: str) -> Product | None:
     result = await session.execute(
         select(Product).where(Product.tenant_id == tenant_id, Product.sku == sku)

@@ -5356,10 +5356,30 @@ async def checkout_cart(
             if not items:
                 raise ValueError("cart_empty")
 
-            validated = [
-                CheckoutItem(product_public_id=i["product_public_id"], qty=Decimal(str(i["qty"])))
+            # Support both product_public_id (new) and product_id (old snapshots)
+            raw_public_ids = [
+                i.get("product_public_id") or i.get("product_id", "")
                 for i in items
             ]
+            validated = [
+                CheckoutItem(product_public_id=pid, qty=Decimal(str(i["qty"])))
+                for pid, i in zip(raw_public_ids, items)
+            ]
+
+            # Batch-resolve UUID product_ids to public_ids (old snapshot format)
+            uuid_pids = [
+                v.product_public_id for v in validated
+                if v.product_public_id and len(v.product_public_id) == 36 and v.product_public_id.count("-") == 4
+            ]
+            if uuid_pids:
+                sdb_cat = _get_sdb("catalog")
+                async with sdb_cat.session() as cat_session:
+                    from app.catalog.repository import get_products_by_ids
+                    prods = await get_products_by_ids(cat_session, [UUID(p) for p in uuid_pids])
+                    id_to_pub = {str(p.id): p.public_id for p in prods}
+                    for v in validated:
+                        if v.product_public_id in id_to_pub:
+                            v.product_public_id = id_to_pub[v.product_public_id]
 
             # Batch-lookup all products from catalog (1 query)
             public_ids = [i.product_public_id for i in validated]
