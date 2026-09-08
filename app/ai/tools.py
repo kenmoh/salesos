@@ -464,32 +464,51 @@ async def get_customer_insights(
 async def get_inventory_alerts(
     session: AsyncSession,
     tenant_id: UUID,
-    threshold: int = 10,
+    threshold: int | None = None,
 ) -> str:
     """Get products with low stock levels (reorder alerts).
+
+    Uses each product's reorder_point from the database. If no threshold is
+    provided, filters products where available stock <= their reorder_point.
 
     Args:
         session: The async SQLAlchemy database session.
         tenant_id: The business tenant to filter by.
-        threshold: Stock level threshold for alerts (default: 10).
+        threshold: Optional override -- if set, ignores per-product reorder_point.
 
     Returns:
         JSON string with low-stock products.
     """
     try:
-        result = await session.execute(
-            text(
-                "SELECT p.name, p.sku, SUM(sb.qty) as total_stock, "
-                "SUM(sb.reserved_qty) as total_reserved "
-                "FROM stock_balances sb "
-                "JOIN products p ON p.id = sb.product_id "
-                "WHERE sb.tenant_id = :tid "
-                "GROUP BY p.name, p.sku "
-                "HAVING SUM(sb.qty) - SUM(sb.reserved_qty) <= :threshold "
-                "ORDER BY (SUM(sb.qty) - SUM(sb.reserved_qty)) ASC"
-            ),
-            {"tid": tenant_id, "threshold": threshold},
-        )
+        if threshold is not None:
+            result = await session.execute(
+                text(
+                    "SELECT p.name, p.sku, SUM(sb.qty) as total_stock, "
+                    "SUM(sb.reserved_qty) as total_reserved "
+                    "FROM stock_balances sb "
+                    "JOIN products p ON p.id = sb.product_id "
+                    "WHERE sb.tenant_id = :tid "
+                    "GROUP BY p.name, p.sku "
+                    "HAVING SUM(sb.qty) - SUM(sb.reserved_qty) <= :threshold "
+                    "ORDER BY (SUM(sb.qty) - SUM(sb.reserved_qty)) ASC"
+                ),
+                {"tid": tenant_id, "threshold": threshold},
+            )
+        else:
+            result = await session.execute(
+                text(
+                    "SELECT p.name, p.sku, SUM(sb.qty) as total_stock, "
+                    "SUM(sb.reserved_qty) as total_reserved, p.reorder_point "
+                    "FROM stock_balances sb "
+                    "JOIN products p ON p.id = sb.product_id "
+                    "WHERE sb.tenant_id = :tid "
+                    "GROUP BY p.name, p.sku, p.reorder_point "
+                    "HAVING SUM(sb.qty) - SUM(sb.reserved_qty) <= p.reorder_point "
+                    "ORDER BY (SUM(sb.qty) - SUM(sb.reserved_qty)) ASC"
+                ),
+                {"tid": tenant_id},
+            )
+
         rows = result.fetchall()
         alerts = [
             {
@@ -498,13 +517,14 @@ async def get_inventory_alerts(
                 "total_stock": float(r[2]),
                 "reserved": float(r[3]),
                 "available": float(r[2]) - float(r[3]),
+                "reorder_point": float(r[4]) if len(r) > 4 and r[4] else None,
             }
             for r in rows
         ]
-        return json.dumps({"threshold": threshold, "count": len(alerts), "alerts": alerts})
+        return json.dumps({"count": len(alerts), "alerts": alerts})
     except Exception as e:
         logger.warning("get_inventory_alerts failed: %s", e)
-        return json.dumps({"threshold": threshold, "count": 0, "alerts": [], "error": str(e)})
+        return json.dumps({"count": 0, "alerts": [], "error": str(e)})
 
 
 # --- Financial Tools ------------------------------------------------------------------
@@ -710,7 +730,7 @@ TOOL_DESCRIPTIONS = {
     "get_revenue_trend": "Get daily revenue trend. Args: days (int, default 30)",
     "get_recent_transactions": "Get recent sales. Args: limit (int, default 10)",
     "get_customer_insights": "Get top customers. Args: limit (int, default 10)",
-    "get_inventory_alerts": "Get low-stock products. Args: threshold (int, default 10)",
+    "get_inventory_alerts": "Get low-stock products using each product's reorder_point. Args: threshold (int, optional override)",
     "get_profit_loss": "Get P&L summary. Args: period (str: week/month/year)",
     "get_expenses_by_category": "Get expense breakdown. Args: period (str: week/month/year)",
     "get_accounts_receivable": "Get unpaid invoices. Args: status_filter (str, optional)",
