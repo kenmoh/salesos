@@ -2185,22 +2185,46 @@ async def _fetch_store_extras(
     categories_seen: dict[str, dict] = {}
     out_of_stock = 0
 
+    # Pre-fetch total sold qty per product for this store
+    sold_map: dict[str, float] = {}
+    from app.sales.models import Sale, SaleItem
+
+    sdb_sales = _get_sdb("sales")
+    async with sdb_sales.session() as session:
+        sold_q = (
+            select(
+                SaleItem.product_id,
+                func.sum(SaleItem.qty).label("total_sold"),
+            )
+            .join(Sale, SaleItem.sale_id == Sale.id)
+            .where(
+                Sale.store_id == sid,
+                Sale.status == "completed",
+            )
+            .group_by(SaleItem.product_id)
+        )
+        result = await session.execute(sold_q)
+        for r in result.all():
+            sold_map[str(r.product_id)] = float(r.total_sold)
+
     for row in rows:
         qty = float(row.StockBalance.qty)
         reserved = float(row.StockBalance.reserved_qty)
         available = qty - reserved
+        product_id = str(row.StockBalance.product_id)
+        sold = sold_map.get(product_id, 0)
 
         if qty == 0:
             out_of_stock += 1
 
         products.append({
-            "id": str(row.StockBalance.product_id),
+            "id": product_id,
             "name": row.name,
             "sku": row.sku,
             "selling_price": float(row.selling_price) if row.selling_price else 0,
             "qty": qty,
             "reserved_qty": reserved,
-            "committed_qty": 0,
+            "committed_qty": sold,
             "available": available,
             "status": row.product_status or "active",
         })
