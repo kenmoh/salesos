@@ -5112,7 +5112,21 @@ async def add_to_cart(
         if cart.status != "active":
             raise ValueError("cart_not_active")
 
+        add_qty = qty if qty is not None else 1
+
         existing = await get_cart_item_by_product(session, UUID(cart_id), UUID(product_id))
+        current_cart_qty = float(existing.qty) if existing else 0
+        new_cart_qty = add_qty if qty is not None else current_cart_qty + 1
+
+        if cart.store_id:
+            from app.inventory.repository import get_stock_balance
+            inv_sdb = _get_sdb("inventory")
+            async with inv_sdb.session() as inv_session:
+                stock = await get_stock_balance(inv_session, UUID(product_id), cart.store_id)
+                available = float(stock.qty) if stock else 0
+                if new_cart_qty > available:
+                    raise ValueError("insufficient_stock")
+
         if existing:
             if qty is not None:
                 existing.qty = Decimal(str(qty))
@@ -5804,6 +5818,19 @@ async def checkout_cart(
                 customer_phone=customer_phone or cart.customer_phone,
                 discount=discount_amount,
             )
+
+            # Validate stock levels before creating the sale
+            if cart_store_id:
+                from app.inventory.repository import get_stock_balance
+                sdb_inv_check = _get_sdb("inventory")
+                async with sdb_inv_check.session() as inv_check_session:
+                    for si in sale_items:
+                        balance = await get_stock_balance(inv_check_session, si.product_id, UUID(str(cart_store_id)))
+                        available = float(balance.qty) - float(balance.reserved_qty) if balance else 0
+                        if float(si.qty) > available:
+                            raise ValueError(
+                                f"insufficient_stock:{si.product_name}:available_{available}"
+                            )
 
             # Create sale in sales DB (separate session)
             sdb_sales = _get_sdb("sales")
