@@ -1,7 +1,7 @@
 import json
 from decimal import Decimal
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, JSONResponse, Request
 from pydantic import BaseModel
 
 from app.core.dependencies import TenantDep, require_permission
@@ -146,19 +146,25 @@ class ConfirmPaymentRequest(BaseModel):
     dependencies=[Depends(require_permission("payments:create"))],
 )
 async def initiate_payment_route(payload: InitiatePaymentRequest, ctx: TenantDep):
-    return ok(
-        await bridge.initiate_payment(
-            business_id=ctx.user.business_id,
-            cart_id=payload.cart_id,
-            method=payload.method,
-            customer_email=payload.customer_email,
-            customer_name=payload.customer_name,
-            customer_phone=payload.customer_phone,
-            coupon_code=payload.coupon_code,
-            store_id=payload.store_id,
-            actor_id=ctx.user.user_id,
+    try:
+        return ok(
+            await bridge.initiate_payment(
+                business_id=ctx.user.business_id,
+                cart_id=payload.cart_id,
+                method=payload.method,
+                customer_email=payload.customer_email,
+                customer_name=payload.customer_name,
+                customer_phone=payload.customer_phone,
+                coupon_code=payload.coupon_code,
+                store_id=payload.store_id,
+                actor_id=ctx.user.user_id,
+            )
         )
-    )
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"message": str(e)},
+        )
 
 
 @router.post(
@@ -167,12 +173,18 @@ async def initiate_payment_route(payload: InitiatePaymentRequest, ctx: TenantDep
     dependencies=[Depends(require_permission("payments:create"))],
 )
 async def confirm_payment_route(payload: ConfirmPaymentRequest, ctx: TenantDep):
-    return ok(
-        await bridge.confirm_payment(
-            business_id=ctx.user.business_id,
-            intent_id=payload.intent_id,
+    try:
+        return ok(
+            await bridge.confirm_payment(
+                business_id=ctx.user.business_id,
+                intent_id=payload.intent_id,
+            )
         )
-    )
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"message": str(e)},
+        )
 
 
 @router.get(

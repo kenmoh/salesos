@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, JSONResponse, Request
 
 from app.core.dependencies import TenantDep, require_permission
 from app.core.responses import DataResponse, ok
@@ -206,9 +206,13 @@ async def checkout_cart(cart_id: str, body: CheckoutRequest, ctx: TenantDep):
             )
         )
     except ValueError as e:
-        if str(e) == "fee_balance_exceeded":
+        err = str(e)
+        if err == "fee_balance_exceeded":
             raise HTTPException(
                 status_code=402,
                 detail="Fee balance exceeded. Please clear outstanding fees before completing this sale.",
             )
-        raise
+        return JSONResponse(
+            status_code=400,
+            content={"message": err},
+        )
