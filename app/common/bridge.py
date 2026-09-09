@@ -6711,7 +6711,6 @@ async def initiate_payment(
         # Resolve discount
         discount_amount = Decimal("0")
         if coupon_code:
-            from app.discounts.repository import validate_coupon, increment_coupon_usage
             coupon_result = await validate_coupon(
                 tenant_id=business_id, code=coupon_code, cart_subtotal=float(total)
             )
