@@ -1,7 +1,8 @@
 import json
 from decimal import Decimal
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, JSONResponse, Query, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.core.dependencies import TenantDep, require_permission

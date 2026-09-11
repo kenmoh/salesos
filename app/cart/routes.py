@@ -1,6 +1,7 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, JSONResponse, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from app.core.dependencies import TenantDep, require_permission
 from app.core.responses import DataResponse, ok
