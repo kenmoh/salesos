@@ -1,7 +1,7 @@
 import json
 from decimal import Decimal
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, JSONResponse, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, JSONResponse, Query, Request
 from pydantic import BaseModel
 
 from app.core.dependencies import TenantDep, require_permission
@@ -704,3 +704,89 @@ async def flutterwave_webhook(request: Request, verif_hash: str = Header(default
             await session.commit()
 
     return ok({"received": True})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SETTLEMENT ENDPOINTS (tenant-facing)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@router.get(
+    "/settlement",
+    dependencies=[Depends(require_permission("payments:read"))],
+)
+async def list_settlement(
+    ctx: TenantDep,
+    status: str | None = Query(None, description="Filter: pending, deducted"),
+):
+    from sqlalchemy import desc, func, select
+
+    from app.platform.models import PlatformFeeLedger
+
+    query = (
+        select(PlatformFeeLedger)
+        .where(PlatformFeeLedger.tenant_id == ctx.user.business_id)
+        .order_by(desc(PlatformFeeLedger.created_at))
+    )
+    if status:
+        query = query.where(PlatformFeeLedger.status == status)
+
+    result = await ctx.session.execute(query)
+    items = result.scalars().all()
+
+    pending_result = await ctx.session.execute(
+        select(func.coalesce(func.sum(PlatformFeeLedger.amount), 0)).where(
+            PlatformFeeLedger.tenant_id == ctx.user.business_id,
+            PlatformFeeLedger.status == "pending",
+        )
+    )
+    total_pending = float(pending_result.scalar())
+
+    deducted_result = await ctx.session.execute(
+        select(func.coalesce(func.sum(PlatformFeeLedger.amount), 0)).where(
+            PlatformFeeLedger.tenant_id == ctx.user.business_id,
+            PlatformFeeLedger.status == "deducted",
+        )
+    )
+    total_deducted = float(deducted_result.scalar())
+
+    return ok(
+        {
+            "items": [
+                {
+                    "id": str(e.id),
+                    "sale_id": str(e.sale_id),
+                    "amount": float(e.amount),
+                    "fee_type": e.fee_type,
+                    "rate": float(e.rate),
+                    "payment_method": e.payment_method,
+                    "status": e.status,
+                    "settled_at": e.settled_at.isoformat() if e.settled_at else None,
+                    "created_at": e.created_at.isoformat(),
+                }
+                for e in items
+            ],
+            "total_pending": total_pending,
+            "total_deducted": total_deducted,
+            "total": len(items),
+        }
+    )
+
+
+@router.get(
+    "/settlement/balance",
+    dependencies=[Depends(require_permission("payments:read"))],
+)
+async def settlement_balance(ctx: TenantDep):
+    from app.platform.fee_calculator import get_max_pending_balance, get_pending_fee_balance
+
+    pending = await get_pending_fee_balance(ctx.session, ctx.user.business_id)
+    max_pending = await get_max_pending_balance(ctx.session)
+
+    return ok(
+        {
+            "pending_balance": pending,
+            "max_pending_balance": max_pending,
+            "is_blocked": pending >= max_pending,
+        }
+    )

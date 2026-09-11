@@ -6223,25 +6223,22 @@ async def record_payment(
         if (
             sale
             and sale.status == "completed"
-            and method in ("cash",)
             and pm.get("platform_fee", 0) > 0
         ):
             from app.platform.models import PlatformFeeLedger
 
-            total_fee = pm["platform_fee"]
-            cash_fee_share = (
-                total_fee * (float(amount) / float(sale.total))
-                if float(sale.total) > 0
-                else total_fee
-            )
+            total_fee = Decimal(str(pm["platform_fee"]))
+            sale_total = Decimal(str(sale.total))
+            pay_amount = Decimal(str(amount))
+            fee_share = total_fee * (pay_amount / sale_total) if sale_total > 0 else total_fee
             ledger = PlatformFeeLedger(
                 tenant_id=UUID(business_id),
                 sale_id=UUID(sale_id),
-                amount=round(cash_fee_share, 2),
+                amount=float(fee_share.quantize(Decimal("0.01"))),
                 fee_type=fee_result["fee_type"],
                 rate=fee_result["rate"],
                 payment_method=method,
-                status="pending",
+                status="deducted" if method in ("card", "transfer") else "pending",
             )
             session.add(ledger)
 
@@ -6342,25 +6339,22 @@ async def record_split_payment(
             pm["fee_rule_id"] = fee_result["rule_id"]
             sale.payment_methods = pm
 
-            total_fee = fee_result["platform_fee"]
+            total_fee = Decimal(str(fee_result["platform_fee"]))
             if total_fee > 0:
                 from app.platform.models import PlatformFeeLedger
 
-                cash_payments = [p for p in payments if p["method"] == "cash"]
-                for cp in cash_payments:
-                    cash_fee_share = (
-                        total_fee * (float(cp["amount"]) / float(sale.total))
-                        if float(sale.total) > 0
-                        else total_fee
-                    )
+                sale_total = Decimal(str(sale.total))
+                for p in payments:
+                    pay_amount = Decimal(str(p["amount"]))
+                    fee_share = total_fee * (pay_amount / sale_total) if sale_total > 0 else total_fee
                     ledger = PlatformFeeLedger(
                         tenant_id=UUID(business_id),
                         sale_id=UUID(sale_id),
-                        amount=round(cash_fee_share, 2),
+                        amount=float(fee_share.quantize(Decimal("0.01"))),
                         fee_type=fee_result["fee_type"],
                         rate=fee_result["rate"],
-                        payment_method="cash",
-                        status="pending",
+                        payment_method=p["method"],
+                        status="deducted" if p["method"] in ("card", "transfer") else "pending",
                     )
                     session.add(ledger)
 
@@ -7188,23 +7182,31 @@ async def process_split_payment(
             pm["fee_rule_id"] = fee_result["rule_id"]
             sale.payment_methods = pm
 
-            if cash_amount > 0 and fee_result["platform_fee"] > 0:
+            if fee_result["platform_fee"] > 0:
                 from app.platform.models import PlatformFeeLedger
 
-                total_fee = fee_result["platform_fee"]
-                cash_fee_share = (
-                    total_fee * (float(cash_amount) / total) if total > 0 else total_fee
-                )
-                ledger = PlatformFeeLedger(
-                    tenant_id=UUID(business_id),
-                    sale_id=UUID(sale_id),
-                    amount=round(cash_fee_share, 2),
-                    fee_type=fee_result["fee_type"],
-                    rate=fee_result["rate"],
-                    payment_method="cash",
-                    status="pending",
-                )
-                session.add(ledger)
+                total_fee = Decimal(str(fee_result["platform_fee"]))
+                sale_total = Decimal(str(total))
+                splits = [
+                    ("cash", cash_amount),
+                    ("card", card_amount),
+                    ("transfer", transfer_amount),
+                ]
+                for method, amt in splits:
+                    if amt <= 0:
+                        continue
+                    pay_amount = Decimal(str(amt))
+                    fee_share = total_fee * (pay_amount / sale_total) if sale_total > 0 else total_fee
+                    ledger = PlatformFeeLedger(
+                        tenant_id=UUID(business_id),
+                        sale_id=UUID(sale_id),
+                        amount=float(fee_share.quantize(Decimal("0.01"))),
+                        fee_type=fee_result["fee_type"],
+                        rate=fee_result["rate"],
+                        payment_method=method,
+                        status="deducted" if method in ("card", "transfer") else "pending",
+                    )
+                    session.add(ledger)
 
         await session.commit()
 
