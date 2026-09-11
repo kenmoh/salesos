@@ -177,7 +177,17 @@ async def balance_sheet(
     from .repository import get_balance_sheet
 
     result = await get_balance_sheet(ctx.session, UUID(ctx.user.business_id), as_at_date)
-    return ok(result)
+    asset_accounts = [{"account_id": "", "account_code": a["code"], "account_name": a["name"], "amount": a["balance"]} for a in result.get("asset_accounts", [])]
+    liability_accounts = [{"account_id": "", "account_code": a["code"], "account_name": a["name"], "amount": a["balance"]} for a in result.get("liability_accounts", [])]
+    equity_accounts = [{"account_id": "", "account_code": a["code"], "account_name": a["name"], "amount": a["balance"]} for a in result.get("equity_accounts", [])]
+    return ok({
+        "assets": asset_accounts,
+        "liabilities": liability_accounts,
+        "equity": equity_accounts,
+        "total_assets": result.get("assets", 0),
+        "total_liabilities": result.get("liabilities", 0),
+        "total_equity": result.get("equity", 0),
+    })
 
 
 @router.get(
@@ -197,7 +207,13 @@ async def cash_flow(
     from .repository import get_cash_flow
 
     result = await get_cash_flow(ctx.session, UUID(ctx.user.business_id), from_dt, to_dt)
-    return ok(result)
+    inflows = [{"account_id": "", "account_code": "", "account_name": i.get("description", ""), "amount": float(i.get("amount", 0))} for i in result.get("operating", {}).get("inflows", [])]
+    outflows = [{"account_id": "", "account_code": "", "account_name": o.get("description", ""), "amount": float(o.get("amount", 0))} for o in result.get("operating", {}).get("outflows", [])]
+    return ok({
+        "inflows": inflows,
+        "outflows": outflows,
+        "net_cash_flow": result.get("net_cash_flow", 0),
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
