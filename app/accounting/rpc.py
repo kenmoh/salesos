@@ -274,7 +274,16 @@ async def create_accounts_receivable(
         p_due_date=due_date,
         p_invoice_id=UUID(invoice_id) if invoice_id else None,
     )
-    return _stringify(rows[0]) if rows else {}
+    row = _stringify(rows[0]) if rows else {}
+    if "out_id" in row:
+        row["id"] = row.pop("out_id")
+    if "out_tenant_id" in row:
+        row["tenant_id"] = row.pop("out_tenant_id")
+    if "out_customer_id" in row:
+        row["customer_id"] = row.pop("out_customer_id")
+    if "out_customer_name" in row:
+        row["customer_name"] = row.pop("out_customer_name")
+    return row
 
 
 async def record_ar_payment(
@@ -301,7 +310,12 @@ async def record_ar_payment(
         p_payment_date=payment_date,
         p_notes=notes,
     )
-    return _stringify(rows[0]) if rows else {}
+    row = _stringify(rows[0]) if rows else {}
+    if "out_id" in row:
+        row["id"] = row.pop("out_id")
+    if "out_tenant_id" in row:
+        row["tenant_id"] = row.pop("out_tenant_id")
+    return row
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -345,7 +359,12 @@ async def create_accounts_payable(
         p_due_date=due_date,
         p_description=description,
     )
-    return _stringify(rows[0]) if rows else {}
+    row = _stringify(rows[0]) if rows else {}
+    if "out_id" in row:
+        row["id"] = row.pop("out_id")
+    if "out_tenant_id" in row:
+        row["tenant_id"] = row.pop("out_tenant_id")
+    return row
 
 
 async def record_ap_payment(
@@ -372,7 +391,12 @@ async def record_ap_payment(
         p_payment_date=payment_date,
         p_notes=notes,
     )
-    return _stringify(rows[0]) if rows else {}
+    row = _stringify(rows[0]) if rows else {}
+    if "out_id" in row:
+        row["id"] = row.pop("out_id")
+    if "out_tenant_id" in row:
+        row["tenant_id"] = row.pop("out_tenant_id")
+    return row
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -430,7 +454,12 @@ async def create_expense(
         p_vendor=vendor,
         p_receipt_url=receipt_url,
     )
-    return _stringify(rows[0]) if rows else {}
+    row = _stringify(rows[0]) if rows else {}
+    if "out_id" in row:
+        row["id"] = row.pop("out_id")
+    if "out_tenant_id" in row:
+        row["tenant_id"] = row.pop("out_tenant_id")
+    return row
 
 
 async def expense_summary(
