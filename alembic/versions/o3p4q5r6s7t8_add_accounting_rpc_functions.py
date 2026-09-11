@@ -141,14 +141,14 @@ def upgrade() -> None:
     # ── fn_trial_balance (match TrialBalanceItem) ─────────────────────────
     op.execute("""
         CREATE OR REPLACE FUNCTION fn_trial_balance(
-            p_tenant_id UUID, p_at DATE DEFAULT NULL
+            p_tenant_id UUID, p_at TEXT DEFAULT NULL
         ) RETURNS TABLE (
             account_id UUID, account_code VARCHAR, account_name VARCHAR,
             account_type VARCHAR, debit NUMERIC, credit NUMERIC
         ) AS $$
         DECLARE cutoff TIMESTAMPTZ;
         BEGIN
-            cutoff := CASE WHEN p_at IS NOT NULL THEN (p_at + INTERVAL '1 day')::TIMESTAMPTZ ELSE NOW() END;
+            cutoff := CASE WHEN p_at IS NOT NULL THEN (p_at::DATE + INTERVAL '1 day')::TIMESTAMPTZ ELSE NOW() END;
             RETURN QUERY
             SELECT c.id, c.code, c.name, c.account_type,
                    COALESCE(SUM(je.debit), 0) AS debit, COALESCE(SUM(je.credit), 0) AS credit
@@ -166,20 +166,20 @@ def upgrade() -> None:
     # ── fn_profit_and_loss (match PnLLineItem - no account_type) ──────────
     op.execute("""
         CREATE OR REPLACE FUNCTION fn_profit_and_loss(
-            p_tenant_id UUID, p_from DATE, p_to DATE
+            p_tenant_id UUID, p_from TEXT, p_to TEXT
         ) RETURNS TABLE (
             account_id UUID, account_code VARCHAR, account_name VARCHAR, amount NUMERIC
         ) AS $$
         DECLARE cutoff TIMESTAMPTZ;
         BEGIN
-            cutoff := (p_to + INTERVAL '1 day')::TIMESTAMPTZ;
+            cutoff := (p_to::DATE + INTERVAL '1 day')::TIMESTAMPTZ;
             RETURN QUERY
             SELECT c.id, c.code, c.name,
                    CASE WHEN c.account_type = 'revenue' THEN COALESCE(SUM(je.credit), 0) - COALESCE(SUM(je.debit), 0)
                         ELSE COALESCE(SUM(je.debit), 0) - COALESCE(SUM(je.credit), 0) END AS amount
             FROM chart_of_accounts c
             LEFT JOIN journal_entries je ON je.account_id = c.id
-                AND je.status = 'posted' AND (je.posted_at IS NULL OR (je.posted_at >= p_from AND je.posted_at <= cutoff))
+                AND je.status = 'posted' AND (je.posted_at IS NULL OR (je.posted_at >= p_from::DATE AND je.posted_at <= cutoff))
             WHERE c.tenant_id = p_tenant_id AND c.account_type IN ('revenue', 'expense')
             GROUP BY c.id, c.code, c.name, c.account_type
             HAVING CASE WHEN c.account_type = 'revenue' THEN COALESCE(SUM(je.credit), 0) - COALESCE(SUM(je.debit), 0)
@@ -325,7 +325,7 @@ def upgrade() -> None:
     op.execute("""
         CREATE OR REPLACE FUNCTION fn_list_expenses(
             p_tenant_id UUID, p_category VARCHAR DEFAULT NULL,
-            p_from DATE DEFAULT NULL, p_to DATE DEFAULT NULL
+            p_from TEXT DEFAULT NULL, p_to TEXT DEFAULT NULL
         ) RETURNS TABLE (
             id UUID, tenant_id UUID, expense_number VARCHAR, category VARCHAR,
             description TEXT, amount NUMERIC, expense_date TIMESTAMPTZ, vendor VARCHAR,
@@ -333,8 +333,8 @@ def upgrade() -> None:
         ) AS $$
         DECLARE from_ts TIMESTAMPTZ; to_ts TIMESTAMPTZ;
         BEGIN
-            from_ts := CASE WHEN p_from IS NOT NULL THEN p_from::TIMESTAMPTZ ELSE NULL END;
-            to_ts := CASE WHEN p_to IS NOT NULL THEN (p_to + INTERVAL '1 day')::TIMESTAMPTZ ELSE NULL END;
+            from_ts := CASE WHEN p_from IS NOT NULL THEN p_from::DATE::TIMESTAMPTZ ELSE NULL END;
+            to_ts := CASE WHEN p_to IS NOT NULL THEN (p_to::DATE + INTERVAL '1 day')::TIMESTAMPTZ ELSE NULL END;
             RETURN QUERY
             SELECT e.id, e.tenant_id, e.expense_number, e.category, e.description,
                    e.amount, e.expense_date, e.vendor, e.receipt_url, e.account_id,
@@ -353,7 +353,7 @@ def upgrade() -> None:
     op.execute("""
         CREATE OR REPLACE FUNCTION fn_create_expense(
             p_tenant_id UUID, p_category VARCHAR, p_description TEXT,
-            p_amount NUMERIC, p_expense_date DATE, p_created_by UUID,
+            p_amount NUMERIC, p_expense_date TEXT, p_created_by UUID,
             p_vendor VARCHAR DEFAULT NULL, p_receipt_url TEXT DEFAULT NULL
         ) RETURNS TABLE (
             id UUID, tenant_id UUID, expense_number VARCHAR, category VARCHAR,
@@ -373,7 +373,7 @@ def upgrade() -> None:
                     jsonb_build_object('account_id', cash_account_id::TEXT, 'account_code', '1000', 'debit', 0, 'credit', p_amount, 'description', p_description, 'type', 'asset')
                 ));
             INSERT INTO expenses (id, tenant_id, expense_number, category, description, amount, vendor, receipt_url, expense_date, account_id, journal_id, created_by, created_at)
-            VALUES (new_id, p_tenant_id, exp_number, p_category, p_description, p_amount, p_vendor, p_receipt_url, p_expense_date, exp_account_id, new_journal_id, p_created_by, NOW());
+            VALUES (new_id, p_tenant_id, exp_number, p_category, p_description, p_amount, p_vendor, p_receipt_url, p_expense_date::DATE, exp_account_id, new_journal_id, p_created_by, NOW());
             RETURN QUERY
             SELECT e.id, e.tenant_id, e.expense_number, e.category, e.description,
                    e.amount, e.expense_date, e.vendor, e.receipt_url, e.account_id, e.journal_id, e.created_by
@@ -385,15 +385,15 @@ def upgrade() -> None:
     # ── fn_expense_summary ────────────────────────────────────────────────
     op.execute("""
         CREATE OR REPLACE FUNCTION fn_expense_summary(
-            p_tenant_id UUID, p_from DATE DEFAULT NULL, p_to DATE DEFAULT NULL
+            p_tenant_id UUID, p_from TEXT DEFAULT NULL, p_to TEXT DEFAULT NULL
         ) RETURNS TABLE (category VARCHAR, total NUMERIC) AS $$
         BEGIN
             RETURN QUERY
             SELECT e.category, SUM(e.amount) AS total
             FROM expenses e
             WHERE e.tenant_id = p_tenant_id
-              AND (p_from IS NULL OR e.expense_date >= p_from)
-              AND (p_to IS NULL OR e.expense_date <= p_to)
+              AND (p_from IS NULL OR e.expense_date >= p_from::DATE)
+              AND (p_to IS NULL OR e.expense_date <= p_to::DATE)
             GROUP BY e.category
             ORDER BY total DESC;
         END;
