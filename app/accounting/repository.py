@@ -172,7 +172,7 @@ async def delete_account(
     session: AsyncSession,
     account_id: UUID,
     tenant_id: UUID,
-) -> bool:
+) -> tuple[bool, str]:
     result = await session.execute(
         select(ChartOfAccount).where(
             ChartOfAccount.id == account_id,
@@ -181,10 +181,19 @@ async def delete_account(
     )
     account = result.scalar_one_or_none()
     if not account:
-        return False
+        return False, "Account not found"
+
+    je_count = await session.execute(
+        select(func.count(JournalEntry.id)).where(
+            JournalEntry.account_id == account_id,
+        )
+    )
+    if (je_count.scalar() or 0) > 0:
+        return False, "Cannot delete account with journal entries"
+
     await session.delete(account)
     await session.flush()
-    return True
+    return True, ""
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

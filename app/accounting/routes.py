@@ -143,14 +143,14 @@ async def delete_account(account_id: str, ctx: TenantDep):
     from .repository import delete_account as repo_delete
     from uuid import UUID
 
-    deleted = await repo_delete(
+    deleted, error = await repo_delete(
         ctx.session,
         account_id=UUID(account_id),
         tenant_id=UUID(ctx.user.business_id),
     )
     if not deleted:
         from fastapi.responses import JSONResponse
-        return JSONResponse(status_code=404, content={"detail": "Account not found"})
+        return JSONResponse(status_code=400, content={"detail": error})
     return None
 
 
