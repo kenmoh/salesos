@@ -128,6 +128,65 @@ async def list_accounts(
     return list(result.scalars().all())
 
 
+async def update_account(
+    session: AsyncSession,
+    account_id: UUID,
+    tenant_id: UUID,
+    name: str,
+) -> ChartOfAccount | None:
+    result = await session.execute(
+        select(ChartOfAccount).where(
+            ChartOfAccount.id == account_id,
+            ChartOfAccount.tenant_id == tenant_id,
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        return None
+    account.name = name
+    await session.flush()
+    return account
+
+
+async def toggle_account_status(
+    session: AsyncSession,
+    account_id: UUID,
+    tenant_id: UUID,
+    status: str,
+) -> ChartOfAccount | None:
+    result = await session.execute(
+        select(ChartOfAccount).where(
+            ChartOfAccount.id == account_id,
+            ChartOfAccount.tenant_id == tenant_id,
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        return None
+    account.status = status
+    await session.flush()
+    return account
+
+
+async def delete_account(
+    session: AsyncSession,
+    account_id: UUID,
+    tenant_id: UUID,
+) -> bool:
+    result = await session.execute(
+        select(ChartOfAccount).where(
+            ChartOfAccount.id == account_id,
+            ChartOfAccount.tenant_id == tenant_id,
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        return False
+    await session.delete(account)
+    await session.flush()
+    return True
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  JOURNAL REPOSITORY
 # ═══════════════════════════════════════════════════════════════════════════════

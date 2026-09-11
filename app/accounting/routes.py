@@ -34,7 +34,9 @@ from .schemas import (
     ProfitAndLossResponse,
     RecordPaymentRequest,
     ReceivableResponse,
+    ToggleAccountStatusRequest,
     TrialBalanceItem,
+    UpdateAccountRequest,
 )
 
 router = APIRouter(prefix="/accounting", tags=["Accounting"])
@@ -74,6 +76,82 @@ async def create_account(payload: CreateAccountRequest, ctx: TenantDep):
         parent_id=payload.parent_id,
     )
     return ok(result)
+
+
+@router.put(
+    "/accounts/{account_id}",
+    response_model=DataResponse[AccountResponse],
+    dependencies=[Depends(require_permission("accounting:write"))],
+)
+async def update_account(account_id: str, payload: UpdateAccountRequest, ctx: TenantDep):
+    from .repository import update_account as repo_update
+    from uuid import UUID
+
+    account = await repo_update(
+        ctx.session,
+        account_id=UUID(account_id),
+        tenant_id=UUID(ctx.user.business_id),
+        name=payload.name,
+    )
+    if not account:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=404, content={"detail": "Account not found"})
+    return ok({
+        "id": str(account.id),
+        "tenant_id": str(account.tenant_id),
+        "code": account.code,
+        "name": account.name,
+        "account_type": account.account_type,
+        "status": account.status,
+    })
+
+
+@router.patch(
+    "/accounts/{account_id}/status",
+    response_model=DataResponse[AccountResponse],
+    dependencies=[Depends(require_permission("accounting:write"))],
+)
+async def toggle_account_status(account_id: str, payload: ToggleAccountStatusRequest, ctx: TenantDep):
+    from .repository import toggle_account_status as repo_toggle
+    from uuid import UUID
+
+    account = await repo_toggle(
+        ctx.session,
+        account_id=UUID(account_id),
+        tenant_id=UUID(ctx.user.business_id),
+        status=payload.status,
+    )
+    if not account:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=404, content={"detail": "Account not found"})
+    return ok({
+        "id": str(account.id),
+        "tenant_id": str(account.tenant_id),
+        "code": account.code,
+        "name": account.name,
+        "account_type": account.account_type,
+        "status": account.status,
+    })
+
+
+@router.delete(
+    "/accounts/{account_id}",
+    status_code=204,
+    dependencies=[Depends(require_permission("accounting:write"))],
+)
+async def delete_account(account_id: str, ctx: TenantDep):
+    from .repository import delete_account as repo_delete
+    from uuid import UUID
+
+    deleted = await repo_delete(
+        ctx.session,
+        account_id=UUID(account_id),
+        tenant_id=UUID(ctx.user.business_id),
+    )
+    if not deleted:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=404, content={"detail": "Account not found"})
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

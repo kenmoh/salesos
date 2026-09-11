@@ -176,6 +176,14 @@ class CreateAccountRequest(BaseModel):
     parent_id: str | None = None
 
 
+class UpdateAccountRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+
+
+class ToggleAccountStatusRequest(BaseModel):
+    status: str = Field(..., pattern=r"^(active|inactive)$")
+
+
 class JournalEntryLineRequest(BaseModel):
     account_id: str
     account_code: str = Field(..., min_length=1, max_length=20)
