@@ -991,6 +991,7 @@ async def _get_cash_flows_by_type(
         filter_condition = JournalEntry.credit > 0
 
     query = select(
+        Journal.journal_number,
         JournalEntry.description,
         func.sum(amount_col).label("amount"),
         Journal.posted_at,
@@ -1004,6 +1005,7 @@ async def _get_cash_flows_by_type(
         Journal.posted_at >= from_date,
         Journal.posted_at <= to_date,
     ).group_by(
+        Journal.journal_number,
         JournalEntry.description,
         Journal.posted_at,
     ).order_by(
@@ -1014,6 +1016,7 @@ async def _get_cash_flows_by_type(
     flows = []
     for row in result.all():
         flows.append({
+            "journal_number": row.journal_number or "",
             "date": row.posted_at.date().isoformat() if row.posted_at else None,
             "description": row.description or "Unknown",
             "amount": round(float(row.amount), 2),

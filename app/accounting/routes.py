@@ -285,8 +285,8 @@ async def cash_flow(
     from .repository import get_cash_flow
 
     result = await get_cash_flow(ctx.session, UUID(ctx.user.business_id), from_dt, to_dt)
-    inflows = [{"account_id": "", "account_code": "", "account_name": i.get("description", ""), "amount": float(i.get("amount", 0))} for i in result.get("operating", {}).get("inflows", [])]
-    outflows = [{"account_id": "", "account_code": "", "account_name": o.get("description", ""), "amount": float(o.get("amount", 0))} for o in result.get("operating", {}).get("outflows", [])]
+    inflows = [{"account_id": i.get("journal_number", ""), "account_code": i.get("journal_number", ""), "account_name": i.get("description", ""), "amount": float(i.get("amount", 0))} for i in result.get("operating", {}).get("inflows", [])]
+    outflows = [{"account_id": o.get("journal_number", ""), "account_code": o.get("journal_number", ""), "account_name": o.get("description", ""), "amount": float(o.get("amount", 0))} for o in result.get("operating", {}).get("outflows", [])]
     return ok({
         "inflows": inflows,
         "outflows": outflows,
