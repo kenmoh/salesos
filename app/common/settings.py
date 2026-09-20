@@ -26,6 +26,8 @@ class CommonSettings(BaseSettings):
     db_password: str = Field(default="", alias="DATABASE_PASSWORD")
     db_name: str = Field(default="storeflow", alias="DATABASE_NAME")
 
+    logfire_token: str = Field(default="", alias="LOGFIRE_TOKEN")
+
     rabbitmq_url: str = Field(default="", alias="RABBIT_MQ_URL")
     celery_broker_url: str = Field(default="", alias="RABBIT_MQ_URL")
     celery_result_backend: str = "redis://localhost:6379/3"

@@ -20,6 +20,7 @@ dependencies = [
     "langchain-google-genai>=4.4.0",
     "langchain-groq>=0.2.0",
     "langchain-openai>=0.2.0",
+    "logfire[fastapi,system-metrics]>=5.1.0",
     "passlib[bcrypt]>=1.7.4",
     "pydantic-settings>=2.15.0",
     "pyotp>=2.10.0",
@@ -31,6 +32,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.52",
     "structlog>=26.1.0",
     "user-agent>=0.1.14",
+    "uvicorn>=0.52.4",
 ]
 
 [tool.pytest.ini_options]

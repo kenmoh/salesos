@@ -83,6 +83,8 @@ class ApiSettings(BaseSettings):
     resend_api_key: str = Field(default="", alias="RESEND_API_KEY")
     resend_from_email: str = Field(default="noreply@salesos.ng", alias="RESEND_FROM_EMAIL")
 
+    logfire_token: str = Field(default="", alias="LOGFIRE_TOKEN")
+
     termii_api_key: str = Field(default="", alias="TERMII_API_KEY")
     termii_from: str = Field(default="SalesOS", alias="TERMII_FROM")
     termii_base_url: str = Field(
