@@ -745,6 +745,12 @@ wheels = [
 ]
 
 [[package]]
+name = "fpdf"
+version = "1.7.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/37/c6/608a9e6c172bf9124aa687ec8b9f0e8e5d697d59a5f4fad0e2d5ec2a7556/fpdf-1.7.2.tar.gz", hash = "sha256:125840783289e7d12552b1e86ab692c37322e7a65b96a99e0ea86cca041b6779", size = 39504, upload-time = "2015-01-21T00:07:47.493Z" }
+
+[[package]]
 name = "google-auth"
 version = "2.57.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2187,6 +2193,7 @@ dependencies = [
     { name = "email-validator" },
     { name = "exponent-server-sdk" },
     { name = "fastapi", extra = ["standard"] },
+    { name = "fpdf" },
     { name = "google-auth" },
     { name = "langchain-anthropic" },
     { name = "langchain-core" },
@@ -2219,6 +2226,7 @@ requires-dist = [
     { name = "email-validator", specifier = ">=2.3.0" },
     { name = "exponent-server-sdk", specifier = ">=2.2.0" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.141.1" },
+    { name = "fpdf", specifier = ">=1.7.2" },
     { name = "google-auth", specifier = ">=2.35.0" },
     { name = "langchain-anthropic", specifier = ">=0.2.0" },
     { name = "langchain-core", specifier = ">=0.3.0" },

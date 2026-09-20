@@ -124,9 +124,30 @@ FUNCTIONS = [
             exp_number VARCHAR := 'EXP-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-' || UPPER(SUBSTR(v_id::TEXT, 1, 8));
             exp_account_code VARCHAR; exp_account_id UUID; cash_account_id UUID; new_journal_id UUID;
         BEGIN
-            exp_account_code := CASE p_category WHEN 'rent' THEN '5010' WHEN 'utilities' THEN '5020' WHEN 'salaries' THEN '5030' WHEN 'supplies' THEN '5040' WHEN 'transport' THEN '5050' WHEN 'marketing' THEN '5060' WHEN 'bank_charges' THEN '5070' ELSE '5099' END;
+            -- Codes mirror EXPENSE_CATEGORY_ACCOUNT_MAP in app/accounting/seed.py
+            -- (rent=5100, utilities=5200, salaries=5300, supplies=5400, transport=5500,
+            --  marketing=5600, bank_charges=5700, phone_internet=5800, other=5900)
+            exp_account_code := CASE p_category
+                WHEN 'rent' THEN '5100'
+                WHEN 'utilities' THEN '5200'
+                WHEN 'salaries' THEN '5300'
+                WHEN 'supplies' THEN '5400'
+                WHEN 'transport' THEN '5500'
+                WHEN 'marketing' THEN '5600'
+                WHEN 'bank_charges' THEN '5700'
+                WHEN 'phone_internet' THEN '5800'
+                ELSE '5900'
+            END;
+
             SELECT id INTO exp_account_id FROM chart_of_accounts WHERE tenant_id = p_tenant_id AND code = exp_account_code LIMIT 1;
+            IF exp_account_id IS NULL THEN
+                RAISE EXCEPTION 'Expense account ''%'' not found for tenant %. Seed the Chart of Accounts first.', exp_account_code, p_tenant_id;
+            END IF;
+
             SELECT id INTO cash_account_id FROM chart_of_accounts WHERE tenant_id = p_tenant_id AND code = '1000' LIMIT 1;
+            IF cash_account_id IS NULL THEN
+                RAISE EXCEPTION 'Cash account ''1000'' not found for tenant %. Seed the Chart of Accounts first.', p_tenant_id;
+            END IF;
             new_journal_id := fn_post_journal(p_tenant_id := p_tenant_id, p_uid := p_created_by, p_desc := 'Expense: ' || p_category || ' - ' || p_description,
                 p_entries := jsonb_build_array(
                     jsonb_build_object('account_id', exp_account_id::TEXT, 'account_code', exp_account_code, 'debit', p_amount, 'credit', 0, 'description', p_description, 'type', 'expense'),
