@@ -76,6 +76,7 @@ class Sale(StoreFlowBase):
     subtotal: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False, default=0)
     discount: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False, default=0)
     tax: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False, default=0)
+    tax_breakdown: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     total: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False, default=0)
     amount_paid: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False, default=0)
     payment_methods: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)

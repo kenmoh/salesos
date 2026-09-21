@@ -22,6 +22,7 @@ class SaleCreateCommand(BaseModel):
     customer_phone: str | None = None
     items: list[SaleItemLine] = Field(..., min_length=1)
     discount: Decimal = Decimal("0")
+    taxes: list[dict] = Field(default_factory=list)
     notes: str | None = None
     correlation_id: str | None = None
 

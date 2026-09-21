@@ -1034,6 +1034,7 @@ async def create_sale_via_service(
     store_id: str | None = None,
     notes: str | None = None,
     correlation_id: str | None = None,
+    taxes: list[dict] | None = None,
 ) -> dict:
     """Create a sale record through the sales service.
 
@@ -1045,7 +1046,7 @@ async def create_sale_via_service(
         cashier_id: Identifier of the cashier or user processing the sale.
         items: List of sale item dictionaries, each containing
             ``product_id``, ``product_name``, ``qty``, ``unit_price``, and
-            optionally ``discount_pct`` and ``tax_rate``.
+            optionally ``discount_pct``.
         discount: Optional discount applied to the entire sale.
         customer_name: Optional name of the customer.
         customer_phone: Optional phone number of the customer.
@@ -1053,6 +1054,7 @@ async def create_sale_via_service(
         notes: Optional notes attached to the sale.
         correlation_id: Optional correlation identifier for distributed
             tracing.
+        taxes: List of active tax dicts with ``name`` and ``rate`` keys.
 
     Returns:
         A dictionary containing the newly created sale details including
@@ -1069,7 +1071,6 @@ async def create_sale_via_service(
             qty=Decimal(str(i["qty"])),
             unit_price=Decimal(str(i["unit_price"])),
             discount_pct=Decimal(str(i.get("discount_pct", 0))),
-            tax_rate=Decimal(str(i["tax_rate"])) if i.get("tax_rate") else None,
         )
         for i in items
     ]
@@ -1082,6 +1083,7 @@ async def create_sale_via_service(
         customer_phone=customer_phone,
         items=sale_items,
         discount=discount or Decimal("0"),
+        taxes=taxes or [],
         notes=notes,
         correlation_id=correlation_id,
     )
@@ -6959,6 +6961,7 @@ async def build_receipt_data(
         "subtotal": float(sale.subtotal) if sale else 0,
         "discount": float(sale.discount) if sale else 0,
         "tax": float(sale.tax) if sale else 0,
+        "tax_breakdown": sale.tax_breakdown if sale and sale.tax_breakdown else [],
         "total": float(sale.total) if sale else 0,
         "amount_paid": float(sale.amount_paid) if sale else 0,
         "payment_method": payment_method,

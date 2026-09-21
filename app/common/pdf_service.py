@@ -13,6 +13,10 @@ class StoreFlowPDF(FPDF):
         super().__init__()
         self.business_name = business_name
 
+    @staticmethod
+    def _naira(amount: float) -> str:
+        return f"NGN {amount:,.2f}"
+
     def header(self):
         self.set_font("Helvetica", "B", 18)
         self.cell(0, 10, self.business_name)
@@ -62,30 +66,36 @@ class StoreFlowPDF(FPDF):
             self.cell(col_widths[0], 6, str(idx), border=1, align="C")
             self.cell(col_widths[1], 6, str(item.get("description", ""))[:35], border=1)
             self.cell(col_widths[2], 6, f"{qty:.1f}", border=1, align="C")
-            self.cell(col_widths[3], 6, f"₦{unit_price:,.2f}", border=1, align="R")
+            self.cell(col_widths[3], 6, f"NGN{unit_price:,.2f}", border=1, align="R")
             self.cell(col_widths[4], 6, f"{discount_pct:.0f}%", border=1, align="C")
-            self.cell(col_widths[5], 6, f"₦{line_total:,.2f}", border=1, align="R")
+            self.cell(col_widths[5], 6, f"NGN{line_total:,.2f}", border=1, align="R")
             self.ln()
 
-    def totals_section(self, subtotal: float, tax: float = 0, total: float = 0):
+    def totals_section(self, subtotal: float, tax: float = 0, total: float = 0, tax_breakdown: list[dict] | None = None):
         self.ln(3)
         self.set_font("Helvetica", "B", 10)
         x_start = self.w - 70
         self.set_x(x_start)
         self.cell(35, 7, "Subtotal:")
-        self.cell(35, 7, f"₦{subtotal:,.2f}", align="R")
+        self.cell(35, 7, f"NGN{subtotal:,.2f}", align="R")
         self.ln(7)
 
-        if tax > 0:
+        if tax_breakdown:
+            for t in tax_breakdown:
+                self.set_x(x_start)
+                self.cell(35, 7, f"{t['name']} ({t['rate']}%):")
+                self.cell(35, 7, f"NGN{t['amount']:,.2f}", align="R")
+                self.ln(7)
+        elif tax > 0:
             self.set_x(x_start)
             self.cell(35, 7, "Tax:")
-            self.cell(35, 7, f"₦{tax:,.2f}", align="R")
+            self.cell(35, 7, f"NGN{tax:,.2f}", align="R")
             self.ln(7)
 
         self.set_font("Helvetica", "B", 12)
         self.set_x(x_start)
         self.cell(35, 8, "Total:")
-        self.cell(35, 8, f"₦{total:,.2f}", align="R")
+        self.cell(35, 8, f"NGN{total:,.2f}", align="R")
         self.ln(8)
 
     def notes_section(self, notes: str = "", terms: str = ""):
@@ -117,6 +127,7 @@ def generate_invoice_pdf(
     notes: str = "",
     terms: str = "",
     business_name: str = "StoreFlow",
+    tax_breakdown: list[dict] | None = None,
 ) -> bytes:
     pdf = StoreFlowPDF(business_name)
     pdf.alias_nb_pages()
@@ -129,7 +140,7 @@ def generate_invoice_pdf(
     pdf.ln(3)
 
     pdf.items_table(items)
-    pdf.totals_section(subtotal, tax, total)
+    pdf.totals_section(subtotal, tax, total, tax_breakdown=tax_breakdown)
     pdf.notes_section(notes, terms)
 
     return pdf.output()
@@ -143,6 +154,8 @@ def generate_receipt_pdf(
     payment_method: str = "Cash",
     total: float = 0,
     business_name: str = "StoreFlow",
+    tax: float = 0,
+    tax_breakdown: list[dict] | None = None,
 ) -> bytes:
     pdf = StoreFlowPDF(business_name)
     pdf.alias_nb_pages()
@@ -154,7 +167,7 @@ def generate_receipt_pdf(
     pdf.ln(3)
 
     pdf.items_table(items)
-    pdf.totals_section(subtotal, 0, total)
+    pdf.totals_section(subtotal, tax, total, tax_breakdown=tax_breakdown)
 
     return pdf.output()
 
@@ -169,6 +182,7 @@ def generate_quote_pdf(
     notes: str = "",
     terms: str = "",
     business_name: str = "StoreFlow",
+    tax_breakdown: list[dict] | None = None,
 ) -> bytes:
     pdf = StoreFlowPDF(business_name)
     pdf.alias_nb_pages()
@@ -179,7 +193,7 @@ def generate_quote_pdf(
     pdf.ln(3)
 
     pdf.items_table(items)
-    pdf.totals_section(subtotal, tax, total)
+    pdf.totals_section(subtotal, tax, total, tax_breakdown=tax_breakdown)
     pdf.notes_section(notes, terms)
 
     return pdf.output()

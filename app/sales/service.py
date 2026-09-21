@@ -31,10 +31,17 @@ def plan_sale_creation(
     subtotal = sum(float(i.qty) * float(i.unit_price) for i in command.items)
     discount_amt = float(command.discount)
     taxable_amt = subtotal - discount_amt
-    tax = sum(
-        float(i.qty) * float(i.unit_price) * (float(i.tax_rate or 0) / 100) for i in command.items
-    )
-    total = taxable_amt + tax
+
+    tax_breakdown = []
+    total_tax = 0.0
+    for t in command.taxes:
+        rate = float(t["rate"])
+        name = t.get("name", "")
+        amt = round(taxable_amt * (rate / 100), 2)
+        tax_breakdown.append({"name": name, "rate": rate, "amount": amt})
+        total_tax += amt
+
+    total = taxable_amt + total_tax
 
     sale = Sale(
         id=sale_id,
@@ -47,7 +54,8 @@ def plan_sale_creation(
         cashier_id=command.cashier_id,
         subtotal=subtotal,
         discount=discount_amt,
-        tax=tax,
+        tax=total_tax,
+        tax_breakdown=tax_breakdown if tax_breakdown else None,
         total=total,
         notes=command.notes,
     )
@@ -57,7 +65,6 @@ def plan_sale_creation(
         qty = float(line.qty)
         unit_price = float(line.unit_price)
         discount_pct = float(line.discount_pct)
-        tax_rate = float(line.tax_rate or 0)
         line_discount = unit_price * qty * (discount_pct / 100)
         line_total = (unit_price * qty) - line_discount
 
@@ -70,7 +77,6 @@ def plan_sale_creation(
             unit_price=unit_price,
             discount_pct=discount_pct,
             tax_id=line.tax_id,
-            tax_rate=tax_rate if tax_rate else None,
             line_total=line_total,
         )
         items.append(item)
@@ -92,7 +98,7 @@ def plan_sale_creation(
         status="pending",
         subtotal=subtotal,
         discount=discount_amt,
-        tax=tax,
+        tax=total_tax,
         total=total,
         amount_paid=0,
         item_count=len(items),

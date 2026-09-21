@@ -13,10 +13,14 @@ from app.sales.repository import (
 )
 from app.sales.schemas import ReceiptCreateCommand, SaleCreateCommand, SaleItemLine
 from app.sales.service import plan_create_receipt, plan_sale_creation
+from app.taxes.repository import list_taxes
 
 
 async def handle_cart_checked_out(envelope: EventEnvelope, session: AsyncSession) -> None:
     """Handle cart checked out event by creating a sale.
+
+    Resolves the tenant's active tax and applies it to all sale items
+    so the backend is the source of truth for tax calculation.
 
     Args:
         envelope: Event envelope with cart details in payload.
@@ -30,12 +34,16 @@ async def handle_cart_checked_out(envelope: EventEnvelope, session: AsyncSession
     if not tenant_id or not cart_id or not items_data:
         return
 
+    taxes = await list_taxes(session, UUID(tenant_id))
+    active_taxes = [t for t in taxes if t.is_active]
+
     sale_items = [
         SaleItemLine(
             product_id=UUID(i["product_id"]),
             product_name=i["product_name"],
             qty=Decimal(i["qty"]),
             unit_price=Decimal(i["unit_price"]),
+            tax_id=active_taxes[0].id if active_taxes else None,
         )
         for i in items_data
     ]
@@ -44,6 +52,7 @@ async def handle_cart_checked_out(envelope: EventEnvelope, session: AsyncSession
         tenant_id=UUID(tenant_id),
         cashier_id=UUID(session_id),
         items=sale_items,
+        taxes=[{"name": t.name, "rate": float(t.rate)} for t in active_taxes],
         correlation_id=envelope.correlation_id,
     )
 

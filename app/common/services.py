@@ -212,6 +212,7 @@ async def get_sale(*, session: AsyncSession, business_id: str, sale_id: str) -> 
         "subtotal": float(sale.subtotal) if sale.subtotal else 0,
         "discount": float(sale.discount) if sale.discount else 0,
         "tax": float(sale.tax) if sale.tax else 0,
+        "tax_breakdown": sale.tax_breakdown if isinstance(sale.tax_breakdown, list) else [],
         "total": float(sale.total) if sale.total else 0,
         "amount_paid": float(sale.amount_paid) if sale.amount_paid else 0,
         "payment_methods": sale.payment_methods if isinstance(sale.payment_methods, dict) else None,

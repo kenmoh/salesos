@@ -12,6 +12,7 @@ from app.auth.schemas.responses import (
 )
 import app.common.bridge as bridge
 from app.common import services
+from app.taxes.repository import list_taxes
 
 router = APIRouter(prefix="/sales", tags=["Sales"])
 
@@ -22,8 +23,10 @@ router = APIRouter(prefix="/sales", tags=["Sales"])
     response_model=DataResponse[SaleCreated],
     dependencies=[Depends(require_permission("sales:create"))],
 )
-async def create_sale(payload: SaleCreate, ctx: TenantDep):
+async def create_sale(payload: SaleCreate, ctx: DbTenantDep):
     items = [i.model_dump() for i in payload.items]
+    taxes = await list_taxes(ctx.session, ctx.user.business_id)
+    active_taxes = [t for t in taxes if t.is_active]
     return ok(
         await bridge.create_sale_via_service(
             tenant_id=ctx.user.business_id,
@@ -34,6 +37,7 @@ async def create_sale(payload: SaleCreate, ctx: TenantDep):
             customer_phone=payload.customer_phone,
             store_id=str(payload.store_id) if payload.store_id else None,
             notes=payload.notes,
+            taxes=[{"name": t.name, "rate": float(t.rate)} for t in active_taxes],
         )
     )
 
