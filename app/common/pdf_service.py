@@ -15,10 +15,12 @@ class StoreFlowPDF(FPDF):
 
     def header(self):
         self.set_font("Helvetica", "B", 18)
-        self.cell(0, 10, self.business_name, new_x="LMARGIN", new_y="NEXT")
+        self.cell(0, 10, self.business_name)
+        self.ln(10)
         self.set_font("Helvetica", "", 9)
         self.set_text_color(128, 128, 128)
-        self.cell(0, 5, "Powered by StoreFlow", new_x="LMARGIN", new_y="NEXT")
+        self.cell(0, 5, "Powered by StoreFlow")
+        self.ln(5)
         self.set_text_color(0, 0, 0)
         self.ln(5)
 
@@ -30,14 +32,16 @@ class StoreFlowPDF(FPDF):
 
     def document_title(self, title: str, doc_number: str):
         self.set_font("Helvetica", "B", 14)
-        self.cell(0, 10, f"{title}: {doc_number}", new_x="LMARGIN", new_y="NEXT")
+        self.cell(0, 10, f"{title}: {doc_number}")
+        self.ln(10)
         self.ln(2)
 
     def info_row(self, label: str, value: str):
         self.set_font("Helvetica", "B", 10)
         self.cell(40, 6, label)
         self.set_font("Helvetica", "", 10)
-        self.cell(0, 6, value, new_x="LMARGIN", new_y="NEXT")
+        self.cell(0, 6, value)
+        self.ln(6)
 
     def items_table(self, items: list[dict]):
         self.ln(3)
@@ -69,30 +73,35 @@ class StoreFlowPDF(FPDF):
         x_start = self.w - 70
         self.set_x(x_start)
         self.cell(35, 7, "Subtotal:")
-        self.cell(35, 7, f"₦{subtotal:,.2f}", align="R", new_x="LMARGIN", new_y="NEXT")
+        self.cell(35, 7, f"₦{subtotal:,.2f}", align="R")
+        self.ln(7)
 
         if tax > 0:
             self.set_x(x_start)
             self.cell(35, 7, "Tax:")
-            self.cell(35, 7, f"₦{tax:,.2f}", align="R", new_x="LMARGIN", new_y="NEXT")
+            self.cell(35, 7, f"₦{tax:,.2f}", align="R")
+            self.ln(7)
 
         self.set_font("Helvetica", "B", 12)
         self.set_x(x_start)
         self.cell(35, 8, "Total:")
-        self.cell(35, 8, f"₦{total:,.2f}", align="R", new_x="LMARGIN", new_y="NEXT")
+        self.cell(35, 8, f"₦{total:,.2f}", align="R")
+        self.ln(8)
 
     def notes_section(self, notes: str = "", terms: str = ""):
         if notes:
             self.ln(5)
             self.set_font("Helvetica", "B", 10)
-            self.cell(0, 6, "Notes:", new_x="LMARGIN", new_y="NEXT")
+            self.cell(0, 6, "Notes:")
+            self.ln(6)
             self.set_font("Helvetica", "", 9)
             self.multi_cell(0, 5, notes)
 
         if terms:
             self.ln(3)
             self.set_font("Helvetica", "B", 10)
-            self.cell(0, 6, "Terms:", new_x="LMARGIN", new_y="NEXT")
+            self.cell(0, 6, "Terms:")
+            self.ln(6)
             self.set_font("Helvetica", "", 9)
             self.multi_cell(0, 5, terms)
 
