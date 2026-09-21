@@ -2563,7 +2563,7 @@ async def create_product_for_store(
             sku=sku,
             selling_price=float(selling_price),
             cost_price=float(cost_price) if cost_price else 0,
-            tax_rate=float(tax_rate) if tax_rate else None,
+            tax_id=UUID(tax_id) if tax_id else None,
             reorder_point=reorder_point,
             image_url=image_url,
             status="active",
