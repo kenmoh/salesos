@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 
 class TaxCreateCommand(BaseModel):
-    tenant_id: UUID
+    tenant_id: UUID | None = None
     name: str = Field(min_length=1, max_length=50)
     rate: float = Field(ge=0, le=100)
 
