@@ -43,7 +43,9 @@ def _get_shared_engine():
             common_settings.database_url,
             pool_size=30,
             max_overflow=15,
-            pool_pre_ping=True,
+            # pool_pre_ping removed: extra round trip per checkout; see
+            # app/common/db/engine.py for rationale.
+            pool_recycle=1800,
             pool_timeout=60,
             echo=False,
             future=True,
@@ -2542,7 +2544,6 @@ async def create_product_for_store(
             unit=unit,
             cost_price=cost_price,
             selling_price=selling_price,
-            tax_rate=tax_rate,
             reorder_point=reorder_point,
             image_url=image_url,
         )
@@ -5671,57 +5672,64 @@ async def checkout_cart(
                 if missing:
                     raise ValueError(f"products_not_found:{','.join(missing)}")
 
-            # Resolve prices from store_products if store_id is on the cart
+            # Resolve prices from store_products if store_id is on the cart.
+            # Single inventory pass (store row + all store_products + tax rates)
+            # instead of N+1 per-product sessions.
             store_product_map = {}
             cart_store_id = getattr(cart, "store_id", None)
+            tax_enabled = False
+            tax_rate_map: dict[UUID, float] = {}
             if cart_store_id:
-                from app.stores.repository import get_store_product
+                from sqlalchemy import select as sa_select
+
+                from app.stores.models import Store, StoreProduct
+                from app.taxes.models import Tax
 
                 sdb_inv = _get_sdb("inventory")
                 async with sdb_inv.session() as inv_session:
-                    for p in products:
-                        sp = await get_store_product(
-                            inv_session, cart_store_id, p.id
+                    store_result = await inv_session.execute(
+                        sa_select(Store).where(
+                            Store.id == UUID(str(cart_store_id)),
+                            Store.tenant_id == tenant_uid,
                         )
-                        if sp:
-                            store_product_map[p.public_id] = sp
+                    )
+                    store = store_result.scalar_one_or_none()
+                    if store:
+                        tax_enabled = getattr(store, "tax_enabled", False)
+
+                    sp_result = await inv_session.execute(
+                        sa_select(StoreProduct).where(
+                            StoreProduct.store_id == UUID(str(cart_store_id)),
+                            StoreProduct.product_id.in_([p.id for p in products]),
+                        )
+                    )
+                    id_to_pub = {p.id: p.public_id for p in products}
+                    for sp in sp_result.scalars().all():
+                        pub = id_to_pub.get(sp.product_id)
+                        if pub:
+                            store_product_map[pub] = sp
+
+                    if tax_enabled:
+                        # Collect unique tax_ids from store_products and catalog products
+                        tax_ids: set[UUID] = set()
+                        for sp in store_product_map.values():
+                            if hasattr(sp, "tax_id") and sp.tax_id:
+                                tax_ids.add(sp.tax_id)
+                        for p in products:
+                            if hasattr(p, "tax_id") and p.tax_id:
+                                tax_ids.add(p.tax_id)
+                        # Batch-fetch tax rates
+                        if tax_ids:
+                            tax_result = await inv_session.execute(
+                                sa_select(Tax).where(Tax.id.in_(tax_ids), Tax.is_active == True)
+                            )
+                            for tax in tax_result.scalars().all():
+                                tax_rate_map[tax.id] = float(tax.rate)
 
             product_map = {p.public_id: p for p in products}
             cost_map = {}
             for pid, sp in store_product_map.items():
                 cost_map[pid] = float(sp.cost_price) if hasattr(sp, "cost_price") else 0
-
-            # Resolve tax info: check store tax_enabled + collect tax_ids
-            tax_enabled = False
-            tax_rate_map: dict[UUID, float] = {}
-            if cart_store_id:
-                from app.stores.repository import get_store_by_id
-                sdb_inv = _get_sdb("inventory")
-                async with sdb_inv.session() as inv_session:
-                    store = await get_store_by_id(inv_session, UUID(str(cart_store_id)))
-                    if store:
-                        tax_enabled = getattr(store, "tax_enabled", False)
-
-                if tax_enabled:
-                    # Collect unique tax_ids from store_products and catalog products
-                    tax_ids: set[UUID] = set()
-                    for sp in store_product_map.values():
-                        if hasattr(sp, "tax_id") and sp.tax_id:
-                            tax_ids.add(sp.tax_id)
-                    for p in products:
-                        if hasattr(p, "tax_id") and p.tax_id:
-                            tax_ids.add(p.tax_id)
-
-                    # Batch-fetch tax rates
-                    if tax_ids:
-                        from app.taxes.models import Tax
-                        from sqlalchemy import select as sa_select
-                        async with sdb_inv.session() as tax_session:
-                            result = await tax_session.execute(
-                                sa_select(Tax).where(Tax.id.in_(tax_ids), Tax.is_active == True)
-                            )
-                            for tax in result.scalars().all():
-                                tax_rate_map[tax.id] = float(tax.rate)
 
             resolved = []
             for i in validated:
@@ -5819,87 +5827,120 @@ async def checkout_cart(
                 discount=discount_amount,
             )
 
-            # Validate stock levels before creating the sale
+            # Validate stock levels before creating the sale (single batched query)
             if cart_store_id:
-                from app.inventory.repository import get_stock_balance
+                from sqlalchemy import select as sa_select
+
+                from app.inventory.models import StockBalance
+
                 sdb_inv_check = _get_sdb("inventory")
                 async with sdb_inv_check.session() as inv_check_session:
+                    bal_result = await inv_check_session.execute(
+                        sa_select(StockBalance).where(
+                            StockBalance.store_id == UUID(str(cart_store_id)),
+                            StockBalance.product_id.in_([si.product_id for si in sale_items]),
+                        )
+                    )
+                    balances = {b.product_id: b for b in bal_result.scalars().all()}
                     for si in sale_items:
-                        balance = await get_stock_balance(inv_check_session, si.product_id, UUID(str(cart_store_id)))
+                        balance = balances.get(si.product_id)
                         available = float(balance.qty) - float(balance.reserved_qty) if balance else 0
                         if float(si.qty) > available:
                             raise ValueError(
                                 f"insufficient_stock:{si.product_name}:available_{available}"
                             )
 
-            # Create sale in sales DB (separate session)
-            sdb_sales = _get_sdb("sales")
-            async with sdb_sales.session() as sales_session:
-                result, sale_model, sale_item_models, sale_outbox = plan_sale_creation(sale_command)
-                await repo_create_sale(sales_session, sale_model)
-                await create_sale_items(sales_session, sale_item_models)
-                for write in sale_outbox:
-                    sales_session.add(write.to_model())
-                await sales_session.commit()
+            # ── Single write transaction: sale, stock, journal, cart finalize ──
+            # These used to be four separate transactions (sales, stock, journal,
+            # cart) — each paying multiple network round trips. All tables live in
+            # one database, so they commit atomically here instead.
+            result, sale_model, sale_item_models, sale_outbox = plan_sale_creation(sale_command)
 
-            # Deduct stock for sold items
-            await _deduct_stock_for_sale(
-                business_id=tenant_id,
-                store_id=str(cart_store_id) if cart_store_id else store_id,
-                sale_items=sale_items,
-            )
+            await repo_create_sale(cart_session, sale_model)
+            await create_sale_items(cart_session, sale_item_models)
+            for write in sale_outbox:
+                cart_session.add(write.to_model())
+
+            # Deduct stock inline (same transaction)
+            deduct_store_id = str(cart_store_id) if cart_store_id else store_id
+            if deduct_store_id:
+                from app.inventory.models import StockBalance
+                from app.inventory.repository import get_stock_balance as _get_stock_balance
+
+                for si in sale_items:
+                    current = await _get_stock_balance(
+                        cart_session, si.product_id, UUID(deduct_store_id)
+                    )
+                    if current:
+                        current.qty = Decimal(str(max(float(current.qty) - float(si.qty), 0)))
+                    else:
+                        cart_session.add(
+                            StockBalance(
+                                tenant_id=tenant_uid,
+                                product_id=si.product_id,
+                                store_id=UUID(deduct_store_id),
+                                qty=Decimal("0"),
+                                reserved_qty=Decimal("0"),
+                                unit_cost=Decimal("0"),
+                            )
+                        )
 
             # Auto-journal: create accounting entries for the sale
             from app.accounting.service import plan_sale_journal
             from app.accounting.repository import (
                 create_journal,
                 create_journal_entry,
-                get_account_by_code,
             )
             from app.accounting.repository import post_journal as repo_post_journal
 
-            sdb_acct = _get_sdb("accounting")
-            async with sdb_acct.session() as acct_session:
-                journal_items = [
-                    {
-                        "product_name": si.product_name,
-                        "qty": float(si.qty),
-                        "unit_price": float(si.unit_price),
-                        "cost_price": cost_map.get(str(pid), 0),
-                    }
-                    for pid, si in zip(
-                        [product_map[i.product_public_id].id for i in validated],
-                        sale_items,
-                    )
-                ]
-                journal, journal_entries = plan_sale_journal(
-                    tenant_id=UUID(tenant_id),
-                    sale_id=result.id,
-                    sale_number=result.sale_number,
-                    sale_items=journal_items,
-                    total=float(result.total),
-                    discount=float(discount_amount),
-                    tax_amount=float(result.tax),
-                    cashier_id=UUID(actor_id) if actor_id else None,
+            journal_items = [
+                {
+                    "product_name": si.product_name,
+                    "qty": float(si.qty),
+                    "unit_price": float(si.unit_price),
+                    "cost_price": cost_map.get(str(pid), 0),
+                }
+                for pid, si in zip(
+                    [product_map[i.product_public_id].id for i in validated],
+                    sale_items,
                 )
+            ]
+            journal, journal_entries = plan_sale_journal(
+                tenant_id=UUID(tenant_id),
+                sale_id=result.id,
+                sale_number=result.sale_number,
+                sale_items=journal_items,
+                total=float(result.total),
+                discount=float(discount_amount),
+                tax_amount=float(result.tax),
+                cashier_id=UUID(actor_id) if actor_id else None,
+            )
 
-                # Resolve account IDs from Chart of Accounts
-                for acct_code in ["1000", "2300", "4000", "5000", "1200"]:
-                    acct = await get_account_by_code(acct_session, UUID(tenant_id), acct_code)
-                    if acct:
-                        for entry in journal_entries:
-                            if entry.account_code == acct_code:
-                                entry.account_id = acct.id
+            # Resolve account IDs from Chart of Accounts (single batched query)
+            from sqlalchemy import select as sa_select
 
-                await create_journal(acct_session, journal)
-                for entry in journal_entries:
-                    entry.status = "posted"
-                    entry.posted_at = journal.posted_at
-                    await create_journal_entry(acct_session, entry)
-                await repo_post_journal(acct_session, journal.id, UUID(actor_id) if actor_id else None)
-                await acct_session.commit()
+            from app.accounting.models import ChartOfAccount
 
-            # Bulk-insert cart items + checkout in one cart transaction
+            acct_res = await cart_session.execute(
+                sa_select(ChartOfAccount).where(
+                    ChartOfAccount.tenant_id == tenant_uid,
+                    ChartOfAccount.code.in_("1000", "2300", "4000", "5000", "1200"),
+                )
+            )
+            code_to_account = {a.code: a for a in acct_res.scalars().all()}
+            for entry in journal_entries:
+                acct = code_to_account.get(entry.account_code)
+                if acct:
+                    entry.account_id = acct.id
+
+            await create_journal(cart_session, journal)
+            for entry in journal_entries:
+                entry.status = "posted"
+                entry.posted_at = journal.posted_at
+                await create_journal_entry(cart_session, entry)
+            await repo_post_journal(cart_session, journal.id, UUID(actor_id) if actor_id else None)
+
+            # Bulk-insert cart items + checkout (same transaction)
             if cart_items:
                 await bulk_add_cart_items(cart_session, cart_items)
             cart_checkout_outbox = plan_checkout(checkout_command, cart, cart_items)
@@ -5907,6 +5948,11 @@ async def checkout_cart(
             for write in [*cart_item_outbox, *cart_checkout_outbox]:
                 cart_session.add(write.to_model())
             await cart_session.commit()
+
+            if deduct_store_id:
+                await cache.delete_pattern(
+                    f"sf:cache:store_products:list:{tenant_id}:{deduct_store_id}*"
+                )
 
             result_dict = result.model_dump(mode="json")
             result_dict["sale_id"] = str(result.id)
