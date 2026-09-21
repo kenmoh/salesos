@@ -2514,6 +2514,7 @@ async def create_product_for_store(
     unit: str = "unit",
     cost_price: Decimal = Decimal("0"),
     selling_price: Decimal = Decimal("0"),
+    tax_id: str | None = None,
     tax_rate: Decimal | None = None,
     reorder_point: int = 0,
     image_url: str | None = None,
@@ -2544,6 +2545,7 @@ async def create_product_for_store(
             unit=unit,
             cost_price=cost_price,
             selling_price=selling_price,
+            tax_id=UUID(tax_id) if tax_id else None,
             reorder_point=reorder_point,
             image_url=image_url,
         )
@@ -2839,7 +2841,8 @@ async def update_store_product(
     """Update a store-specific product record.
 
     Modifies store-specific fields on a StoreProduct. Only provided
-    fields are updated.
+    fields are updated. If tax_id is provided, also updates the
+    catalog Product's tax_id.
 
     Args:
         tenant_id: Unique identifier of the tenant.
@@ -2859,6 +2862,10 @@ async def update_store_product(
         update_store_product as repo_update,
         get_store_with_tenant,
     )
+    from app.catalog.models import Product
+    from sqlalchemy import update as sa_update
+
+    tax_id = kwargs.pop("tax_id", None)
 
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
@@ -2873,6 +2880,16 @@ async def update_store_product(
         result = await repo_update(session, existing.id, **kwargs)
         await session.commit()
         await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{store_id}*")
+
+    if tax_id is not None or "tax_id" in kwargs:
+        sdb_catalog = _get_sdb("catalog")
+        async with sdb_catalog.session() as session:
+            await session.execute(
+                sa_update(Product)
+                .where(Product.id == UUID(product_id), Product.tenant_id == UUID(tenant_id))
+                .values(tax_id=UUID(tax_id) if tax_id else None)
+            )
+            await session.commit()
 
     return {
         "id": str(result.id),
@@ -5924,7 +5941,7 @@ async def checkout_cart(
             acct_res = await cart_session.execute(
                 sa_select(ChartOfAccount).where(
                     ChartOfAccount.tenant_id == tenant_uid,
-                    ChartOfAccount.code.in_("1000", "2300", "4000", "5000", "1200"),
+                    ChartOfAccount.code.in_(["1000", "2300", "4000", "5000", "1200"]),
                 )
             )
             code_to_account = {a.code: a for a in acct_res.scalars().all()}

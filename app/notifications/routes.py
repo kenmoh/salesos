@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from uuid import UUID
 
-from app.core.dependencies import TenantDep, require_permission
+from app.core.dependencies import DbTenantDep, require_permission
 from app.core.responses import DataResponse, ok
 from app.notifications.schemas import (
     InAppNotificationResult,
@@ -18,7 +18,7 @@ notif_router = APIRouter(tags=["Notifications"])
     response_model=DataResponse[dict],
     dependencies=[Depends(require_permission("sync:manage"))],
 )
-async def register_push_token(payload: PushTokenRegisterCommand, ctx: TenantDep):
+async def register_push_token(payload: PushTokenRegisterCommand, ctx: DbTenantDep):
     from app.notifications.repository import register_push_token
 
     await register_push_token(
@@ -36,7 +36,7 @@ async def register_push_token(payload: PushTokenRegisterCommand, ctx: TenantDep)
     response_model=DataResponse[dict],
     dependencies=[Depends(require_permission("sync:manage"))],
 )
-async def deactivate_push_token(ctx: TenantDep):
+async def deactivate_push_token(ctx: DbTenantDep):
     from sqlalchemy import select
     from app.notifications.models import PushToken
 
@@ -59,7 +59,7 @@ async def deactivate_push_token(ctx: TenantDep):
     dependencies=[Depends(require_permission("sync:manage"))],
 )
 async def list_notifications(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     type: str | None = Query(None),
     unread_only: bool = Query(False),
     offset: int = Query(0, ge=0),
@@ -102,7 +102,7 @@ async def list_notifications(
     response_model=DataResponse[dict],
     dependencies=[Depends(require_permission("sync:manage"))],
 )
-async def unread_count(ctx: TenantDep):
+async def unread_count(ctx: DbTenantDep):
     from app.notifications.repository import get_unread_count
 
     count = await get_unread_count(ctx.session, ctx.user.business_id)
@@ -114,7 +114,7 @@ async def unread_count(ctx: TenantDep):
     response_model=DataResponse[dict],
     dependencies=[Depends(require_permission("sync:manage"))],
 )
-async def mark_read(payload: MarkReadCommand, ctx: TenantDep):
+async def mark_read(payload: MarkReadCommand, ctx: DbTenantDep):
     from app.notifications.repository import mark_notifications_read
 
     count = await mark_notifications_read(
@@ -130,7 +130,7 @@ async def mark_read(payload: MarkReadCommand, ctx: TenantDep):
     response_model=DataResponse[dict],
     dependencies=[Depends(require_permission("sync:manage"))],
 )
-async def mark_all_read(ctx: TenantDep):
+async def mark_all_read(ctx: DbTenantDep):
     from app.notifications.repository import mark_all_read
 
     count = await mark_all_read(ctx.session, ctx.user.business_id)
@@ -142,7 +142,7 @@ async def mark_all_read(ctx: TenantDep):
     response_model=DataResponse[dict],
     dependencies=[Depends(require_permission("sync:manage"))],
 )
-async def delete_notifications(payload: MarkReadCommand, ctx: TenantDep):
+async def delete_notifications(payload: MarkReadCommand, ctx: DbTenantDep):
     from app.notifications.repository import delete_notifications
 
     count = await delete_notifications(

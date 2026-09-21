@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from app.core.dependencies import TenantDep, get_db, require_permission
+from app.core.dependencies import TenantDep, DbTenantDep, get_db, require_permission
 from app.core.ratelimit import auth_rate_limit
 from app.core.responses import DataResponse, DataMessageResponse, ok
 from app.auth.schemas.auth import (
@@ -148,7 +148,7 @@ async def refresh(payload: RefreshRequest, request: Request, session=Depends(get
     response_model=DataMessageResponse[SuccessResponse],
     dependencies=[Depends(require_permission("auth:manage_sessions"))],
 )
-async def logout(payload: LogoutRequest, request: Request, ctx: TenantDep):
+async def logout(payload: LogoutRequest, request: Request, ctx: DbTenantDep):
     token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
     await auth_service.logout(
         session=ctx.session,
@@ -165,7 +165,7 @@ async def logout(payload: LogoutRequest, request: Request, ctx: TenantDep):
     response_model=DataResponse[AuthUser],
     dependencies=[Depends(require_permission("auth:login"))],
 )
-async def me(ctx: TenantDep):
+async def me(ctx: DbTenantDep):
     from app.identity.models import User
     from sqlalchemy import select
 
@@ -208,7 +208,7 @@ async def me(ctx: TenantDep):
     "/auto-create-cart",
     dependencies=[Depends(require_permission("auth:login"))],
 )
-async def toggle_auto_create_cart(ctx: TenantDep):
+async def toggle_auto_create_cart(ctx: DbTenantDep):
     from app.identity.models import User
     from sqlalchemy import select
 
@@ -263,7 +263,7 @@ async def reset_password(
 async def change_password(
     payload: ChangePasswordRequest,
     request: Request,
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     _=Depends(auth_rate_limit(5, 900)),
 ):
     await auth_service.change_password(
@@ -307,7 +307,7 @@ async def revoke_session(session_id: str, ctx: TenantDep):
     response_model=DataResponse[TOTPSetupResponse],
     dependencies=[Depends(require_permission("auth:manage_totp"))],
 )
-async def totp_setup(ctx: TenantDep):
+async def totp_setup(ctx: DbTenantDep):
     from app.identity.models import User
     from sqlalchemy import select as sa_select
 
@@ -327,7 +327,7 @@ async def totp_setup(ctx: TenantDep):
     response_model=DataMessageResponse[SuccessResponse],
     dependencies=[Depends(require_permission("auth:manage_totp"))],
 )
-async def totp_verify(payload: TOTPVerifyRequest, ctx: TenantDep):
+async def totp_verify(payload: TOTPVerifyRequest, ctx: DbTenantDep):
     await auth_service.enable_totp(session=ctx.session, user_id=ctx.user.user_id, code=payload.code)
     return ok(None, message="TOTP enabled")
 
@@ -337,7 +337,7 @@ async def totp_verify(payload: TOTPVerifyRequest, ctx: TenantDep):
     response_model=DataMessageResponse[SuccessResponse],
     dependencies=[Depends(require_permission("auth:manage_totp"))],
 )
-async def totp_disable(payload: TOTPDisableRequest, ctx: TenantDep):
+async def totp_disable(payload: TOTPDisableRequest, ctx: DbTenantDep):
     await auth_service.disable_totp(
         session=ctx.session, user_id=ctx.user.user_id, password=payload.password, code=payload.code
     )
@@ -353,7 +353,7 @@ class SetPinRequest(BaseModel):
     response_model=DataMessageResponse[PinStatusResponse],
     dependencies=[Depends(require_permission("auth:manage_totp"))],
 )
-async def get_pin_status(ctx: TenantDep):
+async def get_pin_status(ctx: DbTenantDep):
     from datetime import UTC, datetime
     from sqlalchemy import select as sa_select
     from app.identity.models import SupervisorPin
@@ -376,7 +376,7 @@ async def get_pin_status(ctx: TenantDep):
     response_model=DataMessageResponse[SuccessResponse],
     dependencies=[Depends(require_permission("auth:manage_totp"))],
 )
-async def set_supervisor_pin(payload: SetPinRequest, ctx: TenantDep):
+async def set_supervisor_pin(payload: SetPinRequest, ctx: DbTenantDep):
     import re
     from datetime import UTC, datetime, timedelta
 
@@ -418,7 +418,7 @@ async def set_supervisor_pin(payload: SetPinRequest, ctx: TenantDep):
     response_model=DataResponse[EmployeeCreated],
     dependencies=[Depends(require_permission("employees:create"))],
 )
-async def create_employee(payload: CreateEmployeeRequest, request: Request, ctx: TenantDep):
+async def create_employee(payload: CreateEmployeeRequest, request: Request, ctx: DbTenantDep):
     result = await auth_service.create_employee(
         session=ctx.session,
         business_id=ctx.user.business_id,
@@ -439,7 +439,7 @@ async def create_employee(payload: CreateEmployeeRequest, request: Request, ctx:
     response_model=DataResponse[list[EmployeeListItem]],
     dependencies=[Depends(require_permission("employees:read"))],
 )
-async def employees(ctx: TenantDep):
+async def employees(ctx: DbTenantDep):
     from sqlalchemy import text
 
     result = await ctx.session.execute(
@@ -492,7 +492,7 @@ async def update_role(payload: UpdateRoleRequest, ctx: TenantDep):
     response_model=DataMessageResponse[SuccessResponse],
     dependencies=[Depends(require_permission("employees:update"))],
 )
-async def update_employee(user_id: str, payload: UpdateEmployeeRequest, ctx: TenantDep):
+async def update_employee(user_id: str, payload: UpdateEmployeeRequest, ctx: DbTenantDep):
     result = await auth_service.update_employee(
         session=ctx.session,
         business_id=ctx.user.business_id,
@@ -510,7 +510,7 @@ async def update_employee(user_id: str, payload: UpdateEmployeeRequest, ctx: Ten
     response_model=DataMessageResponse[SuccessResponse],
     dependencies=[Depends(require_permission("employees:delete"))],
 )
-async def delete_employee(user_id: str, ctx: TenantDep):
+async def delete_employee(user_id: str, ctx: DbTenantDep):
     result = await auth_service.delete_employee(
         session=ctx.session,
         business_id=ctx.user.business_id,
@@ -524,7 +524,7 @@ async def delete_employee(user_id: str, ctx: TenantDep):
     response_model=DataMessageResponse[SuccessResponse],
     dependencies=[Depends(require_permission("employees:update"))],
 )
-async def set_employee_status(user_id: str, payload: EmployeeStatusRequest, ctx: TenantDep):
+async def set_employee_status(user_id: str, payload: EmployeeStatusRequest, ctx: DbTenantDep):
     result = await auth_service.set_employee_status(
         session=ctx.session,
         business_id=ctx.user.business_id,
@@ -662,7 +662,7 @@ async def remove_employee_role(user_id: str, role_name: str, ctx: TenantDep):
     dependencies=[Depends(require_permission("employees:read"))],
 )
 async def audit(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     action: str | None = None,
     user_id: str | None = None,
     limit: int = 50,

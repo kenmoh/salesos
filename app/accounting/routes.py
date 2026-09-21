@@ -14,7 +14,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
 
-from app.core.dependencies import TenantDep, require_permission
+from app.core.dependencies import DbTenantDep, require_permission
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
 from . import rpc
 from .schemas import (
@@ -52,7 +52,7 @@ router = APIRouter(prefix="/accounting", tags=["Accounting"])
     response_model=DataResponse[list[AccountResponse]],
     dependencies=[Depends(require_permission("accounting:read"))],
 )
-async def list_accounts(ctx: TenantDep):
+async def list_accounts(ctx: DbTenantDep):
     accounts = await rpc.list_accounts(
         session=ctx.session,
         business_id=ctx.user.business_id,
@@ -66,7 +66,7 @@ async def list_accounts(ctx: TenantDep):
     response_model=DataResponse[AccountResponse],
     dependencies=[Depends(require_permission("accounting:write"))],
 )
-async def create_account(payload: CreateAccountRequest, ctx: TenantDep):
+async def create_account(payload: CreateAccountRequest, ctx: DbTenantDep):
     result = await rpc.create_account(
         session=ctx.session,
         business_id=ctx.user.business_id,
@@ -83,7 +83,7 @@ async def create_account(payload: CreateAccountRequest, ctx: TenantDep):
     response_model=DataResponse[AccountResponse],
     dependencies=[Depends(require_permission("accounting:write"))],
 )
-async def update_account(account_id: str, payload: UpdateAccountRequest, ctx: TenantDep):
+async def update_account(account_id: str, payload: UpdateAccountRequest, ctx: DbTenantDep):
     from .repository import update_account as repo_update
     from uuid import UUID
 
@@ -111,7 +111,7 @@ async def update_account(account_id: str, payload: UpdateAccountRequest, ctx: Te
     response_model=DataResponse[AccountResponse],
     dependencies=[Depends(require_permission("accounting:write"))],
 )
-async def toggle_account_status(account_id: str, payload: ToggleAccountStatusRequest, ctx: TenantDep):
+async def toggle_account_status(account_id: str, payload: ToggleAccountStatusRequest, ctx: DbTenantDep):
     from .repository import toggle_account_status as repo_toggle
     from uuid import UUID
 
@@ -139,7 +139,7 @@ async def toggle_account_status(account_id: str, payload: ToggleAccountStatusReq
     status_code=204,
     dependencies=[Depends(require_permission("accounting:write"))],
 )
-async def delete_account(account_id: str, ctx: TenantDep):
+async def delete_account(account_id: str, ctx: DbTenantDep):
     from .repository import delete_account as repo_delete
     from uuid import UUID
 
@@ -165,7 +165,7 @@ async def delete_account(account_id: str, ctx: TenantDep):
     response_model=DataResponse[JournalCreatedResponse],
     dependencies=[Depends(require_permission("accounting:write"))],
 )
-async def create_journal(payload: CreateJournalRequest, ctx: TenantDep):
+async def create_journal(payload: CreateJournalRequest, ctx: DbTenantDep):
     journal_id = await rpc.post_journal(
         session=ctx.session,
         business_id=ctx.user.business_id,
@@ -184,7 +184,7 @@ async def create_journal(payload: CreateJournalRequest, ctx: TenantDep):
     dependencies=[Depends(require_permission("accounting:read"))],
 )
 async def list_journals(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
     page_size: int = Query(50, ge=1, le=200, description="Items per page"),
 ):
@@ -210,7 +210,7 @@ async def list_journals(
     dependencies=[Depends(require_permission("accounting:read"))],
 )
 async def trial_balance(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     as_at: str | None = Query(None, description="Date in YYYY-MM-DD format"),
 ):
     result = await rpc.trial_balance(
@@ -227,7 +227,7 @@ async def trial_balance(
     dependencies=[Depends(require_permission("accounting:read"))],
 )
 async def profit_and_loss(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     from_date: str = Query(..., description="Start date in YYYY-MM-DD format"),
     to_date: str = Query(..., description="End date in YYYY-MM-DD format"),
 ):
@@ -246,7 +246,7 @@ async def profit_and_loss(
     dependencies=[Depends(require_permission("accounting:read"))],
 )
 async def balance_sheet(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     as_at: str | None = Query(None, description="Date in YYYY-MM-DD format (default: today)"),
 ):
     from uuid import UUID
@@ -274,7 +274,7 @@ async def balance_sheet(
     dependencies=[Depends(require_permission("accounting:read"))],
 )
 async def cash_flow(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     from_date: str | None = Query(None, description="Start date (default: 30 days ago)"),
     to_date: str | None = Query(None, description="End date (default: today)"),
 ):
@@ -305,7 +305,7 @@ async def cash_flow(
     dependencies=[Depends(require_permission("accounting:read"))],
 )
 async def list_receivable(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     status: str | None = Query(None, description="Filter by status: pending, overdue, partial, paid"),
 ):
     ar_list = await rpc.list_accounts_receivable(
@@ -322,7 +322,7 @@ async def list_receivable(
     response_model=DataResponse[ReceivableResponse],
     dependencies=[Depends(require_permission("accounting:write"))],
 )
-async def create_receivable(payload: CreateReceivableRequest, ctx: TenantDep):
+async def create_receivable(payload: CreateReceivableRequest, ctx: DbTenantDep):
     result = await rpc.create_accounts_receivable(
         session=ctx.session,
         business_id=ctx.user.business_id,
@@ -344,7 +344,7 @@ async def create_receivable(payload: CreateReceivableRequest, ctx: TenantDep):
 async def record_ar_payment(
     ar_id: str,
     payload: RecordPaymentRequest,
-    ctx: TenantDep,
+    ctx: DbTenantDep,
 ):
     result = await rpc.record_ar_payment(
         session=ctx.session,
@@ -368,7 +368,7 @@ async def record_ar_payment(
     dependencies=[Depends(require_permission("accounting:read"))],
 )
 async def list_payable(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     status: str | None = Query(None, description="Filter by status: pending, overdue, partial, paid"),
 ):
     ap_list = await rpc.list_accounts_payable(
@@ -385,7 +385,7 @@ async def list_payable(
     response_model=DataResponse[PayableResponse],
     dependencies=[Depends(require_permission("accounting:write"))],
 )
-async def create_payable(payload: CreatePayableRequest, ctx: TenantDep):
+async def create_payable(payload: CreatePayableRequest, ctx: DbTenantDep):
     result = await rpc.create_accounts_payable(
         session=ctx.session,
         business_id=ctx.user.business_id,
@@ -406,7 +406,7 @@ async def create_payable(payload: CreatePayableRequest, ctx: TenantDep):
 async def record_ap_payment(
     ap_id: str,
     payload: RecordPaymentRequest,
-    ctx: TenantDep,
+    ctx: DbTenantDep,
 ):
     result = await rpc.record_ap_payment(
         session=ctx.session,
@@ -430,7 +430,7 @@ async def record_ap_payment(
     dependencies=[Depends(require_permission("accounting:read"))],
 )
 async def list_expenses(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     category: str | None = Query(None, description="Filter by category"),
     from_date: str | None = Query(None, description="Start date (YYYY-MM-DD)"),
     to_date: str | None = Query(None, description="End date (YYYY-MM-DD)"),
@@ -451,7 +451,7 @@ async def list_expenses(
     response_model=DataResponse[ExpenseResponse],
     dependencies=[Depends(require_permission("accounting:write"))],
 )
-async def create_expense(payload: CreateExpenseRequest, ctx: TenantDep):
+async def create_expense(payload: CreateExpenseRequest, ctx: DbTenantDep):
     result = await rpc.create_expense(
         session=ctx.session,
         business_id=ctx.user.business_id,
@@ -472,7 +472,7 @@ async def create_expense(payload: CreateExpenseRequest, ctx: TenantDep):
     dependencies=[Depends(require_permission("accounting:read"))],
 )
 async def expense_summary(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     from_date: str | None = Query(None, description="Start date (YYYY-MM-DD)"),
     to_date: str | None = Query(None, description="End date (YYYY-MM-DD)"),
 ):
@@ -495,7 +495,7 @@ async def expense_summary(
     response_model=DataResponse[FinancialDashboardResponse],
     dependencies=[Depends(require_permission("accounting:read"))],
 )
-async def financial_dashboard(ctx: TenantDep):
+async def financial_dashboard(ctx: DbTenantDep):
     dashboard = await rpc.financial_dashboard(
         session=ctx.session,
         business_id=ctx.user.business_id,
@@ -513,7 +513,7 @@ async def financial_dashboard(ctx: TenantDep):
     response_model=DataResponse[dict],
     dependencies=[Depends(require_permission("accounting:read"))],
 )
-async def commission(ctx: TenantDep):
+async def commission(ctx: DbTenantDep):
     return ok({})
 
 
@@ -522,5 +522,5 @@ async def commission(ctx: TenantDep):
     response_model=DataResponse[dict],
     dependencies=[Depends(require_permission("accounting:write"))],
 )
-async def record_commission(sale_id: str, ctx: TenantDep):
+async def record_commission(sale_id: str, ctx: DbTenantDep):
     return ok({"success": True})

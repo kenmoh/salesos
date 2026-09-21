@@ -4,7 +4,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile
 from sqlalchemy import select
 
-from app.core.dependencies import TenantDep, require_permission
+from app.core.dependencies import DbTenantDep, require_permission
 from app.core.responses import DataResponse, ok
 from app.auth.schemas.schema import BusinessUpdate, SyncBatch, SyncTriggerResult
 from app.auth.schemas.responses import (
@@ -24,7 +24,7 @@ sync_router = APIRouter(tags=["Sync"])
 
 
 @sync_router.post("/sync/events", response_model=DataResponse[SyncBatchResult])
-async def sync_events(payload: SyncBatch, ctx: TenantDep):
+async def sync_events(payload: SyncBatch, ctx: DbTenantDep):
     return ok(
         await services.process_sync_batch(
             session=ctx.session,
@@ -41,7 +41,7 @@ async def sync_events(payload: SyncBatch, ctx: TenantDep):
     dependencies=[Depends(require_permission("sync:read"))],
 )
 async def pending(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     since: str = Query(default="1970-01-01T00:00:00Z"),
     limit: int = Query(default=50, ge=1, le=500),
 ):
@@ -64,7 +64,7 @@ async def pending(
     response_model=DataResponse[SyncTriggerResult],
     dependencies=[Depends(require_permission("sync:manage"))],
 )
-async def trigger_sync(ctx: TenantDep):
+async def trigger_sync(ctx: DbTenantDep):
     count = await services.get_pending_event_count(
         session=ctx.session,
         business_id=ctx.user.business_id,
@@ -75,7 +75,7 @@ async def trigger_sync(ctx: TenantDep):
 
 
 @sync_router.get("/business/settings", response_model=DataResponse[BusinessSettings])
-async def business_settings(ctx: TenantDep):
+async def business_settings(ctx: DbTenantDep):
     from app.tenancy.models import Tenant
 
     result = await ctx.session.execute(
@@ -102,7 +102,7 @@ async def business_settings(ctx: TenantDep):
     response_model=DataResponse[BusinessSettings],
     dependencies=[Depends(require_permission("sync:manage"))],
 )
-async def update_business_settings(payload: BusinessUpdate, ctx: TenantDep):
+async def update_business_settings(payload: BusinessUpdate, ctx: DbTenantDep):
     from app.tenancy.models import Tenant
 
     result = await ctx.session.execute(
@@ -154,7 +154,7 @@ async def update_business_settings(payload: BusinessUpdate, ctx: TenantDep):
     dependencies=[Depends(require_permission("sync:manage"))],
 )
 async def upload_business_logo(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     file: UploadFile = File(...),
 ):
 
@@ -208,7 +208,7 @@ async def upload_business_logo(
     response_model=DataResponse[list[PermissionDetail]],
     dependencies=[Depends(require_permission("sync:manage"))],
 )
-async def business_permissions(ctx: TenantDep):
+async def business_permissions(ctx: DbTenantDep):
     from sqlalchemy import text
     result = await ctx.session.execute(
         text("SELECT name, description FROM permissions ORDER BY name")
@@ -223,7 +223,7 @@ async def business_permissions(ctx: TenantDep):
     response_model=DataResponse[dict],
     dependencies=[Depends(require_permission("sync:manage"))],
 )
-async def update_business_permissions(payload: dict[str, bool], ctx: TenantDep):
+async def update_business_permissions(payload: dict[str, bool], ctx: DbTenantDep):
     from sqlalchemy import text
     for code, enabled in payload.items():
         await ctx.session.execute(

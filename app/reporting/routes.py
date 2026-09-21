@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 
-from app.core.dependencies import TenantDep, require_permission
+from app.core.dependencies import DbTenantDep, require_permission
 from app.core.responses import DataResponse, ok
 from app.auth.schemas.responses import (
     CashierPerformanceItem,
@@ -33,7 +33,7 @@ router = APIRouter(prefix="/reports", tags=["Reports"])
     response_model=DataResponse[DashboardSummary],
     dependencies=[Depends(require_permission("reports:read"))],
 )
-async def dashboard(ctx: TenantDep, days: int = Query(30, ge=1, le=365)):
+async def dashboard(ctx: DbTenantDep, days: int = Query(30, ge=1, le=365)):
     return ok(
         await dashboard_summary(session=ctx.session, tenant_id=ctx.user.business_id, days=days)
     )
@@ -45,7 +45,7 @@ async def dashboard(ctx: TenantDep, days: int = Query(30, ge=1, le=365)):
     dependencies=[Depends(require_permission("reports:read"))],
 )
 async def sales_summary_endpoint(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     from_date: str = Query(..., description="ISO 8601 date"),
     to_date: str = Query(..., description="ISO 8601 date"),
     group_by: str = Query("day", pattern="^(day|week|month)$"),
@@ -67,7 +67,7 @@ async def sales_summary_endpoint(
     dependencies=[Depends(require_permission("reports:read"))],
 )
 async def top_products_endpoint(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     from_date: str = Query(..., description="ISO 8601 date"),
     to_date: str = Query(..., description="ISO 8601 date"),
     limit: int = Query(10, ge=1, le=100),
@@ -89,7 +89,7 @@ async def top_products_endpoint(
     dependencies=[Depends(require_permission("reports:read"))],
 )
 async def payment_methods_endpoint(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     from_date: str = Query(..., description="ISO 8601 date"),
     to_date: str = Query(..., description="ISO 8601 date"),
 ):
@@ -109,7 +109,7 @@ async def payment_methods_endpoint(
     dependencies=[Depends(require_permission("reports:read"))],
 )
 async def cashier_performance_endpoint(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     from_date: str = Query(..., description="ISO 8601 date"),
     to_date: str = Query(..., description="ISO 8601 date"),
     limit: int = Query(20, ge=1, le=100),
@@ -131,7 +131,7 @@ async def cashier_performance_endpoint(
     dependencies=[Depends(require_permission("reports:read"))],
 )
 async def inventory_alerts_endpoint(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     alert_type: str | None = Query(None, description="low_stock|out_of_stock|overstocked|all"),
 ):
     return ok(
@@ -149,7 +149,7 @@ async def inventory_alerts_endpoint(
     dependencies=[Depends(require_permission("reports:read"))],
 )
 async def profit_loss_endpoint(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     from_date: str = Query(..., description="ISO 8601 date"),
     to_date: str = Query(..., description="ISO 8601 date"),
     group_by: str = Query("day", pattern="^(day|week|month)$"),
@@ -171,7 +171,7 @@ async def profit_loss_endpoint(
     dependencies=[Depends(require_permission("reports:read"))],
 )
 async def customer_insights_endpoint(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     from_date: str = Query(..., description="ISO 8601 date"),
     to_date: str = Query(..., description="ISO 8601 date"),
     limit: int = Query(20, ge=1, le=100),
@@ -193,7 +193,7 @@ async def customer_insights_endpoint(
     dependencies=[Depends(require_permission("reports:read"))],
 )
 async def document_summary_endpoint(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     from_date: str = Query(..., description="ISO 8601 date"),
     to_date: str = Query(..., description="ISO 8601 date"),
     doc_type: str | None = Query(None, description="invoice|receipt|credit_note|all"),

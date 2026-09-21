@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.core.dependencies import TenantDep, require_permission
+from app.core.dependencies import TenantDep, DbTenantDep, require_permission
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
 from app.auth.schemas.responses import (
     CategoryCreated,
@@ -163,6 +163,7 @@ async def create_product_for_store(store_id: str, payload: ProductCreateForStore
             unit=payload.unit,
             cost_price=payload.cost_price,
             selling_price=payload.selling_price,
+            tax_id=str(payload.tax_id) if payload.tax_id else None,
             tax_rate=payload.tax_rate,
             reorder_point=payload.reorder_point,
             image_url=payload.image_url,
@@ -350,7 +351,7 @@ async def stock_balances(
 )
 async def history(
     store_id: str,
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     product_id: str | None = None,
     page: int = 1,
     page_size: int = 50,
@@ -376,7 +377,7 @@ async def history(
     response_model=DataResponse[list[LowStockItem]],
     dependencies=[Depends(require_permission("inventory:read"))],
 )
-async def store_low_stock(store_id: str, ctx: TenantDep):
+async def store_low_stock(store_id: str, ctx: DbTenantDep):
     return ok(
         await services.low_stock_report(session=ctx.session, business_id=ctx.user.business_id)
     )

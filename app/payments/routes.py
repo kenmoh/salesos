@@ -5,7 +5,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app.core.dependencies import TenantDep, require_permission
+from app.core.dependencies import TenantDep, DbTenantDep, require_permission
 from app.core.responses import DataResponse, ok
 from app.auth.schemas.schema import PaymentCreate, SplitPaymentCreate
 from app.auth.schemas.responses import (
@@ -717,7 +717,7 @@ async def flutterwave_webhook(request: Request, verif_hash: str = Header(default
     dependencies=[Depends(require_permission("payments:read"))],
 )
 async def list_settlement(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     status: str | None = Query(None, description="Filter: pending, deducted"),
 ):
     from sqlalchemy import desc, func, select
@@ -778,7 +778,7 @@ async def list_settlement(
     "/settlement/balance",
     dependencies=[Depends(require_permission("payments:read"))],
 )
-async def settlement_balance(ctx: TenantDep):
+async def settlement_balance(ctx: DbTenantDep):
     from app.platform.fee_calculator import get_max_pending_balance, get_pending_fee_balance
 
     pending = await get_pending_fee_balance(ctx.session, ctx.user.business_id)

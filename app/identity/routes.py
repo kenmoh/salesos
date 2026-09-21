@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from app.core.dependencies import TenantDep, require_permission
+from app.core.dependencies import DbTenantDep, require_permission
 from app.core.responses import DataResponse, ok
 from app.auth.schemas.responses import (
     AuditEvent,
@@ -26,7 +26,7 @@ router = APIRouter(prefix="/security", tags=["Admin Security"])
     response_model=DataResponse[list[AuditEvent]],
     dependencies=[Depends(require_permission("admin:security"))],
 )
-async def audit_stream(ctx: TenantDep, limit: int = 50, offset: int = 0):
+async def audit_stream(ctx: DbTenantDep, limit: int = 50, offset: int = 0):
     from sqlalchemy import text
 
     result = await ctx.session.execute(
@@ -52,7 +52,7 @@ async def audit_stream(ctx: TenantDep, limit: int = 50, offset: int = 0):
     response_model=DataResponse[list[IPBanResult]],
     dependencies=[Depends(require_permission("admin:security"))],
 )
-async def bans(ctx: TenantDep):
+async def bans(ctx: DbTenantDep):
     from sqlalchemy import text
 
     result = await ctx.session.execute(
@@ -79,7 +79,7 @@ async def bans(ctx: TenantDep):
     response_model=DataResponse[IPBanResult],
     dependencies=[Depends(require_permission("admin:security"))],
 )
-async def create_ban(payload: BanCreate, ctx: TenantDep):
+async def create_ban(payload: BanCreate, ctx: DbTenantDep):
     from sqlalchemy import text
 
     await ctx.session.execute(
@@ -99,7 +99,7 @@ async def create_ban(payload: BanCreate, ctx: TenantDep):
     response_model=DataResponse[SuccessResponse],
     dependencies=[Depends(require_permission("admin:security"))],
 )
-async def delete_ban(ip: str, ctx: TenantDep):
+async def delete_ban(ip: str, ctx: DbTenantDep):
     from sqlalchemy import text
 
     await ctx.session.execute(
@@ -115,7 +115,7 @@ async def delete_ban(ip: str, ctx: TenantDep):
     response_model=DataResponse[IPBanResult],
     dependencies=[Depends(require_permission("admin:security"))],
 )
-async def get_ban(ip: str, ctx: TenantDep):
+async def get_ban(ip: str, ctx: DbTenantDep):
     from sqlalchemy import text
 
     result = await ctx.session.execute(
@@ -143,7 +143,7 @@ async def get_ban(ip: str, ctx: TenantDep):
     response_model=DataResponse[RateLimitInfo],
     dependencies=[Depends(require_permission("admin:security"))],
 )
-async def rate_limits(ip: str, ctx: TenantDep):
+async def rate_limits(ip: str, ctx: DbTenantDep):
     from app.core.redis_client import get_cache_redis
 
     client = await get_cache_redis()
@@ -165,7 +165,7 @@ async def rate_limits(ip: str, ctx: TenantDep):
     response_model=DataResponse[RateLimitResetResult],
     dependencies=[Depends(require_permission("admin:security"))],
 )
-async def reset_rate_limits(ip: str, ctx: TenantDep):
+async def reset_rate_limits(ip: str, ctx: DbTenantDep):
     from app.core.redis_client import get_cache_redis
 
     client = await get_cache_redis()

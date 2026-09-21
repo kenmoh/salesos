@@ -74,9 +74,12 @@ def create_database(
     pool_size: int = 20,
     max_overflow: int = 10,
 ) -> ServiceDatabase:
+    # pool_pre_ping removed: it costs a full DB round trip (hundreds of ms on a
+    # remote DB) on every session checkout. pool_recycle drops connections before
+    # server/network idle timeouts instead, without a per-checkout probe.
     engine = create_async_engine(
         database_url,
-        pool_pre_ping=True,
+        pool_recycle=1800,
         pool_size=pool_size,
         max_overflow=max_overflow,
         pool_timeout=60,

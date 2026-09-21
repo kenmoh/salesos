@@ -132,7 +132,7 @@ def _make_session():
 
 @pytest.fixture
 def app():
-    from app.core.dependencies import get_db, get_tenant_context
+    from app.core.dependencies import get_db, get_tenant_context, get_tenant_db_context
 
     application = _make_app()
     token_data = _make_token_data()
@@ -146,6 +146,7 @@ def app():
         yield session
 
     application.dependency_overrides[get_tenant_context] = override_tenant
+    application.dependency_overrides[get_tenant_db_context] = override_tenant
     application.dependency_overrides[get_db] = override_db
 
     return application

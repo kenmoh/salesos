@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 
-from app.core.dependencies import TenantDep, require_permission
+from app.core.dependencies import TenantDep, DbTenantDep, require_permission
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
 from app.auth.schemas.schema import SaleCreate, VoidSale
 from app.auth.schemas.responses import (
@@ -44,7 +44,7 @@ async def create_sale(payload: SaleCreate, ctx: TenantDep):
     dependencies=[Depends(require_permission("sales:read"))],
 )
 async def list_sales(
-    ctx: TenantDep,
+    ctx: DbTenantDep,
     status: str | None = None,
     from_date: str | None = None,
     to_date: str | None = None,
@@ -72,7 +72,7 @@ async def list_sales(
     response_model=DataResponse[SaleDetail],
     dependencies=[Depends(require_permission("sales:read"))],
 )
-async def get_sale(sale_id: str, ctx: TenantDep):
+async def get_sale(sale_id: str, ctx: DbTenantDep):
     return ok(
         await services.get_sale(
             session=ctx.session, business_id=ctx.user.business_id, sale_id=sale_id
@@ -85,7 +85,7 @@ async def get_sale(sale_id: str, ctx: TenantDep):
     response_model=DataResponse[SuccessResponse],
     dependencies=[Depends(require_permission("sales:void"))],
 )
-async def void_sale(sale_id: str, payload: VoidSale, ctx: TenantDep):
+async def void_sale(sale_id: str, payload: VoidSale, ctx: DbTenantDep):
     return ok(
         {
             "success": await services.void_sale(
@@ -104,7 +104,7 @@ async def void_sale(sale_id: str, payload: VoidSale, ctx: TenantDep):
     response_model=DataResponse[SaleReturnResult],
     dependencies=[Depends(require_permission("sales:void"))],
 )
-async def return_sale(sale_id: str, payload: VoidSale, ctx: TenantDep):
+async def return_sale(sale_id: str, payload: VoidSale, ctx: DbTenantDep):
     result = await services.return_sale(
         session=ctx.session,
         business_id=ctx.user.business_id,

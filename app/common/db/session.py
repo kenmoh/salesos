@@ -15,7 +15,9 @@ engine: AsyncEngine = create_async_engine(
     settings.database_url,
     pool_size=settings.db_pool_size,
     max_overflow=settings.db_max_overflow,
-    pool_pre_ping=True,
+    # pool_pre_ping removed: extra round trip per checkout; see
+    # app/common/db/engine.py for rationale.
+    pool_recycle=1800,
     pool_timeout=60,
     echo=settings.db_echo,
     future=True,

@@ -67,6 +67,7 @@ class ProductCreateForStore(Base):
     unit: str = "unit"
     cost_price: Decimal = Decimal("0")
     selling_price: Decimal = Field(..., ge=0)
+    tax_id: UUID | None = None
     tax_rate: Decimal | None = None
     reorder_point: int = 0
     image_url: str | None = None
@@ -78,6 +79,7 @@ class StoreProductUpdate(Base):
     sku: str | None = None
     selling_price: Decimal | None = None
     cost_price: Decimal | None = None
+    tax_id: UUID | None = None
     tax_rate: Decimal | None = None
     reorder_point: int | None = None
     image_url: str | None = None
