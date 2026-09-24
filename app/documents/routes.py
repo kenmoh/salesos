@@ -129,6 +129,18 @@ async def convert_to_sale_endpoint(doc_id: str, ctx: TenantDep):
     )
 
 
+def _ensure_pdf_bytes(data) -> bytes:
+    """Coerce fpdf2 output to bytes.
+
+    Depending on the fpdf2 version, ``FPDF.output()`` returns ``str``
+    (one char per byte) or ``bytes``/``bytearray``. Latin-1 maps bytes
+    0-255 one-to-one, so it restores the exact PDF bytes from str.
+    """
+    if isinstance(data, str):
+        return data.encode("latin-1")
+    return bytes(data)
+
+
 def _build_document_pdf(doc: dict) -> tuple[str, str, bytes]:
     """Generate PDF bytes for a document dict.
 
@@ -182,7 +194,7 @@ def _build_document_pdf(doc: dict) -> tuple[str, str, bytes]:
             notes=notes,
             terms=terms,
         )
-    return doc_type, doc_number, bytes(pdf_bytes)
+    return doc_type, doc_number, _ensure_pdf_bytes(pdf_bytes)
 
 
 @router.get(
