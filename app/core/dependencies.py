@@ -5,6 +5,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import ExpiredSignatureError, JWTError
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.redis_client import cache_get, cache_set
@@ -46,10 +47,17 @@ async def get_cached_role_rank(
         return await _lookup(session)
 
     factory = _get_session_factory()
-    async with factory() as s:
-        async with s.begin():
-            await set_rls_context(s, user_id, business_id, "")
-            return await _lookup(s)
+    for attempt in range(2):
+        try:
+            async with factory() as s:
+                async with s.begin():
+                    await set_rls_context(s, user_id, business_id, "")
+                    return await _lookup(s)
+        except DBAPIError as exc:
+            if attempt == 1 or not exc.connection_invalidated:
+                raise
+            # Stale pooled connection killed server-side by Neon; the read
+            # below is side-effect free, so retry once on a fresh checkout.
 
 
 class TokenData:
@@ -177,15 +185,31 @@ async def get_tenant_db_context(
     request.state.user_id = user.user_id
     request.state.business_id = user.business_id
     tokens = set_current_tenant(user.user_id, user.business_id, user.role)
-    factory = _get_session_factory()
-    async with factory() as session:
-        async with session.begin():
-            await set_rls_context(session, user.user_id, user.business_id, user.role)
+    try:
+        factory = _get_session_factory()
+        reached_route = False
+        for attempt in range(2):
             try:
-                yield TenantContext(user, session)
-            finally:
-                await clear_rls_context(session)
-                reset_current_tenant(tokens)
+                async with factory() as session:
+                    async with session.begin():
+                        await set_rls_context(session, user.user_id, user.business_id, user.role)
+                        reached_route = True
+                        try:
+                            yield TenantContext(user, session)
+                        finally:
+                            await clear_rls_context(session)
+                break
+            except DBAPIError as exc:
+                if reached_route or attempt == 1 or not exc.connection_invalidated:
+                    raise
+                # set_config hit a pooled connection Neon had already closed
+                # server-side, before the route ran. The pool discards the
+                # dead connection, so retry once with a fresh session. Never
+                # retried after yield: the route must not run twice.
+                reached_route = False
+                continue
+    finally:
+        reset_current_tenant(tokens)
 
 
 TenantDep = Annotated[TenantContext, Depends(get_tenant_context)]

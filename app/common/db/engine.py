@@ -4,6 +4,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -51,18 +52,31 @@ class ServiceDatabase:
         async with self.session_factory() as db:
             biz_id = _current_business_id.get()
             if biz_id:
-                await db.execute(
-                    text(
-                        "SELECT set_config('app.business_id',:b,true),"
-                        " set_config('app.user_id',:u,true),"
-                        " set_config('app.role',:r,true)"
-                    ),
-                    {
-                        "b": biz_id,
-                        "u": _current_user_id.get(),
-                        "r": _current_role.get(),
-                    },
+                stmt = text(
+                    "SELECT set_config('app.business_id',:b,true),"
+                    " set_config('app.user_id',:u,true),"
+                    " set_config('app.role',:r,true)"
                 )
+                params = {
+                    "b": biz_id,
+                    "u": _current_user_id.get(),
+                    "r": _current_role.get(),
+                }
+                try:
+                    await db.execute(stmt, params)
+                except DBAPIError as exc:
+                    if not exc.connection_invalidated:
+                        raise
+                    # Neon closes idle connections server-side (idle timeout
+                    # / compute scale-to-zero) while the pool still holds
+                    # them, so the first statement on a stale checkout fails
+                    # with "connection is closed". SQLAlchemy has already
+                    # discarded the dead connection; close() only resets local
+                    # session state (issues no SQL) and the retry below checks
+                    # out a fresh connection. One retry, no per-checkout
+                    # pre-ping round trip.
+                    await db.close()
+                    await db.execute(stmt, params)
             yield db
 
 
