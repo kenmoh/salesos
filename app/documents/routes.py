@@ -9,6 +9,7 @@ from app.auth.schemas.responses import (
     DocumentCreated,
     DocumentDetail,
     DocumentListItem,
+    DocumentPdf,
     DocumentStatusUpdated,
 )
 from app.common.bridge import (
@@ -128,16 +129,11 @@ async def convert_to_sale_endpoint(doc_id: str, ctx: TenantDep):
     )
 
 
-@router.get(
-    "/{doc_id}/download",
-    response_class=Response,
-    dependencies=[Depends(require_permission("documents:read"))],
-)
-async def download_document(doc_id: str, ctx: TenantDep):
-    doc = await get_document_by_id(tenant_id=ctx.user.business_id, document_id=doc_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+def _build_document_pdf(doc: dict) -> tuple[str, str, bytes]:
+    """Generate PDF bytes for a document dict.
 
+    Returns (doc_type, doc_number, pdf_bytes).
+    """
     from app.common.pdf_service import (
         generate_invoice_pdf,
         generate_receipt_pdf,
@@ -145,7 +141,7 @@ async def download_document(doc_id: str, ctx: TenantDep):
     )
 
     doc_type = doc.get("doc_type", "invoice")
-    doc_number = doc.get("doc_number", doc_id)
+    doc_number = doc.get("doc_number", "")
     customer_name = doc.get("customer_name", "")
     items = doc.get("items", [])
     subtotal = float(doc.get("subtotal", 0))
@@ -186,6 +182,43 @@ async def download_document(doc_id: str, ctx: TenantDep):
             notes=notes,
             terms=terms,
         )
+    return doc_type, doc_number, bytes(pdf_bytes)
+
+
+@router.get(
+    "/{doc_id}/pdf",
+    response_model=DataResponse[DocumentPdf],
+    dependencies=[Depends(require_permission("documents:read"))],
+)
+async def document_pdf(doc_id: str, ctx: TenantDep):
+    """Return the document PDF as base64 JSON (binary-safe for any proxy)."""
+    import base64
+
+    doc = await get_document_by_id(tenant_id=ctx.user.business_id, document_id=doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    doc_type, doc_number, pdf_bytes = _build_document_pdf(doc)
+    return ok(
+        {
+            "filename": f"{doc_type}_{doc_number}.pdf",
+            "mime_type": "application/pdf",
+            "pdf_base64": base64.b64encode(pdf_bytes).decode("ascii"),
+        }
+    )
+
+
+@router.get(
+    "/{doc_id}/download",
+    response_class=Response,
+    dependencies=[Depends(require_permission("documents:read"))],
+)
+async def download_document(doc_id: str, ctx: TenantDep):
+    doc = await get_document_by_id(tenant_id=ctx.user.business_id, document_id=doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    doc_type, doc_number, pdf_bytes = _build_document_pdf(doc)
 
     return Response(
         content=pdf_bytes,

@@ -657,6 +657,12 @@ class DocumentConverted(_Base):
     total: float = 0
 
 
+class DocumentPdf(_Base):
+    filename: str = ""
+    mime_type: str = "application/pdf"
+    pdf_base64: str = ""
+
+
 # ── Sync ──────────────────────────────────────────────────────────────────────
 
 
