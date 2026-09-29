@@ -7082,6 +7082,136 @@ async def confirm_payment(
     }
 
 
+async def _reclassify_split_cash_leg(
+    session: AsyncSession,
+    *,
+    business_id: str,
+    sale_id: str,
+    cash_amount: float,
+) -> None:
+    """Re-book a split sale so Cash holds the cash portion and Bank the rest.
+
+    Checkout posts the whole sale to a single account (Cash 1000 or Bank
+    1010, chosen from the confirm intent's method — usually Bank for the
+    card-initiated split confirm). Once ``process_split_payment`` knows the
+    real cash/card/transfer breakdown, this shifts the cash portion into
+    1000 (and card+transfer stays in 1010), so the dashboard cash figure
+    matches reality.
+
+    Idempotent: at most one ``split_adjustment`` journal per sale. No-ops
+    when the sale never posted a journal or the shift rounds to zero.
+    """
+    from app.accounting.models import ChartOfAccount, Journal, JournalEntry
+
+    tenant_id = UUID(business_id)
+
+    existing = await session.execute(
+        select(Journal.id)
+        .where(
+            Journal.tenant_id == tenant_id,
+            Journal.reference_type == "split_adjustment",
+            Journal.reference_id == UUID(sale_id),
+        )
+        .limit(1)
+    )
+    if existing.first():
+        return
+
+    original = await session.execute(
+        select(Journal)
+        .where(
+            Journal.tenant_id == tenant_id,
+            Journal.reference_type == "sale",
+            Journal.reference_id == UUID(sale_id),
+            Journal.status == "posted",
+        )
+        .limit(1)
+    )
+    sale_journal = original.scalars().first()
+    if not sale_journal:
+        return
+
+    cash_entries = await session.execute(
+        select(JournalEntry).where(
+            JournalEntry.journal_id == sale_journal.id,
+            JournalEntry.account_code.in_(("1000", "1010")),
+            JournalEntry.debit > 0,
+        )
+    )
+    booked = cash_entries.scalars().first()
+    if not booked:
+        return
+
+    cash_booked = Decimal(str(booked.debit or 0)) if booked.account_code == "1000" else Decimal("0")
+    shift = (Decimal(str(cash_amount)) - cash_booked).quantize(Decimal("0.01"))
+    if shift == 0:
+        return
+
+    accts = await session.execute(
+        select(ChartOfAccount).where(
+            ChartOfAccount.tenant_id == tenant_id,
+            ChartOfAccount.code.in_(("1000", "1010")),
+        )
+    )
+    code_to_acct = {a.code: a for a in accts.scalars().all()}
+    cash_acct = code_to_acct.get("1000")
+    bank_acct = code_to_acct.get("1010")
+    if not cash_acct or not bank_acct:
+        return  # COA predates the Bank Account seed — nothing to split against
+
+    amount = abs(shift)
+    if shift > 0:
+        debit_acct, credit_acct = cash_acct, bank_acct
+    else:
+        debit_acct, credit_acct = bank_acct, cash_acct
+
+    now = datetime.now(UTC)
+    journal_id = uuid4()
+    session.add(
+        Journal(
+            id=journal_id,
+            tenant_id=tenant_id,
+            journal_number=f"JRN-{now.strftime('%Y%m%d')}-{str(journal_id)[:8].upper()}",
+            description=f"Split reclassification sale {sale_id}",
+            reference_id=UUID(sale_id),
+            reference_type="split_adjustment",
+            status="posted",
+            posted_at=now,
+        )
+    )
+    session.add(
+        JournalEntry(
+            journal_id=journal_id,
+            tenant_id=tenant_id,
+            account_id=debit_acct.id,
+            account_code=debit_acct.code,
+            debit=amount,
+            credit=0,
+            description=f"Split cash reclassification: {sale_id}",
+            type="asset",
+            status="posted",
+            posted_at=now,
+            amount=amount,
+        )
+    )
+    session.add(
+        JournalEntry(
+            journal_id=journal_id,
+            tenant_id=tenant_id,
+            account_id=credit_acct.id,
+            account_code=credit_acct.code,
+            debit=0,
+            credit=amount,
+            description=f"Split cash reclassification: {sale_id}",
+            type="asset",
+            status="posted",
+            posted_at=now,
+            amount=amount,
+        )
+    )
+    await session.flush()
+
+
 async def process_split_payment(
     *,
     business_id: str,
@@ -7293,6 +7423,13 @@ async def process_split_payment(
                         status="deducted" if method in ("card", "transfer") else "pending",
                     )
                     session.add(ledger)
+
+        await _reclassify_split_cash_leg(
+            session,
+            business_id=business_id,
+            sale_id=sale_id,
+            cash_amount=float(cash_amount),
+        )
 
         await session.commit()
 
