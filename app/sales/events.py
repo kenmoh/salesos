@@ -103,6 +103,7 @@ def sale_voided_event(
     sale_number: str,
     reason: str,
     voided_by: UUID,
+    total: float = 0.0,
     correlation_id: str | None = None,
 ) -> EventEnvelope:
     """Create a sale voided event.
@@ -113,6 +114,7 @@ def sale_voided_event(
         sale_number: Human-readable sale number.
         reason: Reason for voiding the sale.
         voided_by: User who voided the sale.
+        total: Original sale total (used by reporting to reverse daily sales).
         correlation_id: Optional correlation ID for tracing.
 
     Returns:
@@ -127,6 +129,7 @@ def sale_voided_event(
             "sale_id": str(sale_id),
             "sale_number": sale_number,
             "reason": reason,
+            "total": float(total),
         },
     )
 

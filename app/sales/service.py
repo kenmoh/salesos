@@ -144,6 +144,7 @@ def plan_void_sale(command: VoidSaleCommand, sale: Sale) -> list[OutboxWrite]:
         sale_number=sale.sale_number,
         reason=command.reason,
         voided_by=command.voided_by,
+        total=float(sale.total),
         correlation_id=command.correlation_id,
     )
     return [OutboxWrite(event=event, aggregate_type="sale", aggregate_id=str(command.sale_id))]

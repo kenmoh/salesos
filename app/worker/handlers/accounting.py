@@ -46,13 +46,30 @@ async def handle_sale_confirmed(envelope: EventEnvelope, session: AsyncSession) 
     """
     from datetime import UTC, datetime
 
+    from sqlalchemy import select
+
     from app.accounting.models import Journal, JournalEntry
     from app.accounting.repository import get_account_by_code
 
     sale_id = envelope.payload.get("sale_id")
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     total = envelope.payload.get("total")
     if not sale_id or not tenant_id or not total:
+        return
+
+    # Dedup: checkout already posts the sale journal synchronously; booking
+    # again here would double-count cash and revenue.
+    existing = await session.execute(
+        select(Journal.id).where(
+            Journal.tenant_id == UUID(tenant_id),
+            Journal.reference_type == "sale",
+            Journal.reference_id == UUID(sale_id),
+            Journal.status == "posted",
+        ).limit(1)
+    )
+    if existing.first():
         return
 
     # Look up the Cash and Revenue accounts for this tenant
@@ -133,14 +150,43 @@ async def handle_payment_succeeded(envelope: EventEnvelope, session: AsyncSessio
     """
     from datetime import UTC, datetime
 
+    from sqlalchemy import select
+
     from app.accounting.models import Journal, JournalEntry
     from app.accounting.repository import get_account_by_code
 
     payment_id = envelope.payload.get("payment_id")
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     amount = envelope.payload.get("amount")
     if not payment_id or not tenant_id or not amount:
         return
+
+    # Dedup: payments tied to a sale are already booked by checkout
+    # (Dr cash/bank, Cr revenue) — only book payments with no sale journal.
+    # Also guards against RabbitMQ redelivery of the same payment event.
+    existing_payment = await session.execute(
+        select(Journal.id).where(
+            Journal.tenant_id == UUID(tenant_id),
+            Journal.reference_type == "payment",
+            Journal.reference_id == UUID(payment_id),
+        ).limit(1)
+    )
+    if existing_payment.first():
+        return
+    sale_id = envelope.payload.get("sale_id")
+    if sale_id:
+        existing = await session.execute(
+            select(Journal.id).where(
+                Journal.tenant_id == UUID(tenant_id),
+                Journal.reference_type == "sale",
+                Journal.reference_id == UUID(sale_id),
+                Journal.status == "posted",
+            ).limit(1)
+        )
+        if existing.first():
+            return
 
     # Look up the Accounts Receivable and Revenue accounts for this tenant
     receivable_account = await get_account_by_code(session, UUID(tenant_id), "1100")

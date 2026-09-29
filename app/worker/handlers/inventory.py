@@ -130,7 +130,9 @@ async def handle_sale_voided(envelope: EventEnvelope, session: AsyncSession) -> 
     from app.inventory.repository import release_reservations_for_sale
 
     sale_id = envelope.payload.get("sale_id")
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     if not sale_id or not tenant_id:
         return
     await release_reservations_for_sale(session, tenant_id=UUID(tenant_id), sale_id=UUID(sale_id))

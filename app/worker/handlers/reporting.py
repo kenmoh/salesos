@@ -24,7 +24,9 @@ async def handle_sale_voided(envelope: EventEnvelope, session: AsyncSession) -> 
     from app.reporting.repository import upsert_daily_summary
     from app.reporting.service import plan_upsert_daily_summary
 
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     total = envelope.payload.get("total")
     if not tenant_id or not total:
         return

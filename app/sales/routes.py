@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.dependencies import TenantDep, DbTenantDep, require_permission
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
@@ -90,17 +90,18 @@ async def get_sale(sale_id: str, ctx: DbTenantDep):
     dependencies=[Depends(require_permission("sales:void"))],
 )
 async def void_sale(sale_id: str, payload: VoidSale, ctx: DbTenantDep):
-    return ok(
-        {
-            "success": await services.void_sale(
-                session=ctx.session,
-                business_id=ctx.user.business_id,
-                user_id=ctx.user.user_id,
-                sale_id=sale_id,
-                reason=payload.reason,
-            )
-        }
-    )
+    try:
+        success = await services.void_sale(
+            session=ctx.session,
+            business_id=ctx.user.business_id,
+            user_id=ctx.user.user_id,
+            sale_id=sale_id,
+            reason=payload.reason,
+        )
+    except ValueError as e:
+        code = 404 if str(e) == "sale_not_found" else 400
+        raise HTTPException(status_code=code, detail=str(e))
+    return ok({"success": success})
 
 
 @router.post(

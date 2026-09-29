@@ -12,11 +12,13 @@ This module defines the FastAPI routes for all accounting operations including:
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.dependencies import DbTenantDep, require_permission
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
 from . import rpc
+from .repository import get_account_by_code
+from .service import _determine_entry_type
 from .schemas import (
     AccountResponse,
     BalanceSheetResponse,
@@ -40,6 +42,63 @@ from .schemas import (
 )
 
 router = APIRouter(prefix="/accounting", tags=["Accounting"])
+
+
+async def _post_payment_journal(
+    ctx,
+    *,
+    amount: float,
+    debit_code: str,
+    credit_code: str,
+    description: str,
+    ref_id: str,
+    ref_type: str,
+) -> None:
+    """Post the cash leg of an AR/AP payment (Dr cash / Cr receivable, etc.).
+
+    ``fn_record_ar_payment``/``fn_record_ap_payment`` only update balances;
+    without this journal the cash movement never reaches the ledger and the
+    dashboard's cash figure drifts. Runs in the request's transaction, so a
+    failure rolls back the balance update too.
+    """
+    from uuid import UUID
+
+    tenant_id = UUID(ctx.user.business_id)
+    debit_acct = await get_account_by_code(ctx.session, tenant_id, debit_code)
+    credit_acct = await get_account_by_code(ctx.session, tenant_id, credit_code)
+    if not debit_acct or not credit_acct:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Chart of accounts missing account {debit_code} or {credit_code}",
+        )
+
+    entries = [
+        {
+            "account_id": str(debit_acct.id),
+            "account_code": debit_acct.code,
+            "debit": amount,
+            "credit": 0,
+            "description": description,
+            "type": _determine_entry_type(debit_acct.code),
+        },
+        {
+            "account_id": str(credit_acct.id),
+            "account_code": credit_acct.code,
+            "debit": 0,
+            "credit": amount,
+            "description": description,
+            "type": _determine_entry_type(credit_acct.code),
+        },
+    ]
+    await rpc.post_journal(
+        session=ctx.session,
+        business_id=ctx.user.business_id,
+        user_id=ctx.user.user_id,
+        description=description,
+        entries=entries,
+        ref_id=ref_id,
+        ref_type=ref_type,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -354,6 +413,15 @@ async def record_ar_payment(
         payment_date=payload.payment_date,
         notes=payload.notes,
     )
+    await _post_payment_journal(
+        ctx,
+        amount=payload.amount,
+        debit_code="1000",
+        credit_code="1100",
+        description=f"AR payment: {result.get('invoice_number') or ar_id}",
+        ref_id=ar_id,
+        ref_type="ar_payment",
+    )
     return ok(result)
 
 
@@ -415,6 +483,15 @@ async def record_ap_payment(
         amount=payload.amount,
         payment_date=payload.payment_date,
         notes=payload.notes,
+    )
+    await _post_payment_journal(
+        ctx,
+        amount=payload.amount,
+        debit_code="2000",
+        credit_code="1000",
+        description=f"AP payment: {result.get('bill_number') or ap_id}",
+        ref_id=ap_id,
+        ref_type="ap_payment",
     )
     return ok(result)
 

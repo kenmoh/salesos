@@ -719,15 +719,19 @@ def plan_sale_journal(
     discount: float,
     tax_amount: float = 0,
     cashier_id: UUID | None = None,
+    payment_method: str = "cash",
 ) -> tuple[Journal, list[JournalEntry]]:
     """Plan automatic journal entries for a completed sale.
 
     Creates double-entry bookkeeping records:
-        1. Debit:  Cash/Bank (1000) -- increases cash
+        1. Debit:  Cash (1000) or Bank (1010) -- increases cash/bank
         2. Credit: Sales Revenue (4000) -- records revenue (total minus tax)
         3. Credit: VAT Payable (2300) -- tax collected, owed to government
         4. Debit:  Cost of Goods Sold (5000) -- records cost
         5. Credit: Inventory (1200) -- decreases inventory
+
+    The debit goes to Bank (1010) for card/transfer payments and to
+    Cash (1000) for cash (and split, whose cash leg is unknown here).
 
     Args:
         tenant_id: The business tenant UUID.
@@ -738,6 +742,7 @@ def plan_sale_journal(
         discount: The discount amount applied.
         tax_amount: The tax amount collected (goes to VAT Payable liability).
         cashier_id: The user who processed the sale.
+        payment_method: cash | card | transfer | split.
 
     Returns:
         A tuple of (Journal, list[JournalEntry]).
@@ -758,16 +763,20 @@ def plan_sale_journal(
     entries: list[JournalEntry] = []
     revenue = total - tax_amount
 
-    # 1. Debit: Cash/Bank (1000) -- money received
+    is_bank = payment_method in ("card", "transfer")
+    cash_code = "1010" if is_bank else "1000"
+    cash_label = "Bank transfer" if is_bank else "Cash"
+
+    # 1. Debit: Cash (1000) / Bank (1010) -- money received
     entries.append(JournalEntry(
         id=uuid4(),
         journal_id=journal_id,
         tenant_id=tenant_id,
         account_id=uuid4(),  # Resolved by bridge layer
-        account_code="1000",
+        account_code=cash_code,
         debit=total,
         credit=0,
-        description=f"Cash received: {sale_number}",
+        description=f"{cash_label} received: {sale_number}",
         type="asset",
         status="draft",
         amount=total,

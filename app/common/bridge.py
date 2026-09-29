@@ -5583,6 +5583,7 @@ async def checkout_cart(
     store_id: str | None = None,
     coupon_code: str | None = None,
     discount_id: str | None = None,
+    payment_method: str = "cash",
 ) -> dict:
     """Check out a shopping cart and create the corresponding sale.
 
@@ -5933,6 +5934,7 @@ async def checkout_cart(
                 discount=float(discount_amount),
                 tax_amount=float(result.tax),
                 cashier_id=UUID(actor_id) if actor_id else None,
+                payment_method=payment_method,
             )
 
             # Resolve account IDs from Chart of Accounts (single batched query)
@@ -5943,19 +5945,25 @@ async def checkout_cart(
             acct_res = await cart_session.execute(
                 sa_select(ChartOfAccount).where(
                     ChartOfAccount.tenant_id == tenant_uid,
-                    ChartOfAccount.code.in_(["1000", "2300", "4000", "5000", "1200"]),
+                    ChartOfAccount.code.in_(["1000", "1010", "2300", "4000", "5000", "1200"]),
                 )
             )
             code_to_account = {a.code: a for a in acct_res.scalars().all()}
             for entry in journal_entries:
                 acct = code_to_account.get(entry.account_code)
+                if acct is None and entry.account_code == "1010":
+                    # Tenant COA predates the Bank Account seed -- fall back
+                    # to Cash rather than posting to an unresolved id.
+                    acct = code_to_account.get("1000")
+                    if acct:
+                        entry.account_code = "1000"
                 if acct:
                     entry.account_id = acct.id
 
             await create_journal(cart_session, journal)
             for entry in journal_entries:
                 entry.status = "posted"
-                entry.posted_at = journal.posted_at
+                entry.posted_at = datetime.now(UTC)
                 await create_journal_entry(cart_session, entry)
             await repo_post_journal(cart_session, journal.id, UUID(actor_id) if actor_id else None)
 
@@ -6120,19 +6128,30 @@ async def checkout_cart(
             discount=float(discount_amount),
             tax_amount=float(result.tax),
             cashier_id=UUID(actor_id) if actor_id else None,
+            payment_method=payment_method,
         )
 
-        for acct_code in ["1000", "2300", "4000", "5000", "1200"]:
+        resolved_accounts: dict[str, UUID] = {}
+        for acct_code in ["1000", "1010", "2300", "4000", "5000", "1200"]:
             acct = await get_account_by_code(acct_session, UUID(tenant_id), acct_code)
             if acct:
-                for entry in journal_entries:
-                    if entry.account_code == acct_code:
-                        entry.account_id = acct.id
+                resolved_accounts[acct_code] = acct.id
+
+        for entry in journal_entries:
+            acct_id = resolved_accounts.get(entry.account_code)
+            if acct_id is None and entry.account_code == "1010":
+                # Tenant COA predates the Bank Account seed -- fall back to
+                # Cash rather than posting to an unresolved id.
+                acct_id = resolved_accounts.get("1000")
+                if acct_id:
+                    entry.account_code = "1000"
+            if acct_id:
+                entry.account_id = acct_id
 
         await create_journal(acct_session, journal)
         for entry in journal_entries:
             entry.status = "posted"
-            entry.posted_at = journal.posted_at
+            entry.posted_at = datetime.now(UTC)
             await create_journal_entry(acct_session, entry)
         await repo_post_journal(acct_session, journal.id, UUID(actor_id) if actor_id else None)
         await acct_session.commit()
@@ -7020,6 +7039,7 @@ async def confirm_payment(
         customer_phone=intent.customer_phone,
         store_id=snapshot.get("store_id"),
         coupon_code=intent.coupon_code,
+        payment_method=intent.method or "cash",
     )
 
     sale_id = str(sale_result["id"])

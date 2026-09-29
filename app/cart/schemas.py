@@ -83,6 +83,7 @@ class CheckoutRequest(BaseModel):
     customer_phone: str | None = None
     coupon_code: str | None = None
     discount_id: str | None = None
+    payment_method: str = "cash"
 
 
 class VoidItemRequest(BaseModel):
