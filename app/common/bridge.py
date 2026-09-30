@@ -6987,6 +6987,64 @@ async def build_receipt_data(
     }
 
 
+async def _existing_sale_confirmation(
+    session: AsyncSession,
+    *,
+    business_id: str,
+    intent,
+    snapshot: dict,
+) -> dict:
+    """Build a ``confirm_payment`` response for an already-confirmed intent.
+
+    Used when the gateway webhook confirmed the intent before (or
+    concurrently with) the client's confirm call: returns the existing
+    sale, its latest payment and fresh receipt data, so the client can
+    proceed as usual instead of hitting ``intent_not_status``.
+
+    Raises:
+        ValueError: If the intent's sale can no longer be found.
+    """
+    from app.payments.models import Payment
+    from app.sales.repository import get_sale_by_id
+
+    sale = await get_sale_by_id(session, intent.sale_id)
+    if not sale:
+        raise ValueError(f"intent_not_status:{intent.status}")
+
+    receipt_data = await build_receipt_data(
+        business_id=business_id,
+        sale_id=str(intent.sale_id),
+        store_id=snapshot.get("store_id"),
+        payment_method=intent.method or "cash",
+    )
+
+    payments_result = await session.execute(
+        select(Payment)
+        .where(Payment.sale_id == intent.sale_id)
+        .order_by(Payment.created_at.desc())
+        .limit(1)
+    )
+    last_payment = payments_result.scalars().first()
+    payment_dict = {}
+    if last_payment:
+        payment_dict = {
+            "payment_id": str(last_payment.id),
+            "method": last_payment.method,
+            "amount": float(last_payment.amount),
+            "status": last_payment.status,
+        }
+
+    return {
+        "sale_id": str(intent.sale_id),
+        "sale_number": sale.sale_number,
+        "total": float(sale.total),
+        "amount_paid": float(sale.amount_paid),
+        "status": sale.status,
+        "payment": payment_dict,
+        "receipt": receipt_data,
+    }
+
+
 async def confirm_payment(
     *,
     business_id: str,
@@ -7017,15 +7075,27 @@ async def confirm_payment(
         intent = await session.get(PaymentIntent, UUID(intent_id))
         if not intent:
             raise ValueError("intent_not_found")
+
+        snapshot = json.loads(intent.cart_snapshot or "{}")
+        intent_cart_id = str(intent.cart_id) if intent.cart_id else None
+
         if intent.status != "pending":
+            if intent.status == "completed" and intent.sale_id:
+                # Already confirmed (webhook won the race, or a split leg
+                # completed server-side) — return the existing sale so the
+                # client can still show the receipt.
+                return await _existing_sale_confirmation(
+                    session,
+                    business_id=business_id,
+                    intent=intent,
+                    snapshot=snapshot,
+                )
             raise ValueError(f"intent_not_status:{intent.status}")
         if intent.expires_at and intent.expires_at < datetime.now(UTC):
             intent.status = "expired"
             await session.commit()
             raise ValueError("intent_expired")
 
-        snapshot = json.loads(intent.cart_snapshot or "{}")
-        intent_cart_id = str(intent.cart_id) if intent.cart_id else None
         if not intent_cart_id:
             raise ValueError("intent_no_cart")
 
@@ -7482,6 +7552,7 @@ async def confirm_split_card_payment(
 
         amount = Decimal(str(gateway_data.get("amount", intent.amount)))
         await update_intent_status(session, intent.id, "completed", gateway_data)
+        intent.sale_id = UUID(sale_id)
 
         result = await record_payment(
             business_id=business_id,
@@ -7547,6 +7618,7 @@ async def confirm_split_transfer_payment(
 
         amount = Decimal(str(gateway_data.get("amount", intent.amount)))
         await update_intent_status(session, intent.id, "completed", gateway_data)
+        intent.sale_id = UUID(sale_id)
 
         result = await record_payment(
             business_id=business_id,
