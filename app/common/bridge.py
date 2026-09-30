@@ -7751,6 +7751,7 @@ async def create_document(
     notes: str | None = None,
     terms: str | None = None,
     linked_sale_id: str | None = None,
+    store_id: str | None = None,
     correlation_id: str | None = None,
 ) -> dict:
     """Create a business document (quote, invoice, receipt, or delivery note).
@@ -7815,6 +7816,7 @@ async def create_document(
         terms=terms,
         items=item_lines,
         linked_sale_id=UUID(linked_sale_id) if linked_sale_id else None,
+        store_id=UUID(store_id) if store_id else None,
         correlation_id=correlation_id,
     )
 

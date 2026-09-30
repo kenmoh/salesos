@@ -54,6 +54,7 @@ async def create_document_endpoint(payload: DocumentCreate, ctx: TenantDep):
                 for i in payload.items
             ],
             linked_sale_id=str(payload.sale_id) if payload.sale_id else None,
+            store_id=str(payload.store_id) if payload.store_id else None,
         )
     )
 

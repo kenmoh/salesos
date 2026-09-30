@@ -252,6 +252,7 @@ async def list_accounts_receivable(
     *,
     business_id: str,
     status_filter: str | None = None,
+    store_id: str | None = None,
 ) -> list[dict]:
     """List Accounts Receivable."""
     return _stringify(await call(
@@ -259,6 +260,7 @@ async def list_accounts_receivable(
         "fn_list_accounts_receivable",
         p_tenant_id=UUID(business_id),
         p_status=status_filter,
+        p_store_id=UUID(store_id) if store_id else None,
     ))
 
 
@@ -272,6 +274,7 @@ async def create_accounts_receivable(
     amount: float,
     due_date: str,
     invoice_id: str | None = None,
+    store_id: str | None = None,
 ) -> dict:
     """Create a new Accounts Receivable record."""
     rows = await call(
@@ -284,6 +287,7 @@ async def create_accounts_receivable(
         p_amount=amount,
         p_due_date=due_date,
         p_invoice_id=UUID(invoice_id) if invoice_id else None,
+        p_store_id=UUID(store_id) if store_id else None,
     )
     row = _stringify(rows[0]) if rows else {}
     if "out_id" in row:
@@ -339,6 +343,7 @@ async def list_accounts_payable(
     *,
     business_id: str,
     status_filter: str | None = None,
+    store_id: str | None = None,
 ) -> list[dict]:
     """List Accounts Payable."""
     return _stringify(await call(
@@ -346,6 +351,7 @@ async def list_accounts_payable(
         "fn_list_accounts_payable",
         p_tenant_id=UUID(business_id),
         p_status=status_filter,
+        p_store_id=UUID(store_id) if store_id else None,
     ))
 
 
@@ -358,6 +364,7 @@ async def create_accounts_payable(
     amount: float,
     due_date: str,
     description: str | None = None,
+    store_id: str | None = None,
 ) -> dict:
     """Create a new Accounts Payable record."""
     rows = await call(
@@ -369,6 +376,7 @@ async def create_accounts_payable(
         p_amount=amount,
         p_due_date=due_date,
         p_description=description,
+        p_store_id=UUID(store_id) if store_id else None,
     )
     row = _stringify(rows[0]) if rows else {}
     if "out_id" in row:

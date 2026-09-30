@@ -230,6 +230,7 @@ async def list_sales(
     from_date=None,
     to_date=None,
     cashier_id=None,
+    store_id=None,
     page=1,
     page_size=50,
 ) -> dict:
@@ -261,6 +262,9 @@ async def list_sales(
     if cashier_id:
         query = query.where(Sale.cashier_id == UUID(cashier_id))
         count_query = count_query.where(Sale.cashier_id == UUID(cashier_id))
+    if store_id:
+        query = query.where(Sale.store_id == UUID(store_id))
+        count_query = count_query.where(Sale.store_id == UUID(store_id))
     if from_date:
         query = query.where(Sale.created_at >= from_date)
         count_query = count_query.where(Sale.created_at >= from_date)

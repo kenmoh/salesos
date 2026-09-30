@@ -253,6 +253,7 @@ class DocumentCreate(Base):
     due_date: date | None = None
     notes: str | None = None
     terms: str | None = None
+    store_id: UUID | None = None
     items: list[DocumentItem] = Field(..., min_length=1)
 
 

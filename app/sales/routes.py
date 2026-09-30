@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.dependencies import TenantDep, DbTenantDep, require_permission
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
@@ -53,9 +55,15 @@ async def list_sales(
     from_date: str | None = None,
     to_date: str | None = None,
     cashier_id: str | None = None,
+    store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
     page: int = 1,
     page_size: int = 50,
 ):
+    if store_id:
+        try:
+            UUID(store_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="store_id must be a valid UUID")
     result = await services.list_sales(
         session=ctx.session,
         business_id=ctx.user.business_id,
@@ -63,6 +71,7 @@ async def list_sales(
         from_date=from_date,
         to_date=to_date,
         cashier_id=cashier_id,
+        store_id=store_id,
         page=page,
         page_size=page_size,
     )

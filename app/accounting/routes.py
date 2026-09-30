@@ -394,11 +394,13 @@ async def cash_flow(
 async def list_receivable(
     ctx: DbTenantDep,
     status: str | None = Query(None, description="Filter by status: pending, overdue, partial, paid"),
+    store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
 ):
     ar_list = await rpc.list_accounts_receivable(
         session=ctx.session,
         business_id=ctx.user.business_id,
         status_filter=status,
+        store_id=_validated_store_id(store_id),
     )
     return ok(ar_list)
 
@@ -419,6 +421,7 @@ async def create_receivable(payload: CreateReceivableRequest, ctx: DbTenantDep):
         amount=payload.amount,
         due_date=payload.due_date,
         invoice_id=payload.invoice_id,
+        store_id=_validated_store_id(payload.store_id),
     )
     return ok(result)
 
@@ -466,11 +469,13 @@ async def record_ar_payment(
 async def list_payable(
     ctx: DbTenantDep,
     status: str | None = Query(None, description="Filter by status: pending, overdue, partial, paid"),
+    store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
 ):
     ap_list = await rpc.list_accounts_payable(
         session=ctx.session,
         business_id=ctx.user.business_id,
         status_filter=status,
+        store_id=_validated_store_id(store_id),
     )
     return ok(ap_list)
 
@@ -490,6 +495,7 @@ async def create_payable(payload: CreatePayableRequest, ctx: DbTenantDep):
         amount=payload.amount,
         due_date=payload.due_date,
         description=payload.description,
+        store_id=_validated_store_id(payload.store_id),
     )
     return ok(result)
 

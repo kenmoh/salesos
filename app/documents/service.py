@@ -157,6 +157,7 @@ def plan_document_creation(
         notes=command.notes,
         terms=command.terms,
         linked_sale_id=command.linked_sale_id,
+        store_id=command.store_id,
         created_by=command.actor_id,
     )
 

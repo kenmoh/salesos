@@ -338,6 +338,7 @@ def plan_create_accounts_receivable(
         balance=command.amount,
         due_date=command.due_date,
         status="pending",
+        store_id=command.store_id,
     )
     result = AccountsReceivableResult(
         id=ar.id,
@@ -350,6 +351,7 @@ def plan_create_accounts_receivable(
         balance=ar.balance,
         due_date=ar.due_date,
         status=ar.status,
+        store_id=ar.store_id,
     )
     return result, ar
 
@@ -484,6 +486,7 @@ def plan_create_accounts_payable(
         balance=command.amount,
         due_date=command.due_date,
         status="pending",
+        store_id=command.store_id,
     )
     result = AccountsPayableResult(
         id=ap.id,
@@ -496,6 +499,7 @@ def plan_create_accounts_payable(
         balance=ap.balance,
         due_date=ap.due_date,
         status=ap.status,
+        store_id=ap.store_id,
     )
     return result, ap
 

@@ -94,6 +94,7 @@ class AccountsReceivableCreateCommand(BaseModel):
     invoice_number: str = Field(..., min_length=1, max_length=50)
     amount: float = Field(..., gt=0)
     due_date: datetime
+    store_id: UUID | None = None
 
 
 class AccountsReceivableResult(BaseModel):
@@ -107,6 +108,7 @@ class AccountsReceivableResult(BaseModel):
     balance: float
     due_date: datetime
     status: str
+    store_id: UUID | None = None
 
 
 class AccountsPayableCreateCommand(BaseModel):
@@ -116,6 +118,7 @@ class AccountsPayableCreateCommand(BaseModel):
     description: str | None = None
     amount: float = Field(..., gt=0)
     due_date: datetime
+    store_id: UUID | None = None
 
 
 class AccountsPayableResult(BaseModel):
@@ -129,6 +132,7 @@ class AccountsPayableResult(BaseModel):
     balance: float
     due_date: datetime
     status: str
+    store_id: UUID | None = None
 
 
 class ExpenseCreateCommand(BaseModel):
@@ -210,6 +214,7 @@ class CreateReceivableRequest(BaseModel):
     amount: float = Field(..., gt=0)
     due_date: str
     invoice_id: str | None = None
+    store_id: str | None = None
 
 
 class RecordPaymentRequest(BaseModel):
@@ -224,6 +229,7 @@ class CreatePayableRequest(BaseModel):
     description: str | None = None
     amount: float = Field(..., gt=0)
     due_date: str
+    store_id: str | None = None
 
 
 class CreateExpenseRequest(BaseModel):
@@ -314,6 +320,7 @@ class ReceivableResponse(BaseModel):
     balance: float = 0
     due_date: str = ""
     status: str = "pending"
+    store_id: str | None = None
 
 
 class PayableResponse(BaseModel):
@@ -327,6 +334,7 @@ class PayableResponse(BaseModel):
     balance: float = 0
     due_date: str = ""
     status: str = "pending"
+    store_id: str | None = None
 
 
 class ExpenseResponse(BaseModel):

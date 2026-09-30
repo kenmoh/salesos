@@ -112,6 +112,9 @@ class Document(StoreFlowBase):
     linked_sale_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), nullable=True, index=True
     )
+    store_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True, index=True
+    )
     pdf_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_by: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

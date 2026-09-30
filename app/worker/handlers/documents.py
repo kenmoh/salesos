@@ -64,6 +64,8 @@ async def handle_document_status_changed(
         get_account_by_code,
         update_ar_payment,
     )
+    from app.documents.models import Document
+    from sqlalchemy import select
 
     doc_type = envelope.payload.get("doc_type")
     new_status = envelope.payload.get("new_status")
@@ -101,7 +103,12 @@ async def handle_document_status_changed(
             except (ValueError, AttributeError):
                 pass  # Keep default
 
-        # Create the AR record
+        # Create the AR record (tagged with the document's store, if any)
+        doc_store_id = (
+            await session.execute(
+                select(Document.store_id).where(Document.id == UUID(document_id))
+            )
+        ).scalar_one_or_none()
         ar = AccountReceivable(
             id=uuid4(),
             tenant_id=UUID(tenant_id),
@@ -114,6 +121,7 @@ async def handle_document_status_changed(
             balance=float(total),
             due_date=due_date,
             status="pending",
+            store_id=doc_store_id,
         )
         await create_accounts_receivable(session, ar)
 

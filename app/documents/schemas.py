@@ -92,6 +92,7 @@ class DocumentCreateCommand(BaseModel):
     terms: str | None = None
     items: list[DocumentItemLine] = Field(..., min_length=1)
     linked_sale_id: UUID | None = None
+    store_id: UUID | None = None
     correlation_id: str | None = None
 
 
