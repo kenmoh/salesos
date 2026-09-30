@@ -772,7 +772,8 @@ class TestPayments:
         assert "data" in data
         assert "account_number" in data["data"]
         assert "bank_name" in data["data"]
-        assert "instructions" in data["data"]
+        assert "tx_ref" in data["data"]
+        assert data["data"]["method"] == "transfer"
         assert data["data"]["amount"] == 5000.0
         assert data["data"]["status"] == "pending"
 
@@ -950,7 +951,7 @@ class TestReports:
         assert resp.status_code == 200
         data = resp.json()
         assert "data" in data
-        assert "total_customers" in data["data"]
+        assert "summary" in data["data"]
         assert "top_customers" in data["data"]
 
     async def test_document_summary(self, client):
@@ -960,7 +961,8 @@ class TestReports:
         assert resp.status_code == 200
         data = resp.json()
         assert "data" in data
-        assert "total_invoices" in data["data"]
+        assert "summary" in data["data"]
+        assert "aging" in data["data"]
 
 
 # ---------------------------------------------------------------------------
@@ -1330,8 +1332,40 @@ class TestSync:
         assert resp.status_code == 200
         assert "data" in resp.json()
 
-    async def test_update_business_settings(self, client):
-        resp = await client.patch("/business/settings", json={"name": "N"})
+    async def test_update_business_settings(self, app: FastAPI):
+        from types import SimpleNamespace
+
+        from app.core.dependencies import get_db, get_tenant_db_context
+
+        # The route 404s when the tenant row is missing, so this test needs a
+        # session whose tenant lookup returns one (the shared mock returns None).
+        tenant = SimpleNamespace(
+            id=uuid4(),
+            business_name="Old Name",
+            owner_phone="000",
+            settings="{}",
+        )
+        session = _make_session()
+        session.execute = AsyncMock(
+            return_value=MagicMock(
+                scalar_one_or_none=MagicMock(return_value=tenant),
+            )
+        )
+        ctx = TenantContext(user=_make_token_data(), session=session)
+
+        async def override_tenant():
+            yield ctx
+
+        async def override_db():
+            yield session
+
+        app.dependency_overrides[get_tenant_db_context] = override_tenant
+        app.dependency_overrides[get_db] = override_db
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as ac:
+            resp = await ac.patch("/business/settings", json={"name": "N"})
         assert resp.status_code == 200
         assert "data" in resp.json()
 
