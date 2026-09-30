@@ -172,6 +172,7 @@ def plan_create_journal(
         reference_id=command.reference_id,
         reference_type=command.reference_type,
         status="draft",
+        store_id=command.store_id,
     )
 
     entries = []
@@ -643,6 +644,7 @@ def plan_create_expense(
         account_id=command.account_id,
         journal_id=None,  # Will be set after journal is created
         created_by=command.created_by,
+        store_id=command.store_id,
     )
 
     # Create journal for the expense
@@ -657,6 +659,7 @@ def plan_create_expense(
         reference_id=expense_id,
         reference_type="expense",
         status="draft",
+        store_id=command.store_id,
     )
 
     # Debit: Expense account (increases expense)
@@ -705,6 +708,7 @@ def plan_create_expense(
         account_id=expense.account_id,
         journal_id=expense.journal_id,
         created_by=expense.created_by,
+        store_id=expense.store_id,
     )
 
     return result, expense, journal, [expense_entry, cash_entry], []
@@ -720,6 +724,7 @@ def plan_sale_journal(
     tax_amount: float = 0,
     cashier_id: UUID | None = None,
     payment_method: str = "cash",
+    store_id: UUID | None = None,
 ) -> tuple[Journal, list[JournalEntry]]:
     """Plan automatic journal entries for a completed sale.
 
@@ -743,6 +748,7 @@ def plan_sale_journal(
         tax_amount: The tax amount collected (goes to VAT Payable liability).
         cashier_id: The user who processed the sale.
         payment_method: cash | card | transfer | split.
+        store_id: The store the sale belongs to (NULL = business-wide).
 
     Returns:
         A tuple of (Journal, list[JournalEntry]).
@@ -758,6 +764,7 @@ def plan_sale_journal(
         reference_id=sale_id,
         reference_type="sale",
         status="draft",
+        store_id=store_id,
     )
 
     entries: list[JournalEntry] = []

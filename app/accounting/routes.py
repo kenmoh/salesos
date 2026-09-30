@@ -11,6 +11,7 @@ This module defines the FastAPI routes for all accounting operations including:
 """
 
 from datetime import datetime
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -42,6 +43,22 @@ from .schemas import (
 )
 
 router = APIRouter(prefix="/accounting", tags=["Accounting"])
+
+
+def _validated_store_id(store_id: str | None) -> str | None:
+    """Validate an optional store_id (query param or payload field).
+
+    Returns None when absent (business-wide / all stores) and raises 400
+    for anything that is not a valid UUID. No per-role guard: omitting
+    store_id already returns every store, and results are tenant-scoped.
+    """
+    if not store_id:
+        return None
+    try:
+        UUID(store_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="store_id must be a valid UUID")
+    return store_id
 
 
 async def _post_payment_journal(
@@ -233,6 +250,7 @@ async def create_journal(payload: CreateJournalRequest, ctx: DbTenantDep):
         entries=[e.model_dump() for e in payload.entries],
         ref_id=payload.reference_id,
         ref_type=payload.ref_type,
+        store_id=_validated_store_id(payload.store_id),
     )
     return ok({"journal_id": journal_id})
 
@@ -246,12 +264,14 @@ async def list_journals(
     ctx: DbTenantDep,
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
     page_size: int = Query(50, ge=1, le=200, description="Items per page"),
+    store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
 ):
     result = await rpc.list_journals(
         session=ctx.session,
         business_id=ctx.user.business_id,
         page=page,
         page_size=page_size,
+        store_id=_validated_store_id(store_id),
     )
     return paginated(
         result["items"], total=result["total"], page=result["page"], page_size=result["page_size"]
@@ -271,11 +291,13 @@ async def list_journals(
 async def trial_balance(
     ctx: DbTenantDep,
     as_at: str | None = Query(None, description="Date in YYYY-MM-DD format"),
+    store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
 ):
     result = await rpc.trial_balance(
         session=ctx.session,
         business_id=ctx.user.business_id,
         as_at=as_at,
+        store_id=_validated_store_id(store_id),
     )
     return ok(result)
 
@@ -289,12 +311,14 @@ async def profit_and_loss(
     ctx: DbTenantDep,
     from_date: str = Query(..., description="Start date in YYYY-MM-DD format"),
     to_date: str = Query(..., description="End date in YYYY-MM-DD format"),
+    store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
 ):
     result = await rpc.profit_and_loss(
         session=ctx.session,
         business_id=ctx.user.business_id,
         from_date=from_date,
         to_date=to_date,
+        store_id=_validated_store_id(store_id),
     )
     return ok(result)
 
@@ -307,13 +331,15 @@ async def profit_and_loss(
 async def balance_sheet(
     ctx: DbTenantDep,
     as_at: str | None = Query(None, description="Date in YYYY-MM-DD format (default: today)"),
+    store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
 ):
-    from uuid import UUID
-
     as_at_date = datetime.fromisoformat(as_at) if as_at else None
     from .repository import get_balance_sheet
 
-    result = await get_balance_sheet(ctx.session, UUID(ctx.user.business_id), as_at_date)
+    result = await get_balance_sheet(
+        ctx.session, UUID(ctx.user.business_id), as_at_date,
+        store_id=UUID(_validated_store_id(store_id)) if store_id else None,
+    )
     asset_accounts = [{"account_id": "", "account_code": a["code"], "account_name": a["name"], "amount": a["balance"]} for a in result.get("asset_accounts", [])]
     liability_accounts = [{"account_id": "", "account_code": a["code"], "account_name": a["name"], "amount": a["balance"]} for a in result.get("liability_accounts", [])]
     equity_accounts = [{"account_id": "", "account_code": a["code"], "account_name": a["name"], "amount": a["balance"]} for a in result.get("equity_accounts", [])]
@@ -336,14 +362,16 @@ async def cash_flow(
     ctx: DbTenantDep,
     from_date: str | None = Query(None, description="Start date (default: 30 days ago)"),
     to_date: str | None = Query(None, description="End date (default: today)"),
+    store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
 ):
-    from uuid import UUID
-
     from_dt = datetime.fromisoformat(from_date) if from_date else None
     to_dt = datetime.fromisoformat(to_date) if to_date else None
     from .repository import get_cash_flow
 
-    result = await get_cash_flow(ctx.session, UUID(ctx.user.business_id), from_dt, to_dt)
+    result = await get_cash_flow(
+        ctx.session, UUID(ctx.user.business_id), from_dt, to_dt,
+        store_id=UUID(_validated_store_id(store_id)) if store_id else None,
+    )
     inflows = [{"account_id": i.get("journal_number", ""), "account_code": i.get("journal_number", ""), "account_name": i.get("description", ""), "amount": float(i.get("amount", 0))} for i in result.get("operating", {}).get("inflows", [])]
     outflows = [{"account_id": o.get("journal_number", ""), "account_code": o.get("journal_number", ""), "account_name": o.get("description", ""), "amount": float(o.get("amount", 0))} for o in result.get("operating", {}).get("outflows", [])]
     return ok({
@@ -511,6 +539,7 @@ async def list_expenses(
     category: str | None = Query(None, description="Filter by category"),
     from_date: str | None = Query(None, description="Start date (YYYY-MM-DD)"),
     to_date: str | None = Query(None, description="End date (YYYY-MM-DD)"),
+    store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
 ):
     expenses = await rpc.list_expenses(
         session=ctx.session,
@@ -518,6 +547,7 @@ async def list_expenses(
         category=category,
         from_date=from_date,
         to_date=to_date,
+        store_id=_validated_store_id(store_id),
     )
     return ok(expenses)
 
@@ -539,6 +569,7 @@ async def create_expense(payload: CreateExpenseRequest, ctx: DbTenantDep):
         created_by=ctx.user.user_id,
         vendor=payload.vendor,
         receipt_url=payload.receipt_url,
+        store_id=_validated_store_id(payload.store_id),
     )
     return ok(result)
 
@@ -552,12 +583,14 @@ async def expense_summary(
     ctx: DbTenantDep,
     from_date: str | None = Query(None, description="Start date (YYYY-MM-DD)"),
     to_date: str | None = Query(None, description="End date (YYYY-MM-DD)"),
+    store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
 ):
     summary = await rpc.expense_summary(
         session=ctx.session,
         business_id=ctx.user.business_id,
         from_date=from_date,
         to_date=to_date,
+        store_id=_validated_store_id(store_id),
     )
     return ok(summary)
 
@@ -572,10 +605,14 @@ async def expense_summary(
     response_model=DataResponse[FinancialDashboardResponse],
     dependencies=[Depends(require_permission("accounting:read"))],
 )
-async def financial_dashboard(ctx: DbTenantDep):
+async def financial_dashboard(
+    ctx: DbTenantDep,
+    store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
+):
     dashboard = await rpc.financial_dashboard(
         session=ctx.session,
         business_id=ctx.user.business_id,
+        store_id=_validated_store_id(store_id),
     )
     return ok(dashboard)
 

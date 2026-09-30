@@ -734,6 +734,7 @@ async def get_balance_sheet(
     session: AsyncSession,
     tenant_id: UUID,
     as_at_date: datetime | None = None,
+    store_id: UUID | None = None,
 ) -> dict:
     """Calculate the Balance Sheet as of a specific date.
 
@@ -750,6 +751,8 @@ async def get_balance_sheet(
         tenant_id: The business tenant to calculate for.
         as_at_date: The date to calculate the balance sheet for. If None,
             uses the current date.
+        store_id: When given, only journals tagged with this store are
+            counted (NULL = all stores, the historical behaviour).
 
     Returns:
         A dictionary containing:
@@ -786,6 +789,7 @@ async def get_balance_sheet(
             account_id=account.id,
             account_type="asset",
             as_at_date=as_at_date,
+            store_id=store_id,
         )
         if balance != 0:
             asset_total += balance
@@ -801,6 +805,7 @@ async def get_balance_sheet(
             account_id=account.id,
             account_type="liability",
             as_at_date=as_at_date,
+            store_id=store_id,
         )
         if balance != 0:
             liability_total += balance
@@ -816,6 +821,7 @@ async def get_balance_sheet(
             account_id=account.id,
             account_type="equity",
             as_at_date=as_at_date,
+            store_id=store_id,
         )
         if balance != 0:
             equity_total += balance
@@ -841,6 +847,7 @@ async def _get_account_balance(
     account_id: UUID,
     account_type: str,
     as_at_date: datetime,
+    store_id: UUID | None = None,
 ) -> float:
     """Calculate the balance of a single account as of a specific date.
 
@@ -852,6 +859,8 @@ async def _get_account_balance(
         account_id: The UUID of the account to calculate balance for.
         account_type: The type of account ("asset", "liability", "equity", etc.).
         as_at_date: The date to calculate the balance for.
+        store_id: When given, only entries whose journal is tagged with this
+            store are counted (NULL = all stores).
 
     Returns:
         The account balance as a float in NGN.
@@ -864,6 +873,10 @@ async def _get_account_balance(
         JournalEntry.status == "posted",
         JournalEntry.posted_at <= as_at_date,
     )
+    if store_id is not None:
+        query = query.join(Journal, Journal.id == JournalEntry.journal_id).where(
+            Journal.store_id == store_id
+        )
 
     result = await session.execute(query)
     row = result.one()
@@ -889,6 +902,7 @@ async def get_cash_flow(
     tenant_id: UUID,
     from_date: datetime | None = None,
     to_date: datetime | None = None,
+    store_id: UUID | None = None,
 ) -> dict:
     """Calculate the Cash Flow Statement for a period.
 
@@ -907,6 +921,8 @@ async def get_cash_flow(
         tenant_id: The business tenant to calculate for.
         from_date: The start of the period. If None, defaults to 30 days ago.
         to_date: The end of the period. If None, defaults to today.
+        store_id: When given, only journals tagged with this store are
+            counted (NULL = all stores, the historical behaviour).
 
     Returns:
         A dictionary containing:
@@ -929,6 +945,7 @@ async def get_cash_flow(
         flow_type="inflow",
         from_date=from_date,
         to_date=to_date,
+        store_id=store_id,
     )
 
     # Cash outflows: Credits to Cash account (1000) from expense/payment journals
@@ -939,6 +956,7 @@ async def get_cash_flow(
         flow_type="outflow",
         from_date=from_date,
         to_date=to_date,
+        store_id=store_id,
     )
 
     total_inflows = sum(item["amount"] for item in inflows)
@@ -967,6 +985,7 @@ async def _get_cash_flows_by_type(
     flow_type: str,
     from_date: datetime,
     to_date: datetime,
+    store_id: UUID | None = None,
 ) -> list[dict]:
     """Get cash inflows or outflows for a specific account code.
 
@@ -977,6 +996,8 @@ async def _get_cash_flows_by_type(
         flow_type: Either "inflow" (debits to cash) or "outflow" (credits to cash).
         from_date: Start of the date range.
         to_date: End of the date range.
+        store_id: When given, only journals tagged with this store are
+            counted (NULL = all stores).
 
     Returns:
         A list of dictionaries with "date", "description", and "amount" keys.
@@ -1004,7 +1025,10 @@ async def _get_cash_flows_by_type(
         filter_condition,
         Journal.posted_at >= from_date,
         Journal.posted_at <= to_date,
-    ).group_by(
+    )
+    if store_id is not None:
+        query = query.where(Journal.store_id == store_id)
+    query = query.group_by(
         Journal.journal_number,
         JournalEntry.description,
         Journal.posted_at,

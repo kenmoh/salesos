@@ -888,6 +888,252 @@ class TestAccounting:
 
 
 # ---------------------------------------------------------------------------
+# Per-store accounting: store_id filters + journal/expense attribution
+# ---------------------------------------------------------------------------
+
+STORE_ID = "11111111-1111-1111-1111-111111111111"
+
+
+class TestStoreIdQueryParams:
+    ROUTE = "/accounting"
+
+    async def test_trial_balance_with_store_id(self, client):
+        resp = await client.get(f"{self.ROUTE}/trial-balance?store_id={STORE_ID}")
+        assert resp.status_code == 200
+        assert "data" in resp.json()
+
+    async def test_profit_and_loss_with_store_id(self, client):
+        resp = await client.get(
+            f"{self.ROUTE}/profit-and-loss?from_date=2024-01-01"
+            f"&to_date=2024-12-31&store_id={STORE_ID}"
+        )
+        assert resp.status_code == 200
+        assert "data" in resp.json()
+
+    async def test_list_journals_with_store_id(self, client):
+        resp = await client.get(f"{self.ROUTE}/journals?store_id={STORE_ID}")
+        assert resp.status_code == 200
+        assert "data" in resp.json()
+
+    async def test_balance_sheet_with_store_id(self, client):
+        resp = await client.get(f"{self.ROUTE}/balance-sheet?store_id={STORE_ID}")
+        assert resp.status_code == 200
+        assert "data" in resp.json()
+
+    async def test_cash_flow_with_store_id(self, client):
+        resp = await client.get(f"{self.ROUTE}/cash-flow?store_id={STORE_ID}")
+        assert resp.status_code == 200
+        assert "data" in resp.json()
+
+    async def test_expenses_with_store_id(self, client):
+        resp = await client.get(f"{self.ROUTE}/expenses?store_id={STORE_ID}")
+        assert resp.status_code == 200
+        assert "data" in resp.json()
+
+    async def test_expense_summary_with_store_id(self, client):
+        resp = await client.get(f"{self.ROUTE}/expenses/summary?store_id={STORE_ID}")
+        assert resp.status_code == 200
+        assert "data" in resp.json()
+
+    async def test_dashboard_with_store_id(self, client):
+        resp = await client.get(f"{self.ROUTE}/dashboard?store_id={STORE_ID}")
+        assert resp.status_code == 200
+        assert "data" in resp.json()
+
+    async def test_invalid_store_id_rejected(self, client):
+        resp = await client.get(f"{self.ROUTE}/trial-balance?store_id=not-a-uuid")
+        assert resp.status_code == 400
+
+    async def test_invalid_store_id_rejected_on_post(self, client):
+        resp = await client.post(
+            f"{self.ROUTE}/expenses",
+            json={
+                "category": "rent",
+                "description": "Shop rent",
+                "amount": 5000,
+                "expense_date": "2024-01-01",
+                "store_id": "nope",
+            },
+        )
+        assert resp.status_code == 400
+
+    async def test_create_expense_with_store_id(self, client):
+        resp = await client.post(
+            f"{self.ROUTE}/expenses",
+            json={
+                "category": "rent",
+                "description": "Shop rent",
+                "amount": 5000,
+                "expense_date": "2024-01-01",
+                "store_id": STORE_ID,
+            },
+        )
+        assert resp.status_code == 201
+
+    async def test_create_journal_with_store_id(self, client):
+        resp = await client.post(
+            f"{self.ROUTE}/journals",
+            json={
+                "description": "manual journal",
+                "entries": [
+                    {"account_id": "00000000-0000-0000-0000-000000000001", "account_code": "100", "debit": 100, "credit": 0},
+                    {"account_id": "00000000-0000-0000-0000-000000000002", "account_code": "200", "debit": 0, "credit": 100},
+                ],
+                "store_id": STORE_ID,
+            },
+        )
+        assert resp.status_code == 201
+
+    async def test_endpoints_still_work_without_store_id(self, client):
+        resp = await client.get(f"{self.ROUTE}/trial-balance")
+        assert resp.status_code == 200
+
+
+class TestStoreAttribution:
+    def test_plan_sale_journal_tags_store(self):
+        from app.accounting.service import plan_sale_journal
+
+        store = uuid4()
+        journal, entries = plan_sale_journal(
+            tenant_id=uuid4(),
+            sale_id=uuid4(),
+            sale_number="SALE-1",
+            sale_items=[{"product_name": "x", "qty": 1, "unit_price": 100, "cost_price": 50}],
+            total=100.0,
+            discount=0.0,
+            store_id=store,
+        )
+        assert journal.store_id == store
+        assert journal.reference_type == "sale"
+        assert len(entries) >= 2
+
+    def test_plan_sale_journal_defaults_to_business_wide(self):
+        from app.accounting.service import plan_sale_journal
+
+        journal, _ = plan_sale_journal(
+            tenant_id=uuid4(),
+            sale_id=uuid4(),
+            sale_number="SALE-2",
+            sale_items=[],
+            total=50.0,
+            discount=0.0,
+        )
+        assert journal.store_id is None
+
+    def test_plan_create_expense_tags_expense_and_journal(self):
+        from app.accounting.schemas import ExpenseCreateCommand
+        from app.accounting.service import plan_create_expense
+
+        store = uuid4()
+        command = ExpenseCreateCommand(
+            tenant_id=uuid4(),
+            category="rent",
+            description="Shop rent",
+            amount=150000,
+            expense_date=datetime.now(timezone.utc),
+            account_id=uuid4(),
+            created_by=uuid4(),
+            store_id=store,
+        )
+        result, expense, journal, entries, events = plan_create_expense(command)
+        assert expense.store_id == store
+        assert journal.store_id == store
+        assert result.store_id == store
+
+    def test_plan_create_journal_tags_store(self):
+        from app.accounting.schemas import JournalCreateCommand, JournalEntryLine
+        from app.accounting.service import plan_create_journal
+
+        store = uuid4()
+        command = JournalCreateCommand(
+            tenant_id=uuid4(), description="manual", store_id=store
+        )
+        lines = [
+            JournalEntryLine(account_id=uuid4(), account_code="1000", debit=100),
+            JournalEntryLine(account_id=uuid4(), account_code="4000", credit=100),
+        ]
+        result, journal, entries, events = plan_create_journal(command, lines)
+        assert journal.store_id == store
+
+
+class TestValidatedStoreId:
+    def test_none_and_empty_pass_through(self):
+        from app.accounting.routes import _validated_store_id
+
+        assert _validated_store_id(None) is None
+        assert _validated_store_id("") is None
+
+    def test_valid_uuid_returned(self):
+        from app.accounting.routes import _validated_store_id
+
+        assert _validated_store_id(STORE_ID) == STORE_ID
+
+    def test_invalid_uuid_raises_400(self):
+        from fastapi import HTTPException
+
+        from app.accounting.routes import _validated_store_id
+
+        with pytest.raises(HTTPException) as exc:
+            _validated_store_id("nope")
+        assert exc.value.status_code == 400
+
+
+class TestRpcStorePassThrough:
+    async def test_list_journals_forwards_store_id(self):
+        from app.accounting import rpc
+
+        with patch.object(rpc, "call", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = []
+            await rpc.list_journals(None, business_id=str(uuid4()), store_id=STORE_ID)
+            assert str(mock_call.call_args.kwargs["p_store_id"]) == STORE_ID
+
+    async def test_list_journals_without_store_passes_none(self):
+        from app.accounting import rpc
+
+        with patch.object(rpc, "call", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = []
+            await rpc.list_journals(None, business_id=str(uuid4()))
+            assert mock_call.call_args.kwargs["p_store_id"] is None
+
+    async def test_profit_and_loss_forwards_store_id(self):
+        from app.accounting import rpc
+
+        with patch.object(rpc, "call", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = []
+            await rpc.profit_and_loss(
+                None, business_id=str(uuid4()),
+                from_date="2024-01-01", to_date="2024-12-31",
+                store_id=STORE_ID,
+            )
+            assert str(mock_call.call_args.kwargs["p_store_id"]) == STORE_ID
+
+    async def test_create_expense_forwards_store_id(self):
+        from app.accounting import rpc
+
+        with patch.object(rpc, "call", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = []
+            await rpc.create_expense(
+                None,
+                business_id=str(uuid4()),
+                category="rent",
+                description="d",
+                amount=100,
+                expense_date="2024-01-01",
+                created_by=str(uuid4()),
+                store_id=STORE_ID,
+            )
+            assert str(mock_call.call_args.kwargs["p_store_id"]) == STORE_ID
+
+    async def test_financial_dashboard_forwards_store_id(self):
+        from app.accounting import rpc
+
+        with patch.object(rpc, "call", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = []
+            await rpc.financial_dashboard(None, business_id=str(uuid4()), store_id=STORE_ID)
+            assert str(mock_call.call_args.kwargs["p_store_id"]) == STORE_ID
+
+
+# ---------------------------------------------------------------------------
 # Reports
 # ---------------------------------------------------------------------------
 

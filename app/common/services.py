@@ -400,6 +400,7 @@ async def void_sale(
                 reference_type="sale_void",
                 status="posted",
                 posted_at=now,
+                store_id=sale.store_id,
             )
         )
         for entry in original_entries:
@@ -547,6 +548,7 @@ async def return_sale(
                 reference_type="sale_return",
                 status="posted",
                 posted_at=now,
+                store_id=sale.store_id,
             )
         )
         for entry in original_entries:

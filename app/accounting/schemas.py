@@ -40,6 +40,7 @@ class JournalCreateCommand(BaseModel):
     reference_type: str | None = None
     actor_id: UUID | None = None
     correlation_id: str | None = None
+    store_id: UUID | None = None
 
 
 class JournalEntryLine(BaseModel):
@@ -140,6 +141,7 @@ class ExpenseCreateCommand(BaseModel):
     created_by: UUID
     vendor: str | None = None
     receipt_url: str | None = None
+    store_id: UUID | None = None
 
 
 class ExpenseResult(BaseModel):
@@ -155,6 +157,7 @@ class ExpenseResult(BaseModel):
     account_id: UUID
     journal_id: UUID | None
     created_by: UUID
+    store_id: UUID | None = None
 
 
 class PaymentRecordCommand(BaseModel):
@@ -197,6 +200,7 @@ class CreateJournalRequest(BaseModel):
     entries: list[JournalEntryLineRequest]
     reference_id: str | None = None
     ref_type: str | None = None
+    store_id: str | None = None
 
 
 class CreateReceivableRequest(BaseModel):
@@ -229,6 +233,7 @@ class CreateExpenseRequest(BaseModel):
     expense_date: str
     vendor: str | None = None
     receipt_url: str | None = None
+    store_id: str | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -337,6 +342,7 @@ class ExpenseResponse(BaseModel):
     account_id: str = ""
     journal_id: str | None = None
     created_by: str = ""
+    store_id: str | None = None
 
 
 class FinancialDashboardResponse(BaseModel):

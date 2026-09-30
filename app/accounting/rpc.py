@@ -92,6 +92,7 @@ async def post_journal(
     entries: list[dict],
     ref_id: str | None = None,
     ref_type: str | None = None,
+    store_id: str | None = None,
 ) -> str:
     """Create and post a journal with balanced debit/credit entries.
 
@@ -110,6 +111,7 @@ async def post_journal(
         p_entries=json.dumps(entries, default=str),
         p_ref_id=UUID(ref_id) if ref_id else None,
         p_ref_type=ref_type,
+        p_store_id=UUID(store_id) if store_id else None,
     )
     return str(journal_id)
 
@@ -120,11 +122,12 @@ async def list_journals(
     business_id: str,
     page: int = 1,
     page_size: int = 50,
+    store_id: str | None = None,
 ) -> dict:
     """List journals with pagination.
 
     Calls Postgres fn_list_journals which returns paginated journals
-    with entry counts.
+    with entry counts. store_id filters to one store (NULL = all stores).
     """
     rows = await call(
         session,
@@ -132,6 +135,7 @@ async def list_journals(
         p_tenant_id=UUID(business_id),
         p_limit=page_size,
         p_offset=(page - 1) * page_size,
+        p_store_id=UUID(store_id) if store_id else None,
     )
     return {
         "items": _stringify(rows),
@@ -151,17 +155,19 @@ async def trial_balance(
     *,
     business_id: str,
     as_at: str | None = None,
+    store_id: str | None = None,
 ) -> list[dict]:
     """Get the Trial Balance as of a date.
 
     Calls Postgres fn_trial_balance which calculates all account balances
-    in a single query.
+    in a single query. store_id filters to one store (NULL = all stores).
     """
     return _stringify(await call(
         session,
         "fn_trial_balance",
         p_tenant_id=UUID(business_id),
         p_at=as_at,
+        p_store_id=UUID(store_id) if store_id else None,
     ))
 
 
@@ -171,10 +177,12 @@ async def profit_and_loss(
     business_id: str,
     from_date: str,
     to_date: str,
+    store_id: str | None = None,
 ) -> dict:
     """Get the Profit and Loss statement.
 
     Calls Postgres fn_profit_and_loss which aggregates revenue and expenses.
+    store_id filters to one store (NULL = all stores).
     """
     rows = _stringify(await call(
         session,
@@ -182,6 +190,7 @@ async def profit_and_loss(
         p_tenant_id=UUID(business_id),
         p_from=from_date,
         p_to=to_date,
+        p_store_id=UUID(store_id) if store_id else None,
     ))
     revenue = [r for r in rows if r.get("account_type") == "revenue"]
     expenses = [r for r in rows if r.get("account_type") == "expense"]
@@ -413,8 +422,9 @@ async def list_expenses(
     category: str | None = None,
     from_date: str | None = None,
     to_date: str | None = None,
+    store_id: str | None = None,
 ) -> list[dict]:
-    """List expenses with optional filtering."""
+    """List expenses with optional filtering (store_id = NULL shows all stores)."""
     return _stringify(await call(
         session,
         "fn_list_expenses",
@@ -422,6 +432,7 @@ async def list_expenses(
         p_category=category,
         p_from=from_date,
         p_to=to_date,
+        p_store_id=UUID(store_id) if store_id else None,
     ))
 
 
@@ -436,6 +447,7 @@ async def create_expense(
     created_by: str,
     vendor: str | None = None,
     receipt_url: str | None = None,
+    store_id: str | None = None,
 ) -> dict:
     """Record a new business expense.
 
@@ -443,6 +455,7 @@ async def create_expense(
     - Auto-determines expense account from category
     - Creates the expense record
     - Creates journal entries (Debit Expense, Credit Cash)
+    - Tags expense + journal with store_id when provided
     """
     rows = await call(
         session,
@@ -455,6 +468,7 @@ async def create_expense(
         p_created_by=UUID(created_by),
         p_vendor=vendor,
         p_receipt_url=receipt_url,
+        p_store_id=UUID(store_id) if store_id else None,
     )
     row = _stringify(rows[0]) if rows else {}
     if "out_id" in row:
@@ -470,14 +484,16 @@ async def expense_summary(
     business_id: str,
     from_date: str | None = None,
     to_date: str | None = None,
+    store_id: str | None = None,
 ) -> dict:
-    """Get expense summary grouped by category."""
+    """Get expense summary grouped by category (store_id = NULL shows all stores)."""
     rows = await call(
         session,
         "fn_expense_summary",
         p_tenant_id=UUID(business_id),
         p_from=from_date,
         p_to=to_date,
+        p_store_id=UUID(store_id) if store_id else None,
     )
     return {r["category"]: round(float(r["total"]), 2) for r in rows}
 
@@ -491,19 +507,21 @@ async def financial_dashboard(
     session: AsyncSession,
     *,
     business_id: str,
+    store_id: str | None = None,
 ) -> dict:
     """Get key financial metrics for the dashboard.
 
     Calls Postgres fn_financial_dashboard which aggregates:
-    - cash_balance
-    - outstanding_receivable
-    - outstanding_payable
-    - total_expenses_this_month
-    - expense_by_category
+    - cash_balance (store-filtered when store_id given)
+    - outstanding_receivable (always business-wide)
+    - outstanding_payable (always business-wide)
+    - total_expenses_this_month (store-filtered when store_id given)
+    - expense_by_category (store-filtered when store_id given)
     """
     rows = await call(
         session,
         "fn_financial_dashboard",
         p_tenant_id=UUID(business_id),
+        p_store_id=UUID(store_id) if store_id else None,
     )
     return rows[0] if rows else {}

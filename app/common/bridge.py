@@ -1632,6 +1632,7 @@ async def create_expense(
     created_by: str,
     vendor: str | None = None,
     receipt_url: str | None = None,
+    store_id: str | None = None,
 ) -> dict:
     """Record a new business expense.
 
@@ -1658,6 +1659,7 @@ async def create_expense(
         created_by: UUID of the user recording this expense.
         vendor: Optional name of the vendor/supplier.
         receipt_url: Optional URL to an uploaded receipt image.
+        store_id: Optional store to tag the expense + its journal with.
 
     Returns:
         A dictionary containing the newly created expense details.
@@ -1705,6 +1707,7 @@ async def create_expense(
             created_by=UUID(created_by),
             vendor=vendor,
             receipt_url=receipt_url,
+            store_id=UUID(store_id) if store_id else None,
         )
 
         result, expense_model, journal, entries, events = plan_create_expense(command)
@@ -5935,6 +5938,7 @@ async def checkout_cart(
                 tax_amount=float(result.tax),
                 cashier_id=UUID(actor_id) if actor_id else None,
                 payment_method=payment_method,
+                store_id=sale_model.store_id,
             )
 
             # Resolve account IDs from Chart of Accounts (single batched query)
@@ -6129,6 +6133,7 @@ async def checkout_cart(
             tax_amount=float(result.tax),
             cashier_id=UUID(actor_id) if actor_id else None,
             payment_method=payment_method,
+            store_id=sale_model.store_id,
         )
 
         resolved_accounts: dict[str, UUID] = {}
@@ -7247,6 +7252,7 @@ async def _reclassify_split_cash_leg(
             reference_type="split_adjustment",
             status="posted",
             posted_at=now,
+            store_id=sale_journal.store_id,
         )
     )
     session.add(

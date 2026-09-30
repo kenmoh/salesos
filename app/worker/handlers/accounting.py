@@ -50,6 +50,7 @@ async def handle_sale_confirmed(envelope: EventEnvelope, session: AsyncSession) 
 
     from app.accounting.models import Journal, JournalEntry
     from app.accounting.repository import get_account_by_code
+    from app.sales.models import Sale
 
     sale_id = envelope.payload.get("sale_id")
     tenant_id = envelope.payload.get("tenant_id") or (
@@ -72,6 +73,15 @@ async def handle_sale_confirmed(envelope: EventEnvelope, session: AsyncSession) 
     if existing.first():
         return
 
+    # Store attribution: tag the journal with the sale's store when known
+    store_row = await session.execute(
+        select(Sale.store_id).where(
+            Sale.id == UUID(sale_id),
+            Sale.tenant_id == UUID(tenant_id),
+        ).limit(1)
+    )
+    store_id = store_row.scalar_one_or_none()
+
     # Look up the Cash and Revenue accounts for this tenant
     cash_account = await get_account_by_code(session, UUID(tenant_id), "1000")
     revenue_account = await get_account_by_code(session, UUID(tenant_id), "4000")
@@ -90,6 +100,7 @@ async def handle_sale_confirmed(envelope: EventEnvelope, session: AsyncSession) 
         reference_type="sale",
         status="posted",
         posted_at=datetime.now(UTC),
+        store_id=store_id,
     )
 
     # Debit entry: Cash (we received money)
@@ -154,6 +165,7 @@ async def handle_payment_succeeded(envelope: EventEnvelope, session: AsyncSessio
 
     from app.accounting.models import Journal, JournalEntry
     from app.accounting.repository import get_account_by_code
+    from app.sales.models import Sale
 
     payment_id = envelope.payload.get("payment_id")
     tenant_id = envelope.payload.get("tenant_id") or (
@@ -188,6 +200,18 @@ async def handle_payment_succeeded(envelope: EventEnvelope, session: AsyncSessio
         if existing.first():
             return
 
+    # Store attribution: payment journals reference the payment (not the
+    # sale), so the store must be resolved from the linked sale when present.
+    store_id = None
+    if sale_id:
+        store_row = await session.execute(
+            select(Sale.store_id).where(
+                Sale.id == UUID(sale_id),
+                Sale.tenant_id == UUID(tenant_id),
+            ).limit(1)
+        )
+        store_id = store_row.scalar_one_or_none()
+
     # Look up the Accounts Receivable and Revenue accounts for this tenant
     receivable_account = await get_account_by_code(session, UUID(tenant_id), "1100")
     revenue_account = await get_account_by_code(session, UUID(tenant_id), "4000")
@@ -206,6 +230,7 @@ async def handle_payment_succeeded(envelope: EventEnvelope, session: AsyncSessio
         reference_type="payment",
         status="posted",
         posted_at=datetime.now(UTC),
+        store_id=store_id,
     )
 
     # Debit entry: Accounts Receivable (customer owes us)
