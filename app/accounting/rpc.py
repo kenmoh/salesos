@@ -183,11 +183,13 @@ async def profit_and_loss(
         p_from=from_date,
         p_to=to_date,
     ))
+    revenue = [r for r in rows if r.get("account_type") == "revenue"]
+    expenses = [r for r in rows if r.get("account_type") == "expense"]
     return {
-        "revenue": [r for r in rows],
-        "expenses": [],
-        "total_revenue": sum(float(r.get("amount", 0)) for r in rows),
-        "total_expenses": 0,
+        "revenue": revenue,
+        "expenses": expenses,
+        "total_revenue": sum(float(r.get("amount", 0)) for r in revenue),
+        "total_expenses": sum(float(r.get("amount", 0)) for r in expenses),
     }
 
 
