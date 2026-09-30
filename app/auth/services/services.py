@@ -228,20 +228,6 @@ async def void_sale(
     )
 
 
-async def return_sale(
-    *, session: AsyncSession, business_id: str, user_id: str, sale_id: str, reason: str
-) -> dict:
-    rows = await call(
-        session,
-        "api.fn_return_sale",
-        p_bid=business_id,
-        p_uid=user_id,
-        p_sale_id=sale_id,
-        p_reason=reason,
-    )
-    return rows[0] if rows else {}
-
-
 async def record_payment(
     *,
     session: AsyncSession,

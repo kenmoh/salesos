@@ -439,15 +439,152 @@ async def void_sale(
 async def return_sale(
     *, session: AsyncSession, business_id: str, user_id: str, sale_id: str, reason: str
 ) -> dict:
-    rows = await call(
-        session,
-        "api.fn_return_sale",
-        p_bid=business_id,
-        p_uid=user_id,
-        p_sale_id=sale_id,
-        p_reason=reason,
+    """Return a sale: mark returned, restock inventory, reverse the sale journal.
+
+    Runs entirely inside the caller's transaction so the return is atomic.
+    Mirrors ``void_sale``: the journal reversal swaps debits and credits of
+    the original sale journal (a sale that never posted a journal is not
+    reversed — cash was never booked, so it must not be unbooked) and the
+    void audit columns are reused for the return reason/user/timestamp.
+
+    Returns:
+        Dict for ``SaleReturnResult``: ``sale_id``, ``status`` and
+        ``refund_amount`` (the amount the customer actually paid).
+
+    Raises ValueError("sale_not_found") / ValueError("sale_already_returned")
+    / ValueError("sale_not_returnable").
+    """
+    from uuid import UUID, uuid4
+
+    from sqlalchemy import select
+
+    from app.accounting.models import Journal, JournalEntry
+    from app.common.events.outbox import OutboxWrite
+    from app.inventory.models import StockBalance, StockMovement
+    from app.sales.events import sale_returned_event
+    from app.sales.models import Sale, SaleItem
+
+    tenant_id = UUID(business_id)
+
+    result = await session.execute(
+        select(Sale).where(Sale.id == UUID(sale_id), Sale.tenant_id == tenant_id)
     )
-    return rows[0] if rows else {}
+    sale = result.scalar_one_or_none()
+    if not sale:
+        raise ValueError("sale_not_found")
+    if sale.status == "returned":
+        raise ValueError("sale_already_returned")
+    if sale.status == "voided":
+        raise ValueError("sale_not_returnable")
+
+    items_result = await session.execute(select(SaleItem).where(SaleItem.sale_id == sale.id))
+    items = list(items_result.scalars().all())
+
+    now = datetime.now(UTC)
+
+    # 1. Mark the sale returned (reuses the void audit columns)
+    sale.status = "returned"
+    sale.void_reason = reason
+    sale.voided_by = UUID(user_id)
+    sale.voided_at = now
+
+    # 2. Restock: return each line's qty to the sale's store, with audit trail
+    for item in items:
+        balance_result = await session.execute(
+            select(StockBalance).where(
+                StockBalance.tenant_id == tenant_id,
+                StockBalance.product_id == item.product_id,
+                StockBalance.store_id == sale.store_id,
+            )
+        )
+        balance = balance_result.scalar_one_or_none()
+        if not balance:
+            continue
+        qty = Decimal(str(item.qty))
+        before = Decimal(str(balance.qty))
+        balance.qty = before + qty
+        session.add(
+            StockMovement(
+                tenant_id=tenant_id,
+                product_id=item.product_id,
+                store_id=sale.store_id,
+                movement_type="sale_return",
+                qty_change=qty,
+                balance_before=before,
+                balance_after=balance.qty,
+                reference_type="sale",
+                reference_id=sale.id,
+                reason=reason[:100],
+                created_by=UUID(user_id),
+            )
+        )
+
+    # 3. Reverse the original sale journal (mirror: debits <-> credits)
+    orig_result = await session.execute(
+        select(Journal).where(
+            Journal.tenant_id == tenant_id,
+            Journal.reference_type == "sale",
+            Journal.reference_id == sale.id,
+            Journal.status == "posted",
+        )
+    )
+    original = orig_result.scalars().first()
+    if original:
+        entries_result = await session.execute(
+            select(JournalEntry).where(JournalEntry.journal_id == original.id)
+        )
+        original_entries = list(entries_result.scalars().all())
+
+        journal_id = uuid4()
+        journal_number = f"JRN-{now.strftime('%Y%m%d')}-{str(journal_id)[:8].upper()}"
+        session.add(
+            Journal(
+                id=journal_id,
+                tenant_id=tenant_id,
+                journal_number=journal_number,
+                description=f"Return sale {sale.sale_number}: {reason}",
+                reference_id=sale.id,
+                reference_type="sale_return",
+                status="posted",
+                posted_at=now,
+            )
+        )
+        for entry in original_entries:
+            reversed_debit = float(entry.credit or 0)
+            reversed_credit = float(entry.debit or 0)
+            session.add(
+                JournalEntry(
+                    journal_id=journal_id,
+                    tenant_id=tenant_id,
+                    account_id=entry.account_id,
+                    account_code=entry.account_code,
+                    debit=reversed_debit,
+                    credit=reversed_credit,
+                    description=f"Return {sale.sale_number}: {entry.description or ''}"[:255],
+                    type=entry.type,
+                    status="posted",
+                    posted_at=now,
+                    amount=reversed_debit + reversed_credit,
+                )
+            )
+
+    # 4. Emit sales.sale_returned (reporting reverses daily sales, same
+    #    payload shape as sale_voided)
+    event = sale_returned_event(
+        tenant_id=tenant_id,
+        sale_id=sale.id,
+        sale_number=sale.sale_number,
+        reason=reason,
+        returned_by=UUID(user_id),
+        total=float(sale.total),
+    )
+    session.add(OutboxWrite(event=event, aggregate_type="sale", aggregate_id=str(sale.id)).to_model())
+    await session.flush()
+    return {
+        "sale_id": sale_id,
+        "status": "returned",
+        "refund_amount": float(sale.amount_paid),
+    }
 
 
 async def record_payment(

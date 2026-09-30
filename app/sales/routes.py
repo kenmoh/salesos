@@ -110,11 +110,15 @@ async def void_sale(sale_id: str, payload: VoidSale, ctx: DbTenantDep):
     dependencies=[Depends(require_permission("sales:void"))],
 )
 async def return_sale(sale_id: str, payload: VoidSale, ctx: DbTenantDep):
-    result = await services.return_sale(
-        session=ctx.session,
-        business_id=ctx.user.business_id,
-        user_id=ctx.user.user_id,
-        sale_id=sale_id,
-        reason=payload.reason,
-    )
+    try:
+        result = await services.return_sale(
+            session=ctx.session,
+            business_id=ctx.user.business_id,
+            user_id=ctx.user.user_id,
+            sale_id=sale_id,
+            reason=payload.reason,
+        )
+    except ValueError as e:
+        code = 404 if str(e) == "sale_not_found" else 400
+        raise HTTPException(status_code=code, detail=str(e))
     return ok(result)

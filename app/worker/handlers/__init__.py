@@ -36,6 +36,7 @@ from app.common.events.names import (
     SALE_CONFIRMED,
     SALE_CREATED,
     SALE_RECEIPT_CREATED,
+    SALE_RETURNED,
     SALE_VOIDED,
     TENANT_CREATED,
     CATALOG_PRODUCT_CREATED,
@@ -56,6 +57,7 @@ register("notifications", SALE_CONFIRMED, notifications.handle_sale_confirmed)
 register("notifications", PAYMENT_SUCCEEDED, notifications.handle_payment_received)
 register("reporting", SALE_RECEIPT_CREATED, reporting.handle_sale_receipt_created)
 register("reporting", SALE_VOIDED, reporting.handle_sale_voided)
+register("reporting", SALE_RETURNED, reporting.handle_sale_voided)
 register("reporting", PAYMENT_SUCCEEDED, reporting.handle_payment_succeeded)
 register("reporting", TENANT_TIER_CHANGED, reporting.handle_tier_changed)
 register("documents", DOCUMENT_STATUS_CHANGED, documents.handle_document_status_changed)

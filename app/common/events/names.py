@@ -33,6 +33,7 @@ INVENTORY_TRANSFER_FULFILLED = "inventory.transfer_fulfilled"
 SALE_CREATED = "sales.sale_created"
 SALE_CONFIRMED = "sales.sale_confirmed"
 SALE_VOIDED = "sales.sale_voided"
+SALE_RETURNED = "sales.sale_returned"
 SALE_RECEIPT_CREATED = "sales.receipt_created"
 
 PAYMENT_INTENT_CREATED = "payment.intent_created"

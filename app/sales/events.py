@@ -8,6 +8,7 @@ Events:
     - sale_created: Emitted when a new sale is created
     - sale_confirmed: Emitted when a sale is confirmed (payment received)
     - sale_voided: Emitted when a sale is voided
+    - sale_returned: Emitted when a sale is returned
     - sale_receipt_created: Emitted when a receipt is generated
 """
 
@@ -18,6 +19,7 @@ from app.common.events.names import (
     SALE_CONFIRMED,
     SALE_CREATED,
     SALE_RECEIPT_CREATED,
+    SALE_RETURNED,
     SALE_VOIDED,
 )
 
@@ -124,6 +126,47 @@ def sale_voided_event(
         event_type=SALE_VOIDED,
         tenant_id=tenant_id,
         actor_id=voided_by,
+        correlation_id=correlation_id,
+        payload={
+            "sale_id": str(sale_id),
+            "sale_number": sale_number,
+            "reason": reason,
+            "total": float(total),
+        },
+    )
+
+
+def sale_returned_event(
+    *,
+    tenant_id: UUID,
+    sale_id: UUID,
+    sale_number: str,
+    reason: str,
+    returned_by: UUID,
+    total: float = 0.0,
+    correlation_id: str | None = None,
+) -> EventEnvelope:
+    """Create a sale returned event.
+
+    Payload mirrors ``sale_voided_event`` so reporting can reverse daily
+    sales with the same handler.
+
+    Args:
+        tenant_id: Business/tenant identifier.
+        sale_id: Unique sale identifier.
+        sale_number: Human-readable sale number.
+        reason: Reason for returning the sale.
+        returned_by: User who returned the sale.
+        total: Original sale total (used by reporting to reverse daily sales).
+        correlation_id: Optional correlation ID for tracing.
+
+    Returns:
+        EventEnvelope for the sale returned event.
+    """
+    return EventEnvelope(
+        event_type=SALE_RETURNED,
+        tenant_id=tenant_id,
+        actor_id=returned_by,
         correlation_id=correlation_id,
         payload={
             "sale_id": str(sale_id),
