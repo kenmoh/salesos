@@ -263,7 +263,7 @@ async def create_journal(payload: CreateJournalRequest, ctx: DbTenantDep):
 async def list_journals(
     ctx: DbTenantDep,
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
-    page_size: int = Query(50, ge=1, le=200, description="Items per page"),
+    page_size: int = Query(50, ge=1, le=500, description="Items per page"),
     store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
 ):
     result = await rpc.list_journals(
