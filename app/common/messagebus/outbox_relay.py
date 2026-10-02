@@ -14,54 +14,52 @@ logger = logging.getLogger("storeflow.outbox_relay")
 
 
 class OutboxRelay:
-    """Polls outbox_events tables and publishes pending events to RabbitMQ.
+    """Polls the outbox_events table and publishes pending events to RabbitMQ.
 
-    All service outbox tables live in the same database, one per schema.
-    This relay connects to the single database, iterates schemas, polls
-    for pending events, publishes them, and marks them as published.
+    Connects to the single outbox table, claims pending rows with
+    FOR UPDATE SKIP LOCKED, publishes them, and marks them as published.
     """
 
     def __init__(
         self,
         publisher: EventPublisher,
         database_url: str,
-        schemas: list[str],
         *,
         poll_interval: float = 5.0,
         batch_size: int = 50,
     ):
         self.publisher = publisher
         self.database_url = database_url
-        self.schemas = schemas
         self.poll_interval = poll_interval
         self.batch_size = batch_size
         self._running = False
 
     async def start(self) -> None:
         self._running = True
-        logger.info(
-            "OutboxRelay started: polling %d schemas every %.1fs",
-            len(self.schemas),
-            self.poll_interval,
+        engine = create_async_engine(self.database_url, pool_pre_ping=True, echo=False)
+        session_factory = async_sessionmaker(
+            bind=engine, class_=AsyncSession, expire_on_commit=False
         )
-        while self._running:
-            for schema in self.schemas:
+        logger.info(
+            "OutboxRelay started: polling every %.1fs (batch_size=%d)",
+            self.poll_interval,
+            self.batch_size,
+        )
+        try:
+            while self._running:
                 try:
-                    await self._poll_schema(schema)
+                    await self._poll(session_factory)
                 except Exception as exc:
-                    logger.error("Error polling %s outbox: %s", schema, exc)
-            await asyncio.sleep(self.poll_interval)
+                    logger.error("Error polling outbox: %s", exc)
+                await asyncio.sleep(self.poll_interval)
+        finally:
+            await engine.dispose()
 
     async def stop(self) -> None:
         self._running = False
         logger.info("OutboxRelay stopped")
 
-    async def _poll_schema(self, schema: str) -> None:
-        engine = create_async_engine(self.database_url, pool_pre_ping=True, echo=False)
-        session_factory = async_sessionmaker(
-            bind=engine, class_=AsyncSession, expire_on_commit=False
-        )
-
+    async def _poll(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         async with session_factory() as session:
             async with session.begin():
                 result = await session.execute(
@@ -117,7 +115,4 @@ class OutboxRelay:
                         )
 
                 if events:
-                    await session.commit()
-                    logger.debug("Processed %d outbox events from %s", len(events), schema)
-
-        await engine.dispose()
+                    logger.info("Published %d outbox events", len(events))

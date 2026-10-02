@@ -1,7 +1,7 @@
 """Event consumer runner — starts EventConsumer for each service.
 
 Run as a standalone process:
-    python -m worker.consumer_runner
+    python -m app.worker.consumer_runner
 """
 
 import asyncio
@@ -30,6 +30,9 @@ def _session_factory(schema: str) -> async_sessionmaker[AsyncSession]:
 
 
 async def main():
+    if not settings.rabbitmq_url:
+        raise SystemExit("RABBIT_MQ_URL is not set — cannot start event consumers")
+
     consumers: list[EventConsumer] = []
 
     for service_name, routing_keys in SERVICE_QUEUES.items():

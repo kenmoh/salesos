@@ -8,6 +8,7 @@ from aio_pika.abc import AbstractIncomingMessage
 from app.common.events.envelope import EventEnvelope
 from app.common.events.inbox import InboxEvent
 from app.common.messagebus.publisher import EXCHANGE_NAME, EXCHANGE_TYPE
+from sqlalchemy import text
 
 logger = logging.getLogger("storeflow.messagebus.consumer")
 
@@ -75,6 +76,23 @@ class EventConsumer:
 
         async with self.database_session_factory() as session:
             async with session.begin():
+                # Scope the transaction to the event's tenant so RLS-guarded
+                # tables (documents, chart_of_accounts, accounts_receivable,
+                # journals, ...) are visible/writable to the handler.
+                tenant_id = envelope.tenant_id or envelope.payload.get("tenant_id")
+                await session.execute(
+                    text(
+                        "SELECT set_config('app.business_id',:b,true),"
+                        " set_config('app.user_id',:u,true),"
+                        " set_config('app.role',:r,true)"
+                    ),
+                    {
+                        "b": str(tenant_id) if tenant_id else "",
+                        "u": str(envelope.actor_id or ""),
+                        "r": "system",
+                    },
+                )
+
                 already_processed = await session.get(InboxEvent, envelope.event_id)
                 if already_processed:
                     logger.debug("Skipping duplicate event %s", envelope.event_id)

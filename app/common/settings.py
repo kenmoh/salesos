@@ -21,6 +21,9 @@ class CommonSettings(BaseSettings):
     debug: bool = False
 
     database_url: str = ""
+    # RLS-bypass URL (db owner) for background workers that must see all
+    # tenants' rows (e.g. the outbox relay polling across tenants).
+    admin_database_url: str = Field(default="", alias="ADMIN_DATABASE_URL")
 
     db_user: str = Field(default="storeflow_app", alias="DATABASE_USER")
     db_password: str = Field(default="", alias="DATABASE_PASSWORD")

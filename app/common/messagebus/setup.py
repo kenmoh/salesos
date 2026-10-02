@@ -8,7 +8,7 @@ import logging
 
 import aio_pika
 
-from messagebus.publisher import EXCHANGE_NAME, EXCHANGE_TYPE
+from app.common.messagebus.publisher import EXCHANGE_NAME, EXCHANGE_TYPE
 
 logger = logging.getLogger("storeflow.messagebus.setup")
 

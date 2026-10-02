@@ -29,36 +29,50 @@ async def lifespan(app: FastAPI):
     logger.info("SalesOS %s starting [env=%s]", settings.app_version, settings.env)
     settings.validate_production_secrets()
 
-    # Start celery worker subprocess
+    # Start background worker subprocesses
     import subprocess
     import sys
     import os
 
-    celery_proc = None
-    try:
-        celery_proc = subprocess.Popen(
-            [sys.executable, "-m", "celery", "-A", "app.worker.celery_app", "worker",
-             "--loglevel=info", "--pool=solo", "--concurrency=1"],
-            cwd=os.getcwd(),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        logger.info("Celery worker started (pid=%s)", celery_proc.pid)
-    except Exception as e:
-        logger.warning("Failed to start celery worker: %s", e)
+    child_procs: list[subprocess.Popen] = []
+
+    def spawn(label: str, args: list[str], quiet: bool = True) -> None:
+        try:
+            proc = subprocess.Popen(
+                args,
+                cwd=os.getcwd(),
+                stdout=subprocess.DEVNULL if quiet else None,
+                stderr=subprocess.DEVNULL if quiet else None,
+            )
+            child_procs.append(proc)
+            logger.info("%s started (pid=%s)", label, proc.pid)
+        except Exception as e:
+            logger.warning("Failed to start %s: %s", label, e)
+
+    spawn(
+        "Celery worker",
+        [sys.executable, "-m", "celery", "-A", "app.worker.celery_app", "worker",
+         "--loglevel=info", "--pool=solo", "--concurrency=1"],
+    )
+    # Outbox relay + event consumer drive document → accounting side effects
+    # (AR/journals on invoice status changes). Logs are inherited so
+    # RabbitMQ connection problems are visible in the API logs.
+    spawn("Outbox relay", [sys.executable, "-m", "app.worker.outbox_runner"], quiet=False)
+    spawn("Event consumer", [sys.executable, "-m", "app.worker.consumer_runner"], quiet=False)
 
     yield
 
-    # Shutdown celery worker
-    if celery_proc and celery_proc.poll() is None:
-        logger.info("Stopping celery worker (pid=%s)", celery_proc.pid)
-        celery_proc.terminate()
-        try:
-            celery_proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            celery_proc.kill()
-            celery_proc.wait()
-        logger.info("Celery worker stopped")
+    # Shutdown background workers
+    for proc in reversed(child_procs):
+        if proc.poll() is None:
+            logger.info("Stopping child process (pid=%s)", proc.pid)
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+    logger.info("Background workers stopped")
 
     logger.info("SalesOS shutting down")
     await close_redis()
