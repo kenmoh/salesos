@@ -89,6 +89,30 @@ async def handle_document_status_changed(
         if not total or not customer_id or not doc_number:
             return
 
+        # Redelivery guard: the outbox can replay an event after a retry or a
+        # broker redelivery. Without this the same invoice would post
+        # Dr 1100 / Cr 4000 again and double-count the revenue. The AR row and
+        # its journal are created together, so the row is the marker.
+        already_sent = await session.execute(
+            select(AccountReceivable.id).where(
+                AccountReceivable.invoice_id == UUID(document_id),
+                AccountReceivable.tenant_id == UUID(tenant_id),
+            )
+        )
+        if already_sent.scalar_one_or_none() is not None:
+            return
+
+        already_booked = await session.execute(
+            select(Journal.id).where(
+                Journal.tenant_id == UUID(tenant_id),
+                Journal.reference_id == UUID(document_id),
+                Journal.reference_type == "invoice_sent",
+                Journal.status == "posted",
+            )
+        )
+        if already_booked.scalar_one_or_none() is not None:
+            return
+
         # Look up the AR and Revenue accounts for this tenant
         receivable_account = await get_account_by_code(session, UUID(tenant_id), "1100")
         revenue_account = await get_account_by_code(session, UUID(tenant_id), "4000")
@@ -134,7 +158,7 @@ async def handle_document_status_changed(
             journal_number=journal_number,
             description=f"Invoice {doc_number} sent",
             reference_id=UUID(document_id),
-            reference_type="invoice",
+            reference_type="invoice_sent",
             status="posted",
             posted_at=datetime.now(UTC),
         )
@@ -193,6 +217,21 @@ async def handle_document_status_changed(
 
         from app.accounting.models import AccountReceivable
 
+        # Redelivery guard for the paid transition: a replayed event would credit 1100
+        # a second time. The journal with reference_type 'invoice_paid' is the
+        # marker, so this holds even when the receivable was part-paid through
+        # the payments screen rather than in one go.
+        already_paid = await session.execute(
+            select(Journal.id).where(
+                Journal.tenant_id == UUID(tenant_id),
+                Journal.reference_id == UUID(document_id),
+                Journal.reference_type == "invoice_paid",
+                Journal.status == "posted",
+            )
+        )
+        if already_paid.scalar_one_or_none() is not None:
+            return
+
         ar_result = await session.execute(
             select(AccountReceivable).where(
                 AccountReceivable.invoice_id == UUID(document_id),
@@ -200,9 +239,19 @@ async def handle_document_status_changed(
             )
         )
         ar = ar_result.scalar_one_or_none()
+        if ar is None:
+            return
 
-        if ar:
-            await update_ar_payment(session, ar.id, float(total))
+        # Apply only what is still outstanding. The invoice may already have
+        # been part-paid through the payments screen; collecting the full total
+        # again would raise inside update_ar_payment and the event would be
+        # retried forever.
+        outstanding = float(ar.balance)
+        to_apply = min(float(total), outstanding)
+        if to_apply <= 0:
+            return
+
+        await update_ar_payment(session, ar.id, to_apply)
 
         # Create the journal header
         journal_id = uuid4()
@@ -213,7 +262,7 @@ async def handle_document_status_changed(
             journal_number=journal_number,
             description=f"Invoice {doc_number or document_id} paid",
             reference_id=UUID(document_id),
-            reference_type="invoice",
+            reference_type="invoice_paid",
             status="posted",
             posted_at=datetime.now(UTC),
         )
@@ -225,13 +274,13 @@ async def handle_document_status_changed(
             tenant_id=UUID(tenant_id),
             account_id=cash_account.id,
             account_code=cash_account.code,
-            debit=float(total),
+            debit=to_apply,
             credit=0,
             description=f"Invoice {doc_number or document_id} paid - cash",
             type="asset",
             status="posted",
             posted_at=datetime.now(UTC),
-            amount=float(total),
+            amount=to_apply,
         )
 
         # Credit entry: Accounts Receivable (customer no longer owes us)
@@ -242,12 +291,12 @@ async def handle_document_status_changed(
             account_id=receivable_account.id,
             account_code=receivable_account.code,
             debit=0,
-            credit=float(total),
+            credit=to_apply,
             description=f"Invoice {doc_number or document_id} paid - receivable",
             type="asset",
             status="posted",
             posted_at=datetime.now(UTC),
-            amount=float(total),
+            amount=to_apply,
         )
 
         session.add(journal)

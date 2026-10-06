@@ -8237,15 +8237,18 @@ def _customer_to_dict(c) -> dict:
 @cached(
     prefix="customers:list",
     ttl=300,
-    key_func=lambda tenant_id, page=1, page_size=50, search=None, **kw: f"{page}:{page_size}:{search or ''}",
+    key_func=lambda tenant_id, page=1, page_size=50, search=None, type=None, **kw: (
+        f"{page}:{page_size}:{search or ''}:{type or ''}"
+    ),
 )
 async def list_customers(
     tenant_id: str,
     page: int = 1,
     page_size: int = 50,
     search: str | None = None,
+    type: str | None = None,
 ) -> dict:
-    """List customers belonging to a tenant with optional search.
+    """List customers belonging to a tenant with optional search and type.
 
     Retrieves a paginated list of customers from the customers database,
     with optional text search across name, email, and phone fields.
@@ -8257,6 +8260,11 @@ async def list_customers(
         page_size: Number of items per page.
         search: Optional search term to filter customers by name, email,
             or phone.
+        type: Optional ``customer`` or ``vendor``. Customers are people the
+            business sells to, vendors people it buys from. Receivable and
+            payable pickers use this so an invoice can only be raised against
+            someone who buys from us and a bill only against someone we buy
+            from.
 
     Returns:
         A dictionary containing ``items`` (list of customer dictionaries),
@@ -8279,6 +8287,10 @@ async def list_customers(
             cq = cq.where(
                 Customer.name.ilike(like) | Customer.email.ilike(like) | Customer.phone.ilike(like)
             )
+
+        if type:
+            q = q.where(Customer.type == type)
+            cq = cq.where(Customer.type == type)
 
         total = (await session.execute(cq)).scalar() or 0
         rows = (

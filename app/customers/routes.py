@@ -58,6 +58,9 @@ async def create_customer(payload: CustomerCreate, ctx: TenantDep):
 async def list_customers(
     ctx: TenantDep,
     search: str | None = Query(None),
+    type: CustomerType | None = Query(
+        None, description="Filter to customers (people we sell to) or vendors (people we buy from)"
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ):
@@ -66,6 +69,7 @@ async def list_customers(
         page=page,
         page_size=page_size,
         search=search,
+        type=type,
     )
     return paginated(
         result["items"], total=result["total"], page=result["page"], page_size=result["page_size"]

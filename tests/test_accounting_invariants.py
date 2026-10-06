@@ -257,9 +257,15 @@ class TestBalanceSheetFunction:
     earlier version of this function accumulated every account's balance into
     the expense bucket because it reused a loop variable, which left assets,
     liabilities and revenue at zero while still "balancing".
+
+    Everything happens inside one transaction on one session. Reading the
+    sheet on a separate connection from the ledger made the comparison race
+    against any write landing in between -- on a live database that fails
+    intermittently for no reason.
     """
 
-    async def _sheet(self, db):
+    async def _compare(self):
+        from sqlalchemy import text as sql
         from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
         from app.accounting.repository import get_balance_sheet
@@ -270,35 +276,73 @@ class TestBalanceSheetFunction:
         factory = async_sessionmaker(bind=engine, expire_on_commit=False)
         try:
             async with factory() as session:
-                async with session.begin():
-                    await set_rls_context(session, str(db.tenant_id), str(db.tenant_id), "admin")
-                    return await get_balance_sheet(session, db.tenant_id)
+                transaction = await session.begin()
+                try:
+                    tenant = (
+                        await session.execute(sql("SELECT id FROM tenants LIMIT 1"))
+                    ).scalar()
+                    tenant_id = str(tenant)
+                    await set_rls_context(session, tenant_id, tenant_id, "admin")
+
+                    async def ledger(account_type: str) -> Decimal:
+                        net = Decimal(
+                            await session.scalar(
+                                sql(
+                                    """
+                                    SELECT COALESCE(SUM(e.debit), 0)
+                                         - COALESCE(SUM(e.credit), 0)
+                                    FROM journal_entries e
+                                    JOIN chart_of_accounts a ON a.id = e.account_id
+                                    WHERE e.tenant_id = :t
+                                      AND e.status = 'posted'
+                                      AND a.account_type = :kind
+                                    """
+                                ),
+                                {"t": tenant_id, "kind": account_type},
+                            )
+                            or 0
+                        )
+                        # Assets and expenses read debit-positive; the others
+                        # are credit-positive.
+                        return net if account_type in ("asset", "expense") else -net
+
+                    sheet = await get_balance_sheet(session, tenant)
+
+                    return sheet, {
+                        "asset": await ledger("asset"),
+                        "liability": await ledger("liability"),
+                        "equity": await ledger("equity"),
+                        "revenue": await ledger("revenue"),
+                        "expense": await ledger("expense"),
+                    }
+                finally:
+                    await transaction.rollback()
         finally:
             await engine.dispose()
 
-    async def test_sections_match_the_ledger(self, db):
-        sheet = await self._sheet(db)
+    async def test_sections_match_the_ledger(self):
+        sheet, ledger = await self._compare()
 
-        assert sheet["assets"] == await type_total(db, "asset"), (
-            f"reported assets {sheet['assets']} != ledger {await type_total(db, 'asset')}"
+        assert sheet["assets"] == ledger["asset"], (
+            f"reported assets {sheet['assets']} != ledger {ledger['asset']}"
         )
-        assert sheet["liabilities"] == await type_total(db, "liability")
-        assert sheet["capital"] == await type_total(db, "equity")
-        assert sheet["revenue"] == await type_total(db, "revenue")
-        assert sheet["expenses"] == await type_total(db, "expense")
+        assert sheet["liabilities"] == ledger["liability"]
+        assert sheet["capital"] == ledger["equity"]
+        assert sheet["revenue"] == ledger["revenue"]
+        assert sheet["expenses"] == ledger["expense"]
 
-    async def test_equity_is_capital_plus_earnings(self, db):
-        sheet = await self._sheet(db)
+    async def test_equity_is_capital_plus_earnings(self):
+        sheet, _ = await self._compare()
         assert sheet["equity"] == sheet["capital"] + sheet["current_earnings"]
 
-    async def test_balance_check_is_zero(self, db):
-        sheet = await self._sheet(db)
+    async def test_balance_check_is_zero(self):
+        sheet, _ = await self._compare()
         assert sheet["balance_check"] == 0, (
             f"balance check is {sheet['balance_check']}"
         )
 
-    async def test_reconciliations_are_reported(self, db):
-        sheet = await self._sheet(db)
+    async def test_reconciliations_are_reported(self):
+        sheet, _ = await self._compare()
         assert sheet["receivable_difference"] == 0
         assert sheet["payable_difference"] == 0
 

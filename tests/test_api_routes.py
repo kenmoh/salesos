@@ -1,3 +1,5 @@
+import json
+
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2095,3 +2097,397 @@ class TestPlatformCommissions:
             json={"fee_type": "bad_type"},
         )
         assert resp.status_code in (400, 404)
+
+
+class TestMovingSubledgerRecordsBetweenStores:
+    """A receivable or payable raised against the wrong store has to be
+    fixable, otherwise it sits in a store the user never meant and per-store
+    figures stay wrong. Re-attributing one rewrites the store's cash and
+    receivable history, so it needs a supervisor PIN unless the caller is an
+    owner, and every correction is audited."""
+
+    class _FakeRedis:
+        """Just enough Redis for the PIN attempt counter."""
+
+        def __init__(self):
+            self.counters: dict[str, int] = {}
+            self.locked = False
+
+        async def get(self, key):
+            if self.locked and key.startswith("sf:pin_attempts:"):
+                return "5"
+            return str(self.counters[key]) if key in self.counters else None
+
+        async def delete(self, key):
+            self.counters.pop(key, None)
+
+        def pipeline(self):
+            return self
+
+        async def incr(self, key):
+            self.counters[key] = self.counters.get(key, 0) + 1
+
+        async def expire(self, key, ttl):
+            return None
+
+        async def execute(self):
+            return None
+
+    def _session_with(self, row, *, approver=None):
+        """A session that answers by statement, not by call order.
+
+        The gate queries the PIN table and the permission table before the
+        route reads the document, so ordering the results positionally would
+        make these tests brittle. Dispatching on the SQL keeps each assertion
+        about the thing it is actually testing.
+        """
+        session = AsyncMock()
+        approver_id = approver or uuid4()
+
+        async def execute(stmt, *args, **kwargs):
+            # Plain str() keeps the bind placeholders, which is all the
+            # dispatch needs; literal_binds would try to render them.
+            text = str(stmt)
+            if "supervisor_pins" in text:
+                found = MagicMock()
+                found.scalars.return_value.all.return_value = [
+                    MagicMock(user_id=approver_id, pin_hash="hashed")
+                ]
+                return found
+            if "permissions" in text:
+                return MagicMock(
+                    scalar_one_or_none=MagicMock(
+                        return_value=uuid4() if approver else None
+                    )
+                )
+            if "accounts_receivable" in text or "accounts_payable" in text:
+                return MagicMock(scalar_one_or_none=MagicMock(return_value=row))
+            return MagicMock()
+
+        session.execute = AsyncMock(side_effect=execute)
+        session.add = MagicMock()
+        session.flush = AsyncMock()
+        return session
+
+    def _receivable(self, store_id):
+        from app.accounting.models import AccountReceivable
+
+        return AccountReceivable(
+            id=uuid4(),
+            tenant_id=uuid4(),
+            customer_id=uuid4(),
+            customer_name="Acme",
+            invoice_number="INV-1",
+            amount=100,
+            amount_paid=0,
+            balance=100,
+            due_date=datetime(2026, 12, 1, tzinfo=timezone.utc),
+            status="pending",
+            store_id=store_id,
+        )
+
+    def _payable(self):
+        from app.accounting.models import AccountPayable
+
+        return AccountPayable(
+            id=uuid4(),
+            tenant_id=uuid4(),
+            bill_number="BILL-1",
+            vendor_name="Vendor",
+            description=None,
+            amount=100,
+            amount_paid=0,
+            balance=100,
+            due_date=datetime(2026, 12, 1, tzinfo=timezone.utc),
+            status="pending",
+            store_id=None,
+        )
+
+    async def _call(
+        self,
+        client,
+        session,
+        path,
+        store_id,
+        *,
+        rank=80,
+        supervisor_pin=None,
+        pin_matches=True,
+        lock=False,
+    ):
+        """Call a move endpoint with the request session swapped out.
+
+        ``rank`` stands in for the caller's highest role rank: 80 (owner) skips
+        the supervisor gate, anything lower requires a PIN.
+        """
+        from unittest.mock import patch
+
+        from app.core.dependencies import get_tenant_db_context
+
+        user = TokenData(
+            {
+                "sub": str(uuid4()),
+                "bid": str(uuid4()),
+                "role": "owner" if rank >= 80 else "manager",
+                "perms": ALL_PERMISSIONS,
+                "jti": str(uuid4()),
+                "exp": 9999999999,
+            }
+        )
+        ctx = TenantContext(user=user, session=session)
+
+        async def override():
+            yield ctx
+
+        app = client._transport.app
+        app.dependency_overrides[get_tenant_db_context] = override
+        body = {} if store_id is None else {"store_id": str(store_id)}
+        if supervisor_pin is not None:
+            body["supervisor_pin"] = supervisor_pin
+
+        self.redis = self._FakeRedis()
+        self.redis.locked = lock
+        try:
+            with (
+                patch(
+                    "app.core.dependencies.get_cached_role_rank",
+                    AsyncMock(return_value=rank),
+                ),
+                patch(
+                    "app.core.redis_client.get_cache_redis",
+                    AsyncMock(return_value=self.redis),
+                ),
+                patch("app.core.approval.verify_pin", return_value=pin_matches),
+            ):
+                return await client.patch(path, json=body)
+        finally:
+            app.dependency_overrides.pop(get_tenant_db_context, None)
+
+    def _executed(self, session, needle):
+        """Every statement the route ran whose SQL mentions ``needle``."""
+        return [
+            str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
+            for call in session.execute.await_args_list
+            if needle in str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
+        ]
+
+    async def test_move_receivable_moves_the_journal_too(self, client):
+        store_id = uuid4()
+        receivable = self._receivable(uuid4())
+        session = self._session_with(receivable)
+
+        resp = await self._call(
+            client, session, f"/accounting/receivable/{receivable.id}/store", store_id
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert str(receivable.store_id) == str(store_id)
+
+        retag = self._executed(session, "journals")
+        assert retag, "the journal retag never ran"
+        # Postgres renders UUIDs without dashes, so compare on the bare hex.
+        assert store_id.hex in retag[0].replace("-", "")
+        assert "'ar_payment'" in retag[0]
+
+    async def test_move_receivable_rejects_unknown_id(self, client):
+        session = self._session_with(None)
+        resp = await self._call(
+            client, session, f"/accounting/receivable/{uuid4()}/store", uuid4()
+        )
+        assert resp.status_code == 404
+
+    async def test_move_receivable_rejects_bad_store_id(self, client):
+        resp = await client.patch(
+            f"/accounting/receivable/{uuid4()}/store", json={"store_id": "nope"}
+        )
+        assert resp.status_code == 400
+
+    async def test_move_payable_moves_the_journal_too(self, client):
+        store_id = uuid4()
+        payable = self._payable()
+        session = self._session_with(payable)
+
+        resp = await self._call(
+            client, session, f"/accounting/payable/{payable.id}/store", store_id
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert str(payable.store_id) == str(store_id)
+        retag = self._executed(session, "journals")
+        assert retag, "the journal retag never ran"
+        assert store_id.hex in retag[0].replace("-", "")
+        assert "'ap_payment'" in retag[0]
+
+    async def test_move_accepts_no_store_to_untag(self, client):
+        """Omitting store_id clears it, which is how a record goes back to
+        showing under all stores."""
+        receivable = self._receivable(uuid4())
+        session = self._session_with(receivable)
+
+        resp = await self._call(
+            client, session, f"/accounting/receivable/{receivable.id}/store", None
+        )
+
+        assert resp.status_code == 200
+        assert receivable.store_id is None
+
+    async def test_owner_correction_is_audited_without_a_pin(self, client):
+        receivable = self._receivable(uuid4())
+        session = self._session_with(receivable)
+        new_store = uuid4()
+
+        resp = await self._call(
+            client, session, f"/accounting/receivable/{receivable.id}/store", new_store
+        )
+
+        assert resp.status_code == 200, resp.text
+        audit = session.add.call_args.args[0]
+        assert audit.action == "receivable_store_corrected"
+        details = json.loads(audit.details)
+        assert details["to_store_id"] == str(new_store)
+        assert details["reference"] == "INV-1"
+        assert details["supervisor_id"] is None
+
+    async def test_non_owner_needs_a_supervisor_pin(self, client):
+        """The route already demands accounting:write, so rank is the only
+        thing separating a routine correction from an approved one."""
+        receivable = self._receivable(uuid4())
+        original_store = receivable.store_id
+        session = self._session_with(receivable)
+
+        resp = await self._call(
+            client,
+            session,
+            f"/accounting/receivable/{receivable.id}/store",
+            uuid4(),
+            rank=60,
+        )
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "supervisor_pin_required"
+        assert receivable.store_id == original_store
+        session.add.assert_not_called()
+
+    async def test_wrong_pin_is_rejected_and_counted(self, client):
+        receivable = self._receivable(uuid4())
+        session = self._session_with(receivable, approver=uuid4())
+
+        resp = await self._call(
+            client,
+            session,
+            f"/accounting/receivable/{receivable.id}/store",
+            uuid4(),
+            rank=60,
+            supervisor_pin="0000",
+            pin_matches=False,
+        )
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "invalid_supervisor_pin"
+        session.add.assert_not_called()
+        # Brute force guard: the failure is counted, not just refused.
+        assert self.redis.counters
+
+    async def test_locked_out_after_five_bad_attempts(self, client):
+        """A 4-6 digit PIN is brute-forceable without a counter."""
+        session = self._session_with(self._receivable(uuid4()), approver=uuid4())
+
+        resp = await self._call(
+            client,
+            session,
+            f"/accounting/receivable/{uuid4()}/store",
+            uuid4(),
+            rank=60,
+            supervisor_pin="0000",
+            pin_matches=True,
+            lock=True,
+        )
+
+        assert resp.status_code == 429
+        session.add.assert_not_called()
+
+    async def test_supervisor_pin_approves_and_is_recorded(self, client):
+        original_store = uuid4()
+        receivable = self._receivable(original_store)
+        supervisor = uuid4()
+        session = self._session_with(receivable, approver=supervisor)
+        new_store = uuid4()
+
+        resp = await self._call(
+            client,
+            session,
+            f"/accounting/receivable/{receivable.id}/store",
+            new_store,
+            rank=60,
+            supervisor_pin="1234",
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert str(receivable.store_id) == str(new_store)
+        audit = session.add.call_args.args[0]
+        details = json.loads(audit.details)
+        assert details["supervisor_id"] == str(supervisor)
+        assert details["from_store_id"] == str(original_store)
+        assert details["to_store_id"] == str(new_store)
+
+    async def test_payable_correction_also_audits(self, client):
+        payable = self._payable()
+        session = self._session_with(payable)
+
+        resp = await self._call(
+            client, session, f"/accounting/payable/{payable.id}/store", uuid4()
+        )
+
+        assert resp.status_code == 200, resp.text
+        audit = session.add.call_args.args[0]
+        assert audit.action == "payable_store_corrected"
+        assert json.loads(audit.details)["reference"] == "BILL-1"
+
+
+class TestPaymentResponseSerialisation:
+    """A DATE column comes back as datetime.date; handing that to a str field
+    used to fail response validation with a 500."""
+
+    def test_stringify_converts_dates_and_decimals(self):
+        from datetime import date
+
+        from decimal import Decimal as D
+
+        from app.accounting.rpc import _stringify
+
+        row = _stringify(
+            {
+                "payment_date": date(2026, 10, 4),
+                "created_at": datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc),
+                "amount": D("400.00"),
+                "notes": None,
+            }
+        )
+        assert row["payment_date"] == "2026-10-04"
+        assert row["created_at"].startswith("2026-10-04T12:00:00")
+        assert row["amount"] == 400.0 and isinstance(row["amount"], float)
+        assert row["notes"] is None
+
+    async def test_payments_endpoint_returns_a_string_date(self, client):
+        from app.accounting import routes as accounting
+
+        with patch.object(
+            accounting.rpc,
+            "list_ap_payments",
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "id": "pay-1",
+                        "amount": 1000,
+                        "payment_date": "2026-10-01",
+                        "notes": None,
+                        "recorded_by": None,
+                        "created_at": "2026-10-01T09:00:00+00:00",
+                    }
+                ]
+            ),
+        ):
+            resp = await client.get("/accounting/payable/ap-1/payments")
+
+        assert resp.status_code == 200
+        assert isinstance(resp.json()["data"][0]["payment_date"], str)

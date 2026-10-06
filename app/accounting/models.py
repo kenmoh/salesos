@@ -390,6 +390,7 @@ class AccountPayable(StoreFlowBase):
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
     bill_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    vendor_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     vendor_name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     amount: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)

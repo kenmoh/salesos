@@ -13,8 +13,9 @@ This module defines the FastAPI routes for all accounting operations including:
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from app.core.approval import require_supervisor_approval
 from app.core.dependencies import DbTenantDep, require_permission
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
 from . import rpc
@@ -33,6 +34,7 @@ from .schemas import (
     FinancialDashboardResponse,
     JournalCreatedResponse,
     JournalListItem,
+    MoveToStoreRequest,
     PaymentResponse,
     PayableResponse,
     ProfitAndLossResponse,
@@ -60,6 +62,85 @@ def _validated_store_id(store_id: str | None) -> str | None:
     except ValueError:
         raise HTTPException(status_code=400, detail="store_id must be a valid UUID")
     return store_id
+
+
+def _receivable_to_response(receivable) -> dict:
+    """Serialise an Accounts Receivable row for the API."""
+    return {
+        "id": str(receivable.id),
+        "tenant_id": str(receivable.tenant_id),
+        "customer_id": str(receivable.customer_id) if receivable.customer_id else None,
+        "customer_name": receivable.customer_name,
+        "invoice_number": receivable.invoice_number,
+        "amount": float(receivable.amount),
+        "amount_paid": float(receivable.amount_paid),
+        "balance": float(receivable.balance),
+        "due_date": receivable.due_date.isoformat() if receivable.due_date else "",
+        "status": receivable.status,
+        "store_id": str(receivable.store_id) if receivable.store_id else None,
+    }
+
+
+def _payable_to_response(payable) -> dict:
+    """Serialise an Accounts Payable row for the API."""
+    return {
+        "id": str(payable.id),
+        "tenant_id": str(payable.tenant_id),
+        "bill_number": payable.bill_number,
+        "vendor_name": payable.vendor_name,
+        "description": payable.description,
+        "amount": float(payable.amount),
+        "amount_paid": float(payable.amount_paid),
+        "balance": float(payable.balance),
+        "due_date": payable.due_date.isoformat() if payable.due_date else "",
+        "status": payable.status,
+        "store_id": str(payable.store_id) if payable.store_id else None,
+    }
+
+
+async def _record_store_correction(
+    ctx,
+    *,
+    action: str,
+    entity: str,
+    entity_id: str,
+    reference: str,
+    from_store_id: str | None,
+    to_store_id: str | None,
+    supervisor_id: str | None,
+    request: Request,
+) -> None:
+    """Log a store re-attribution to the auth audit trail.
+
+    Added to the request's own session so the correction and its audit entry
+    commit together: a rollback leaves no orphaned trail, and a success can
+    never go unlogged. ``supervisor_id`` is null when the actor was allowed to
+    correct without a second signature.
+    """
+    import json
+
+    from app.identity.models import AuthAuditLog
+
+    ctx.session.add(
+        AuthAuditLog(
+            user_id=UUID(ctx.user.user_id),
+            tenant_id=UUID(ctx.user.business_id),
+            action=action,
+            ip_address=request.client.host if request.client else None,
+            user_agent=(request.headers.get("user-agent") or "")[:500] or None,
+            details=json.dumps(
+                {
+                    "entity": entity,
+                    "entity_id": entity_id,
+                    "reference": reference,
+                    "from_store_id": from_store_id,
+                    "to_store_id": to_store_id,
+                    "actor_role": ctx.user.role,
+                    "supervisor_id": supervisor_id,
+                }
+            ),
+        )
+    )
 
 
 async def _post_payment_journal(
@@ -491,6 +572,79 @@ async def list_ar_payments(ar_id: str, ctx: DbTenantDep):
     return ok(payments)
 
 
+@router.patch(
+    "/receivable/{ar_id}/store",
+    response_model=DataResponse[ReceivableResponse],
+    dependencies=[Depends(require_permission("accounting:write"))],
+)
+async def move_receivable_to_store(
+    ar_id: str,
+    payload: MoveToStoreRequest,
+    ctx: DbTenantDep,
+    request: Request,
+):
+    """Move a receivable to another store.
+
+    A receivable raised against the wrong store is otherwise stranded: it is
+    tagged with a store the user did not mean, so it disappears from the store
+    they were working in. The journals booked against it move too, otherwise
+    per-store cash and receivable figures would keep the original attribution
+    and the two would disagree.
+
+    Rewriting that attribution is a correction, not a create, so it needs a
+    supervisor PIN unless the caller is an owner or already holds
+    ``accounting:write``. Either way it is audited.
+    """
+    from sqlalchemy import select, update
+
+    from app.accounting.models import AccountReceivable, Journal
+
+    tenant_id = UUID(ctx.user.business_id)
+    store_id = _validated_store_id(payload.store_id)
+    supervisor_id = await require_supervisor_approval(
+        ctx,
+        permission="accounting:write",
+        supervisor_pin=payload.supervisor_pin,
+        request=request,
+    )
+
+    result = await ctx.session.execute(
+        select(AccountReceivable).where(
+            AccountReceivable.id == UUID(ar_id),
+            AccountReceivable.tenant_id == tenant_id,
+        )
+    )
+    receivable = result.scalar_one_or_none()
+    if receivable is None:
+        raise HTTPException(status_code=404, detail="Receivable not found")
+
+    previous_store_id = str(receivable.store_id) if receivable.store_id else None
+    receivable.store_id = UUID(store_id) if store_id else None
+    await ctx.session.execute(
+        update(Journal)
+        .where(
+            Journal.tenant_id == tenant_id,
+            Journal.reference_id == UUID(ar_id),
+            Journal.reference_type.in_(("receivable", "ar_payment")),
+        )
+        .values(store_id=UUID(store_id) if store_id else None)
+    )
+    await _record_store_correction(
+        ctx,
+        action="receivable_store_corrected",
+        entity="receivable",
+        entity_id=ar_id,
+        reference=receivable.invoice_number,
+        from_store_id=previous_store_id,
+        to_store_id=store_id,
+        supervisor_id=supervisor_id,
+        request=request,
+    )
+    await ctx.session.flush()
+
+    return ok(_receivable_to_response(receivable))
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  ACCOUNTS PAYABLE (AP) ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -533,6 +687,7 @@ async def create_payable(payload: CreatePayableRequest, ctx: DbTenantDep):
         store_id=_validated_store_id(payload.store_id),
         expense_category=payload.expense_category,
         created_by=ctx.user.user_id,
+        vendor_id=payload.vendor_id,
     )
     return ok(result)
 
@@ -583,6 +738,74 @@ async def list_ap_payments(ap_id: str, ctx: DbTenantDep):
         ap_id=ap_id,
     )
     return ok(payments)
+
+
+@router.patch(
+    "/payable/{ap_id}/store",
+    response_model=DataResponse[PayableResponse],
+    dependencies=[Depends(require_permission("accounting:write"))],
+)
+async def move_payable_to_store(
+    ap_id: str,
+    payload: MoveToStoreRequest,
+    ctx: DbTenantDep,
+    request: Request,
+):
+    """Move a payable to another store, journals included.
+
+    Mirrors the receivable endpoint: a bill raised against the wrong store is
+    stranded there otherwise, and leaving its journal behind would keep
+    per-store figures pointing at the store the user did not mean. Gated and
+    audited the same way.
+    """
+    from sqlalchemy import select, update
+
+    from app.accounting.models import AccountPayable, Journal
+
+    tenant_id = UUID(ctx.user.business_id)
+    store_id = _validated_store_id(payload.store_id)
+    supervisor_id = await require_supervisor_approval(
+        ctx,
+        permission="accounting:write",
+        supervisor_pin=payload.supervisor_pin,
+        request=request,
+    )
+
+    result = await ctx.session.execute(
+        select(AccountPayable).where(
+            AccountPayable.id == UUID(ap_id),
+            AccountPayable.tenant_id == tenant_id,
+        )
+    )
+    payable = result.scalar_one_or_none()
+    if payable is None:
+        raise HTTPException(status_code=404, detail="Payable not found")
+
+    previous_store_id = str(payable.store_id) if payable.store_id else None
+    payable.store_id = UUID(store_id) if store_id else None
+    await ctx.session.execute(
+        update(Journal)
+        .where(
+            Journal.tenant_id == tenant_id,
+            Journal.reference_id == UUID(ap_id),
+            Journal.reference_type.in_(("payable", "ap_payment")),
+        )
+        .values(store_id=UUID(store_id) if store_id else None)
+    )
+    await _record_store_correction(
+        ctx,
+        action="payable_store_corrected",
+        entity="payable",
+        entity_id=ap_id,
+        reference=payable.bill_number,
+        from_store_id=previous_store_id,
+        to_store_id=store_id,
+        supervisor_id=supervisor_id,
+        request=request,
+    )
+    await ctx.session.flush()
+
+    return ok(_payable_to_response(payable))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

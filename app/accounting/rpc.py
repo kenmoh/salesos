@@ -7,7 +7,8 @@ Pattern: route → rpc.xxx() → helpers.call(session, "fn_xxx", ...) → Postgr
 """
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +17,8 @@ from app.common.db.helpers import call, call_scalar
 
 
 def _stringify(rows: list[dict] | dict) -> list[dict] | dict:
-    """Convert UUID/datetime objects to strings for Pydantic compatibility."""
+    """Convert UUID/date/datetime objects to strings for Pydantic compatibility."""
+
     def _convert(obj):
         if isinstance(obj, dict):
             return {k: _convert(v) for k, v in obj.items()}
@@ -24,8 +26,15 @@ def _stringify(rows: list[dict] | dict) -> list[dict] | dict:
             return [_convert(v) for v in obj]
         if isinstance(obj, UUID):
             return str(obj)
+        # datetime is a subclass of date, so it has to be checked first: a
+        # DATE column comes back as datetime.date and was being handed to a
+        # str field as-is, which failed response validation.
         if isinstance(obj, datetime):
             return obj.isoformat()
+        if isinstance(obj, date):
+            return obj.isoformat()
+        if isinstance(obj, Decimal):
+            return float(obj)
         return obj
 
     if isinstance(rows, list):
@@ -383,6 +392,7 @@ async def create_accounts_payable(
     store_id: str | None = None,
     expense_category: str | None = None,
     created_by: str | None = None,
+    vendor_id: str | None = None,
 ) -> dict:
     """Create a new Accounts Payable record.
 
@@ -402,6 +412,7 @@ async def create_accounts_payable(
         p_store_id=UUID(store_id) if store_id else None,
         p_expense_category=expense_category or "other",
         p_created_by=UUID(created_by) if created_by else None,
+        p_vendor_id=UUID(vendor_id) if vendor_id else None,
     )
     row = _stringify(rows[0]) if rows else {}
     if "out_id" in row:

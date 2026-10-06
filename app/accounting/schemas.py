@@ -223,6 +223,20 @@ class RecordPaymentRequest(BaseModel):
     notes: str | None = None
 
 
+class MoveToStoreRequest(BaseModel):
+    """Move a receivable or payable to another store.
+
+    ``store_id = None`` means untagged / all stores.
+
+    ``supervisor_pin`` is required only when the caller is not an owner (or
+    otherwise holds ``accounting:write``) themselves: re-attributing a document
+    rewrites the store-level cash and receivable history behind it.
+    """
+
+    store_id: str | None = None
+    supervisor_pin: str | None = Field(default=None, min_length=4, max_length=6, pattern=r"^\d+$")
+
+
 class PaymentResponse(BaseModel):
     """One row from the AR/AP payment ledger."""
 
@@ -237,6 +251,8 @@ class PaymentResponse(BaseModel):
 class CreatePayableRequest(BaseModel):
     bill_number: str = Field(..., min_length=1, max_length=50)
     vendor_name: str = Field(..., min_length=1, max_length=200)
+    # Set when the vendor was picked from the vendor list rather than typed.
+    vendor_id: str | None = None
     description: str | None = None
     amount: float = Field(..., gt=0)
     due_date: str
