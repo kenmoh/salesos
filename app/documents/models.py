@@ -98,6 +98,7 @@ class Document(StoreFlowBase):
     doc_number: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
     doc_type: Mapped[str] = mapped_column(String(30), nullable=False)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="draft")
+    customer_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), index=True)
     customer_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     customer_email: Mapped[str | None] = mapped_column(String(200), nullable=True)
     customer_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)

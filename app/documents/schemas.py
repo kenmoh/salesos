@@ -68,6 +68,7 @@ class DocumentCreateCommand(BaseModel):
         tenant_id: The business tenant this document belongs to.
         actor_id: UUID of the user creating this document.
         doc_type: The type of document. Must be one of: quote, invoice, receipt, purchase_order.
+        customer_id: Optional UUID of the Customer this document belongs to.
         customer_name: Optional name of the customer or contact person.
         customer_email: Optional email address of the customer.
         customer_phone: Optional phone number of the customer.
@@ -83,6 +84,7 @@ class DocumentCreateCommand(BaseModel):
     tenant_id: UUID
     actor_id: UUID
     doc_type: str = Field(..., pattern="^(quote|invoice|receipt|purchase_order)$")
+    customer_id: UUID | None = None
     customer_name: str | None = None
     customer_email: str | None = None
     customer_phone: str | None = None

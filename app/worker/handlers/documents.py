@@ -113,7 +113,7 @@ async def handle_document_status_changed(
             id=uuid4(),
             tenant_id=UUID(tenant_id),
             invoice_id=UUID(document_id),
-            customer_id=UUID(customer_id),
+            customer_id=UUID(customer_id) if customer_id else None,
             customer_name=customer_name,
             invoice_number=doc_number,
             amount=float(total),

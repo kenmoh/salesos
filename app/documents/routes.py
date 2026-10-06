@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
+from uuid import UUID
 
 from app.core.dependencies import TenantDep, require_permission
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
@@ -35,6 +36,7 @@ async def create_document_endpoint(payload: DocumentCreate, ctx: TenantDep):
             tenant_id=ctx.user.business_id,
             actor_id=ctx.user.user_id,
             doc_type=payload.doc_type,
+            customer_id=str(payload.customer_id) if payload.customer_id else None,
             customer_name=payload.customer_name,
             customer_email=payload.customer_email,
             customer_phone=payload.customer_phone,
@@ -68,13 +70,20 @@ async def list_documents_endpoint(
     ctx: TenantDep,
     doc_type: str | None = None,
     status: str | None = None,
-    page: int = 1,
-    page_size: int = 50,
+    customer_id: str | None = Query(None, description="Filter to one customer"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
 ):
+    if customer_id:
+        try:
+            UUID(customer_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="customer_id must be a valid UUID")
     result = await list_documents(
         tenant_id=ctx.user.business_id,
         doc_type=doc_type,
         status=status,
+        customer_id=customer_id,
         page=page,
         page_size=page_size,
     )

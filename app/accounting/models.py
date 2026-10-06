@@ -288,7 +288,7 @@ class AccountReceivable(StoreFlowBase):
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
     invoice_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
-    customer_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    customer_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     customer_name: Mapped[str] = mapped_column(String(200), nullable=False)
     invoice_number: Mapped[str] = mapped_column(String(50), nullable=False)
     amount: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
@@ -299,6 +299,46 @@ class AccountReceivable(StoreFlowBase):
     store_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), nullable=True, index=True
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
+class ArPayment(StoreFlowBase):
+    """One payment received against an accounts receivable row.
+
+    Written by fn_record_ar_payment inside the same transaction that lowers the
+    receivable's balance, so the ledger and the balance can never disagree.
+    """
+
+    __tablename__ = "ar_payments"
+
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    ar_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    amount: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
+    payment_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recorded_by: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
+class ApPayment(StoreFlowBase):
+    """One payment made against an accounts payable row."""
+
+    __tablename__ = "ap_payments"
+
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    ap_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    amount: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
+    payment_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recorded_by: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )

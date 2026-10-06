@@ -145,6 +145,7 @@ def plan_document_creation(
         doc_number=doc_number,
         doc_type=command.doc_type,
         status=initial_status,
+        customer_id=command.customer_id,
         customer_name=command.customer_name,
         customer_email=command.customer_email,
         customer_phone=command.customer_phone,
@@ -276,7 +277,7 @@ def plan_status_change(
         actor_id=command.actor_id,
         total=str(doc.total) if doc.total else None,
         customer_name=doc.customer_name,
-        customer_id=doc.created_by,
+        customer_id=doc.customer_id,
         due_date=doc.due_date.isoformat() if doc.due_date else None,
         correlation_id=command.correlation_id,
     )
@@ -328,7 +329,7 @@ def plan_accept_quote(doc: Document) -> tuple[Document, list[OutboxWrite]]:
         actor_id=doc.created_by,
         total=str(doc.total) if doc.total else None,
         customer_name=doc.customer_name,
-        customer_id=doc.created_by,
+        customer_id=doc.customer_id,
         due_date=doc.due_date.isoformat() if doc.due_date else None,
     )
 

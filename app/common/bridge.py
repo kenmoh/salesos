@@ -7743,6 +7743,7 @@ async def create_document(
     actor_id: str,
     doc_type: str,
     items: list[dict],
+    customer_id: str | None = None,
     customer_name: str | None = None,
     customer_email: str | None = None,
     customer_phone: str | None = None,
@@ -7768,6 +7769,7 @@ async def create_document(
         items: List of document item dictionaries, each containing
             ``description``, ``qty``, ``unit_price``, and optionally
             ``product_id``, ``discount_pct``, and ``tax_rate``.
+        customer_id: Optional customer id this document belongs to.
         customer_name: Optional customer name for the document.
         customer_email: Optional customer email for the document.
         customer_phone: Optional customer phone for the document.
@@ -7807,6 +7809,7 @@ async def create_document(
         tenant_id=UUID(tenant_id),
         actor_id=UUID(actor_id),
         doc_type=doc_type,
+        customer_id=UUID(customer_id) if customer_id else None,
         customer_name=customer_name,
         customer_email=customer_email,
         customer_phone=customer_phone,
@@ -7836,6 +7839,7 @@ async def list_documents(
     tenant_id: str,
     doc_type: str | None = None,
     status: str | None = None,
+    customer_id: str | None = None,
     page: int = 1,
     page_size: int = 50,
 ) -> dict:
@@ -7849,6 +7853,7 @@ async def list_documents(
             being listed.
         doc_type: Optional document type filter (e.g. "quote", "invoice").
         status: Optional status filter (e.g. "draft", "sent", "accepted").
+        customer_id: Optional customer id filter.
         page: Page number for pagination (1-indexed).
         page_size: Number of items per page.
 
@@ -7865,6 +7870,7 @@ async def list_documents(
             tenant_id=UUID(tenant_id),
             doc_type=doc_type,
             status=status,
+            customer_id=UUID(customer_id) if customer_id else None,
             limit=page_size,
             offset=(page - 1) * page_size,
         )
@@ -7877,9 +7883,12 @@ async def list_documents(
                     "doc_number": d.doc_number,
                     "doc_type": d.doc_type,
                     "status": d.status,
+                    "customer_id": str(d.customer_id) if d.customer_id else None,
                     "customer_name": d.customer_name,
                     "total": float(d.total),
                     "item_count": counts.get(d.id, 0),
+                    "due_date": d.due_date.isoformat() if d.due_date else None,
+                    "store_id": str(d.store_id) if d.store_id else None,
                     "created_at": d.created_at.isoformat() if d.created_at else None,
                 }
                 for d in items
@@ -7922,10 +7931,12 @@ async def get_document_by_id(tenant_id: str, document_id: str) -> dict | None:
             "doc_number": doc.doc_number,
             "doc_type": doc.doc_type,
             "status": doc.status,
+            "customer_id": str(doc.customer_id) if doc.customer_id else None,
             "customer_name": doc.customer_name,
             "customer_email": doc.customer_email,
             "customer_phone": doc.customer_phone,
             "customer_address": doc.customer_address,
+            "store_id": str(doc.store_id) if doc.store_id else None,
             "subtotal": float(doc.subtotal),
             "discount": float(doc.discount),
             "tax": str(doc.tax),
@@ -8208,12 +8219,13 @@ def _customer_to_dict(c) -> dict:
         c: A ``Customer`` model instance from the customers database.
 
     Returns:
-        A dictionary containing ``id``, ``name``, ``phone``, ``email``,
-        ``address``, ``created_at``, and ``updated_at``.
+        A dictionary containing ``id``, ``name``, ``type``, ``phone``,
+        ``email``, ``address``, ``created_at``, and ``updated_at``.
     """
     return {
         "id": str(c.id),
         "name": c.name,
+        "type": str(c.type),
         "phone": c.phone,
         "email": c.email,
         "address": c.address,
@@ -8327,6 +8339,7 @@ async def create_customer(
     phone: str | None = None,
     email: str | None = None,
     address: str | None = None,
+    type: str | None = None,
 ) -> dict:
     """Create a new customer record for a tenant.
 
@@ -8339,11 +8352,12 @@ async def create_customer(
         phone: Optional phone number of the customer.
         email: Optional email address of the customer.
         address: Optional physical address of the customer.
+        type: Optional ``customer`` or ``vendor``. Defaults to ``customer``.
 
     Returns:
         A dictionary containing the newly created customer details
-        including ``id``, ``name``, ``phone``, ``email``, ``address``,
-        ``created_at``, and ``updated_at``.
+        including ``id``, ``name``, ``type``, ``phone``, ``email``,
+        ``address``, ``created_at``, and ``updated_at``.
     """
     from app.customers.models import Customer
 
@@ -8355,6 +8369,7 @@ async def create_customer(
             phone=phone,
             email=email,
             address=address,
+            **({"type": type} if type else {}),
         )
         session.add(customer)
         try:
@@ -8403,7 +8418,7 @@ async def update_customer(
         if not row:
             return None
 
-        for key in ("name", "phone", "email", "address"):
+        for key in ("name", "type", "phone", "email", "address"):
             val = kwargs.get(key)
             if val is not None:
                 setattr(row, key, val)

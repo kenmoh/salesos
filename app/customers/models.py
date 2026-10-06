@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from enum import StrEnum
 from uuid import uuid4
 
 from sqlalchemy import DateTime, String, Text, UniqueConstraint
@@ -7,6 +8,12 @@ from sqlalchemy.orm import mapped_column
 
 from app.common.db.base import StoreFlowBase
 
+
+class CustomerType(StrEnum):
+    """Whether we sell to this record (customer) or buy from it (vendor)."""
+
+    CUSTOMER = "customer"
+    VENDOR = "vendor"
 
 
 class Customer(StoreFlowBase):
@@ -20,6 +27,9 @@ class Customer(StoreFlowBase):
     id = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     tenant_id = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
     name = mapped_column(String(255), nullable=False)
+    type = mapped_column(
+        String(20), nullable=False, default=CustomerType.CUSTOMER, server_default="customer"
+    )
     phone = mapped_column(String(50))
     email = mapped_column(String(255))
     address = mapped_column(Text)

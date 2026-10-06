@@ -627,9 +627,12 @@ class DocumentDetail(_Base):
     doc_type: str = ""
     doc_number: str = ""
     status: str = "draft"
+    customer_id: str | None = None
     customer_name: str | None = None
     customer_email: str | None = None
     customer_phone: str | None = None
+    due_date: datetime | None = None
+    store_id: str | None = None
     total: float = 0
     items: list[dict] = []
     created_at: datetime | None = None
@@ -640,7 +643,10 @@ class DocumentListItem(_Base):
     doc_type: str = ""
     doc_number: str = ""
     status: str = "draft"
+    customer_id: str | None = None
     customer_name: str | None = None
+    due_date: datetime | None = None
+    store_id: str | None = None
     total: float = 0
     item_count: int = 0
     created_at: datetime | None = None

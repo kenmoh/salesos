@@ -3,11 +3,13 @@ from pydantic import BaseModel, Field
 
 from app.core.dependencies import TenantDep, require_permission
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
+from app.customers.models import CustomerType
 import app.common.bridge as bridge
 
 
 class CustomerCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
+    type: CustomerType = CustomerType.CUSTOMER
     phone: str | None = None
     email: str | None = None
     address: str | None = None
@@ -15,6 +17,7 @@ class CustomerCreate(BaseModel):
 
 class CustomerUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
+    type: CustomerType | None = None
     phone: str | None = None
     email: str | None = None
     address: str | None = None
@@ -35,6 +38,7 @@ async def create_customer(payload: CustomerCreate, ctx: TenantDep):
             await bridge.create_customer(
                 tenant_id=ctx.user.business_id,
                 name=payload.name,
+                type=payload.type,
                 phone=payload.phone,
                 email=payload.email,
                 address=payload.address,

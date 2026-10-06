@@ -223,6 +223,17 @@ class RecordPaymentRequest(BaseModel):
     notes: str | None = None
 
 
+class PaymentResponse(BaseModel):
+    """One row from the AR/AP payment ledger."""
+
+    id: str = ""
+    amount: float = 0
+    payment_date: str = ""
+    notes: str | None = None
+    recorded_by: str | None = None
+    created_at: str = ""
+
+
 class CreatePayableRequest(BaseModel):
     bill_number: str = Field(..., min_length=1, max_length=50)
     vendor_name: str = Field(..., min_length=1, max_length=200)
@@ -312,7 +323,7 @@ class CashFlowResponse(BaseModel):
 class ReceivableResponse(BaseModel):
     id: str = ""
     tenant_id: str = ""
-    customer_id: str = ""
+    customer_id: str | None = None
     customer_name: str = ""
     invoice_number: str = ""
     amount: float = 0
@@ -321,6 +332,9 @@ class ReceivableResponse(BaseModel):
     due_date: str = ""
     status: str = "pending"
     store_id: str | None = None
+    # Set when the row comes from a payment call: the ledger row just written.
+    payment_id: str | None = None
+    error: str | None = None
 
 
 class PayableResponse(BaseModel):

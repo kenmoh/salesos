@@ -309,12 +309,17 @@ async def record_ar_payment(
     amount: float,
     payment_date: str,
     notes: str | None = None,
+    recorded_by: str | None = None,
 ) -> dict:
     """Record a payment against an AR record.
 
     Calls Postgres fn_record_ar_payment which:
+    - Locks the AR row and rejects an amount above the remaining balance
     - Updates the AR record (amount_paid, balance, status)
-    - Creates journal entries (Debit Cash, Credit AR)
+    - Appends a row to the ar_payments ledger
+
+    Returns the updated AR row plus ``payment_id``, or ``error`` when the
+    payment was refused (the caller turns that into a 400).
     """
     rows = await call(
         session,
@@ -324,12 +329,17 @@ async def record_ar_payment(
         p_amount=amount,
         p_payment_date=payment_date,
         p_notes=notes,
+        p_recorded_by=UUID(recorded_by) if recorded_by else None,
     )
     row = _stringify(rows[0]) if rows else {}
     if "out_id" in row:
         row["id"] = row.pop("out_id")
     if "out_tenant_id" in row:
         row["tenant_id"] = row.pop("out_tenant_id")
+    if "out_payment_id" in row:
+        row["payment_id"] = row.pop("out_payment_id")
+    if "out_error" in row:
+        row["error"] = row.pop("out_error")
     return row
 
 
@@ -386,6 +396,38 @@ async def create_accounts_payable(
     return row
 
 
+async def list_ar_payments(
+    session: AsyncSession,
+    *,
+    business_id: str,
+    ar_id: str,
+) -> list[dict]:
+    """Return the payment ledger for one receivable, newest payment first."""
+    rows = await call(
+        session,
+        "fn_list_ar_payments",
+        p_tenant_id=UUID(business_id),
+        p_ar_id=UUID(ar_id),
+    )
+    return [_stringify(r) for r in rows]
+
+
+async def list_ap_payments(
+    session: AsyncSession,
+    *,
+    business_id: str,
+    ap_id: str,
+) -> list[dict]:
+    """Return the payment ledger for one payable, newest payment first."""
+    rows = await call(
+        session,
+        "fn_list_ap_payments",
+        p_tenant_id=UUID(business_id),
+        p_ap_id=UUID(ap_id),
+    )
+    return [_stringify(r) for r in rows]
+
+
 async def record_ap_payment(
     session: AsyncSession,
     *,
@@ -394,12 +436,17 @@ async def record_ap_payment(
     amount: float,
     payment_date: str,
     notes: str | None = None,
+    recorded_by: str | None = None,
 ) -> dict:
     """Record a payment against an AP record.
 
     Calls Postgres fn_record_ap_payment which:
+    - Locks the AP row and rejects an amount above the remaining balance
     - Updates the AP record (amount_paid, balance, status)
-    - Creates journal entries (Debit AP, Credit Cash)
+    - Appends a row to the ap_payments ledger
+
+    Returns the updated AP row plus ``payment_id``, or ``error`` when the
+    payment was refused (the caller turns that into a 400).
     """
     rows = await call(
         session,
@@ -409,12 +456,17 @@ async def record_ap_payment(
         p_amount=amount,
         p_payment_date=payment_date,
         p_notes=notes,
+        p_recorded_by=UUID(recorded_by) if recorded_by else None,
     )
     row = _stringify(rows[0]) if rows else {}
     if "out_id" in row:
         row["id"] = row.pop("out_id")
     if "out_tenant_id" in row:
         row["tenant_id"] = row.pop("out_tenant_id")
+    if "out_payment_id" in row:
+        row["payment_id"] = row.pop("out_payment_id")
+    if "out_error" in row:
+        row["error"] = row.pop("out_error")
     return row
 
 

@@ -246,6 +246,7 @@ class DocumentItem(Base):
 class DocumentCreate(Base):
     doc_type: str
     sale_id: UUID | None = None
+    customer_id: UUID | None = None
     customer_name: str | None = None
     customer_email: EmailStr | None = None
     customer_phone: str | None = None

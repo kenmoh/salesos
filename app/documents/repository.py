@@ -85,6 +85,7 @@ async def list_documents_by_tenant(
     tenant_id: UUID,
     doc_type: str | None = None,
     status: str | None = None,
+    customer_id: UUID | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[Document]:
@@ -93,6 +94,7 @@ async def list_documents_by_tenant(
     Supports filtering by:
         - doc_type: Filter by document type (quote, invoice, receipt, purchase_order).
         - status: Filter by document status (draft, sent, paid, etc.).
+        - customer_id: Filter to documents linked to one customer record.
 
     Results are ordered by created_at in descending order (newest first).
 
@@ -101,6 +103,7 @@ async def list_documents_by_tenant(
         tenant_id: The business tenant to filter by.
         doc_type: Optional document type to filter by.
         status: Optional status to filter by.
+        customer_id: Optional customer to filter by.
         limit: Maximum number of documents to return (default: 50).
         offset: Number of documents to skip for pagination (default: 0).
 
@@ -112,6 +115,8 @@ async def list_documents_by_tenant(
         query = query.where(Document.doc_type == doc_type)
     if status:
         query = query.where(Document.status == status)
+    if customer_id:
+        query = query.where(Document.customer_id == customer_id)
     query = query.order_by(Document.created_at.desc()).limit(limit).offset(offset)
     result = await session.execute(query)
     return list(result.scalars().all())

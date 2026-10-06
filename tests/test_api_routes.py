@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import app.common.auth_service as auth_service
+import app.common.bridge as bridge
 
 import pytest
 from fastapi import FastAPI
@@ -11,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.core.dependencies import TenantContext, TokenData
 from app.core.platform_deps import PlatformContext
+from app.customers.models import CustomerType
 
 ALL_PERMISSIONS = [
     "products:create",
@@ -59,6 +61,10 @@ ALL_PERMISSIONS = [
     "stores:read",
     "stores:update",
     "stores:manage_main",
+    "customers:read",
+    "customers:create",
+    "customers:update",
+    "customers:delete",
     "categories:create",
     "categories:read",
     "categories:update",
@@ -74,6 +80,7 @@ def _make_app():
     from app.ai import routes as ai
     from app.auth import routes as auth
     from app.cart import routes as cart
+    from app.customers import routes as customers
     from app.documents import routes as documents
     from app.inventory import routes as inventory
     from app.payments import routes as payments
@@ -88,6 +95,7 @@ def _make_app():
         ai.router,
         auth.router,
         cart.router,
+        customers.router,
         documents.router,
         inventory.router,
         payments.router,
@@ -224,6 +232,13 @@ def _bridge_kwargs():
         update_category=AsyncMock(),
         delete_category=AsyncMock(),
         create_document=AsyncMock(return_value={"id": str(uuid4()), "doc_number": "DOC-001"}),
+        create_customer=AsyncMock(return_value={"id": str(uuid4()), "name": "Ada"}),
+        list_customers=AsyncMock(
+            return_value={"items": [], "total": 0, "page": 1, "page_size": 50}
+        ),
+        get_customer=AsyncMock(return_value={"id": str(uuid4()), "name": "Ada"}),
+        update_customer=AsyncMock(return_value={"id": str(uuid4()), "name": "Ada"}),
+        delete_customer=AsyncMock(return_value=True),
         list_documents=AsyncMock(
             return_value={"items": [], "total": 0, "page": 1, "page_size": 50}
         ),
@@ -888,6 +903,222 @@ class TestAccounting:
 
 
 # ---------------------------------------------------------------------------
+# Receivable / payable payments
+# ---------------------------------------------------------------------------
+
+
+class TestRecordPayments:
+    AR = "/accounting/receivable"
+    AP = "/accounting/payable"
+
+    def _payment_patch(self, result):
+        from app.accounting import routes as accounting
+
+        return patch.object(
+            accounting.rpc, "record_ar_payment", new=AsyncMock(return_value=result)
+        ), patch.object(
+            accounting, "_post_payment_journal", new=AsyncMock()
+        )
+
+    async def test_ar_payment_returns_updated_receivable(self, client):
+        from app.accounting import routes as accounting
+
+        rpc_patch, journal_patch = self._payment_patch(
+            {
+                "id": "ar-1",
+                "invoice_number": "INV-1",
+                "amount": 1000,
+                "amount_paid": 400,
+                "balance": 600,
+                "status": "partial",
+                "payment_id": "pay-1",
+            }
+        )
+        with rpc_patch as record, journal_patch as journal:
+            resp = await client.post(
+                f"{self.AR}/ar-1/payment",
+                json={"amount": 400, "payment_date": "2026-10-04"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()["data"]
+        assert body["status"] == "partial"
+        assert body["balance"] == 600
+        assert body["payment_id"] == "pay-1"
+        assert record.await_args.kwargs["amount"] == 400
+        assert journal.await_count == 1
+
+    async def test_ar_payment_records_who_took_it(self, client):
+        from app.accounting import routes as accounting
+
+        rpc_patch, journal_patch = self._payment_patch({"id": "ar-1", "payment_id": "p"})
+        with rpc_patch as record, journal_patch:
+            await client.post(
+                f"{self.AR}/ar-1/payment",
+                json={"amount": 100, "payment_date": "2026-10-04"},
+            )
+        assert record.await_args.kwargs["recorded_by"] is not None
+
+    async def test_refused_payment_is_a_400_and_posts_no_journal(self, client):
+        from app.accounting import routes as accounting
+
+        rpc_patch, journal_patch = self._payment_patch(
+            {"error": "Payment amount exceeds the remaining balance of 0.00"}
+        )
+        with rpc_patch, journal_patch as journal:
+            resp = await client.post(
+                f"{self.AR}/ar-1/payment",
+                json={"amount": 500, "payment_date": "2026-10-04"},
+            )
+
+        assert resp.status_code == 400
+        assert "exceeds" in resp.json()["detail"]
+        assert journal.await_count == 0
+
+    async def test_ap_payment_refusal_is_a_400(self, client):
+        from app.accounting import routes as accounting
+
+        with (
+            patch.object(
+                accounting.rpc,
+                "record_ap_payment",
+                new=AsyncMock(return_value={"error": "Payable not found"}),
+            ),
+            patch.object(accounting, "_post_payment_journal", new=AsyncMock()) as journal,
+        ):
+            resp = await client.post(
+                f"{self.AP}/ap-1/payment",
+                json={"amount": 100, "payment_date": "2026-10-04"},
+            )
+
+        assert resp.status_code == 400
+        assert journal.await_count == 0
+
+    async def test_list_ar_payments(self, client):
+        from app.accounting import routes as accounting
+
+        with patch.object(
+            accounting.rpc,
+            "list_ar_payments",
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "id": "pay-1",
+                        "amount": 400,
+                        "payment_date": "2026-10-04",
+                        "notes": "part",
+                    }
+                ]
+            ),
+        ):
+            resp = await client.get(f"{self.AR}/ar-1/payments")
+
+        assert resp.status_code == 200
+        payments = resp.json()["data"]
+        assert payments[0]["amount"] == 400
+        assert payments[0]["notes"] == "part"
+
+    async def test_list_ar_payments_empty(self, client):
+        from app.accounting import routes as accounting
+
+        with patch.object(
+            accounting.rpc, "list_ar_payments", new=AsyncMock(return_value=[])
+        ):
+            resp = await client.get(f"{self.AR}/ar-1/payments")
+
+        assert resp.status_code == 200
+        assert resp.json()["data"] == []
+
+    async def test_list_ap_payments(self, client):
+        from app.accounting import routes as accounting
+
+        with patch.object(
+            accounting.rpc,
+            "list_ap_payments",
+            new=AsyncMock(
+                return_value=[
+                    {"id": "pay-9", "amount": 1000, "payment_date": "2026-10-01"}
+                ]
+            ),
+        ) as list_payments:
+            resp = await client.get(f"{self.AP}/ap-1/payments")
+
+        assert resp.status_code == 200
+        assert resp.json()["data"][0]["amount"] == 1000
+        assert list_payments.await_args.kwargs["ap_id"] == "ap-1"
+
+
+class TestPaymentRpcMapping:
+    """The rpc layer renames the function's out_* columns for the API."""
+
+    async def test_ar_payment_surfaces_payment_id_and_error(self):
+        from app.accounting import rpc
+
+        with patch.object(rpc, "call", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = [
+                {
+                    "out_id": uuid4(),
+                    "out_tenant_id": uuid4(),
+                    "amount_paid": 400,
+                    "out_payment_id": uuid4(),
+                    "out_error": None,
+                }
+            ]
+            row = await rpc.record_ar_payment(
+                None,
+                business_id=str(uuid4()),
+                ar_id=str(uuid4()),
+                amount=400,
+                payment_date="2026-10-04",
+                recorded_by=str(uuid4()),
+            )
+
+        assert "id" in row and "tenant_id" in row
+        assert "out_payment_id" not in row and "out_error" not in row
+        assert row["payment_id"] is not None
+        assert row["error"] is None
+        assert mock_call.call_args.kwargs["p_recorded_by"] is not None
+
+    async def test_ar_payment_forwards_notes(self):
+        from app.accounting import rpc
+
+        with patch.object(rpc, "call", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = []
+            await rpc.record_ar_payment(
+                None,
+                business_id=str(uuid4()),
+                ar_id=str(uuid4()),
+                amount=100,
+                payment_date="2026-10-04",
+                notes="part payment",
+            )
+        assert mock_call.call_args.kwargs["p_notes"] == "part payment"
+        assert mock_call.call_args.kwargs["p_recorded_by"] is None
+
+    async def test_list_ar_payments_forwards_ids(self):
+        from app.accounting import rpc
+
+        with patch.object(rpc, "call", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = []
+            await rpc.list_ar_payments(
+                None, business_id=str(uuid4()), ar_id=str(uuid4())
+            )
+        assert mock_call.call_args.args[1] == "fn_list_ar_payments"
+        assert mock_call.call_args.kwargs["p_ar_id"] is not None
+
+    async def test_list_ap_payments_forwards_ids(self):
+        from app.accounting import rpc
+
+        with patch.object(rpc, "call", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = []
+            await rpc.list_ap_payments(
+                None, business_id=str(uuid4()), ap_id=str(uuid4())
+            )
+        assert mock_call.call_args.args[1] == "fn_list_ap_payments"
+        assert mock_call.call_args.kwargs["p_ap_id"] is not None
+
+
+# ---------------------------------------------------------------------------
 # Per-store accounting: store_id filters + journal/expense attribution
 # ---------------------------------------------------------------------------
 
@@ -1313,6 +1544,76 @@ class TestDocuments:
     async def test_convert_to_sale(self, client):
         resp = await client.post(f"{self.ROUTE}/x/convert-to-sale")
         assert resp.status_code == 201
+        assert "data" in resp.json()
+
+    async def test_create_document_links_customer(self, client):
+        customer_id = str(uuid4())
+        with patch(
+            "app.documents.routes.create_document",
+            new=AsyncMock(return_value={"id": str(uuid4()), "doc_number": "DOC-001"}),
+        ) as create_document:
+            resp = await client.post(
+                self.ROUTE,
+                json={
+                    "doc_type": "invoice",
+                    "customer_id": customer_id,
+                    "customer_name": "Ada",
+                    "items": [{"description": "Item", "qty": 1, "unit_price": 10}],
+                },
+            )
+        assert resp.status_code == 201
+        assert create_document.await_args.kwargs["customer_id"] == customer_id
+
+    async def test_list_documents_filters_by_customer(self, client):
+        customer_id = str(uuid4())
+        with patch(
+            "app.documents.routes.list_documents",
+            new=AsyncMock(
+                return_value={"items": [], "total": 0, "page": 1, "page_size": 50}
+            ),
+        ) as list_documents:
+            resp = await client.get(f"{self.ROUTE}?doc_type=invoice&customer_id={customer_id}")
+        assert resp.status_code == 200
+        kwargs = list_documents.await_args.kwargs
+        assert kwargs["doc_type"] == "invoice"
+        assert kwargs["customer_id"] == customer_id
+
+    async def test_list_documents_rejects_bad_customer_id(self, client):
+        resp = await client.get(f"{self.ROUTE}?customer_id=not-a-uuid")
+        assert resp.status_code == 400
+
+    async def test_list_documents_bounds_page_size(self, client):
+        resp = await client.get(f"{self.ROUTE}?page_size=5000")
+        assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Customers
+# ---------------------------------------------------------------------------
+
+
+class TestCustomers:
+    ROUTE = "/customers"
+
+    async def test_create_defaults_to_customer_type(self, client):
+        resp = await client.post(self.ROUTE, json={"name": "Ada"})
+        assert resp.status_code == 201
+        assert bridge.create_customer.await_args.kwargs["type"] == CustomerType.CUSTOMER
+
+    async def test_create_vendor(self, client):
+        resp = await client.post(
+            self.ROUTE, json={"name": "Acme Supplies", "type": "vendor"}
+        )
+        assert resp.status_code == 201
+        assert bridge.create_customer.await_args.kwargs["type"] == CustomerType.VENDOR
+
+    async def test_create_rejects_unknown_type(self, client):
+        resp = await client.post(self.ROUTE, json={"name": "Ada", "type": "supplier"})
+        assert resp.status_code == 422
+
+    async def test_list_customers(self, client):
+        resp = await client.get(self.ROUTE)
+        assert resp.status_code == 200
         assert "data" in resp.json()
 
 

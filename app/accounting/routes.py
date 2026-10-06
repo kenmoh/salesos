@@ -33,6 +33,7 @@ from .schemas import (
     FinancialDashboardResponse,
     JournalCreatedResponse,
     JournalListItem,
+    PaymentResponse,
     PayableResponse,
     ProfitAndLossResponse,
     RecordPaymentRequest,
@@ -443,7 +444,12 @@ async def record_ar_payment(
         amount=payload.amount,
         payment_date=payload.payment_date,
         notes=payload.notes,
+        recorded_by=ctx.user.user_id,
     )
+    # The ledger row and the balance update happen together in one SQL
+    # function; a refusal leaves both untouched, so stop before the journal.
+    if error := result.get("error"):
+        raise HTTPException(status_code=400, detail=error)
     await _post_payment_journal(
         ctx,
         amount=payload.amount,
@@ -454,6 +460,20 @@ async def record_ar_payment(
         ref_type="ar_payment",
     )
     return ok(result)
+
+
+@router.get(
+    "/receivable/{ar_id}/payments",
+    response_model=DataResponse[list[PaymentResponse]],
+    dependencies=[Depends(require_permission("accounting:read"))],
+)
+async def list_ar_payments(ar_id: str, ctx: DbTenantDep):
+    payments = await rpc.list_ar_payments(
+        session=ctx.session,
+        business_id=ctx.user.business_id,
+        ar_id=ar_id,
+    )
+    return ok(payments)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -517,7 +537,10 @@ async def record_ap_payment(
         amount=payload.amount,
         payment_date=payload.payment_date,
         notes=payload.notes,
+        recorded_by=ctx.user.user_id,
     )
+    if error := result.get("error"):
+        raise HTTPException(status_code=400, detail=error)
     await _post_payment_journal(
         ctx,
         amount=payload.amount,
@@ -528,6 +551,20 @@ async def record_ap_payment(
         ref_type="ap_payment",
     )
     return ok(result)
+
+
+@router.get(
+    "/payable/{ap_id}/payments",
+    response_model=DataResponse[list[PaymentResponse]],
+    dependencies=[Depends(require_permission("accounting:read"))],
+)
+async def list_ap_payments(ap_id: str, ctx: DbTenantDep):
+    payments = await rpc.list_ap_payments(
+        session=ctx.session,
+        business_id=ctx.user.business_id,
+        ap_id=ap_id,
+    )
+    return ok(payments)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
