@@ -71,6 +71,7 @@ async def _post_payment_journal(
     description: str,
     ref_id: str,
     ref_type: str,
+    store_id: str | None = None,
 ) -> None:
     """Post the cash leg of an AR/AP payment (Dr cash / Cr receivable, etc.).
 
@@ -116,6 +117,7 @@ async def _post_payment_journal(
         entries=entries,
         ref_id=ref_id,
         ref_type=ref_type,
+        store_id=store_id,
     )
 
 
@@ -351,6 +353,17 @@ async def balance_sheet(
         "total_assets": result.get("assets", 0),
         "total_liabilities": result.get("liabilities", 0),
         "total_equity": result.get("equity", 0),
+        "capital": result.get("capital", 0),
+        "current_earnings": result.get("current_earnings", 0),
+        "total_revenue": result.get("revenue", 0),
+        "total_expenses": result.get("expenses", 0),
+        "balance_check": result.get("balance_check", 0),
+        "receivable_subledger": result.get("receivable_subledger", 0),
+        "receivable_control": result.get("receivable_control", 0),
+        "receivable_difference": result.get("receivable_difference", 0),
+        "payable_subledger": result.get("payable_subledger", 0),
+        "payable_control": result.get("payable_control", 0),
+        "payable_difference": result.get("payable_difference", 0),
     })
 
 
@@ -423,6 +436,7 @@ async def create_receivable(payload: CreateReceivableRequest, ctx: DbTenantDep):
         due_date=payload.due_date,
         invoice_id=payload.invoice_id,
         store_id=_validated_store_id(payload.store_id),
+        created_by=ctx.user.user_id,
     )
     return ok(result)
 
@@ -458,6 +472,7 @@ async def record_ar_payment(
         description=f"AR payment: {result.get('invoice_number') or ar_id}",
         ref_id=ar_id,
         ref_type="ar_payment",
+        store_id=result.get("store_id"),
     )
     return ok(result)
 
@@ -516,6 +531,8 @@ async def create_payable(payload: CreatePayableRequest, ctx: DbTenantDep):
         due_date=payload.due_date,
         description=payload.description,
         store_id=_validated_store_id(payload.store_id),
+        expense_category=payload.expense_category,
+        created_by=ctx.user.user_id,
     )
     return ok(result)
 
@@ -549,6 +566,7 @@ async def record_ap_payment(
         description=f"AP payment: {result.get('bill_number') or ap_id}",
         ref_id=ap_id,
         ref_type="ap_payment",
+        store_id=result.get("store_id"),
     )
     return ok(result)
 

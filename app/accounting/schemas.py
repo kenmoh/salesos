@@ -241,6 +241,9 @@ class CreatePayableRequest(BaseModel):
     amount: float = Field(..., gt=0)
     due_date: str
     store_id: str | None = None
+    # Which expense the bill relates to. Drives the counterpart account of the
+    # accrual journal (Dr expense / Cr 2000), resolved server-side.
+    expense_category: str = "other"
 
 
 class CreateExpenseRequest(BaseModel):
@@ -312,6 +315,25 @@ class BalanceSheetResponse(BaseModel):
     total_assets: float = 0
     total_liabilities: float = 0
     total_equity: float = 0
+
+    # Equity build-up. Earnings are not closed to Retained Earnings, so they
+    # stay in the revenue and expense accounts until a close is implemented.
+    capital: float = 0
+    current_earnings: float = 0
+    total_revenue: float = 0
+    total_expenses: float = 0
+
+    # Assets - Liabilities - Equity. Zero means the books balance.
+    balance_check: float = 0
+
+    # Sub-ledger vs control account. A non-zero difference means a receivable
+    # or payable exists without its general-ledger entry (or vice versa).
+    receivable_subledger: float = 0
+    receivable_control: float = 0
+    receivable_difference: float = 0
+    payable_subledger: float = 0
+    payable_control: float = 0
+    payable_difference: float = 0
 
 
 class CashFlowResponse(BaseModel):

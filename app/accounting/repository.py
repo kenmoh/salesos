@@ -741,10 +741,19 @@ async def get_balance_sheet(
     The Balance Sheet shows the business's financial position at a point in time:
         Assets = Liabilities + Equity
 
-    This function calculates:
-        1. Assets: Sum of all asset account balances (debit balances)
-        2. Liabilities: Sum of all liability account balances (credit balances)
-        3. Equity: Owner's Capital + Retained Earnings (from P&L)
+    Equity is reported honestly as:
+
+        Owner's Capital (posted to 3xxx equity accounts)
+          + current earnings (revenue accounts - expense accounts)
+
+    It used to be computed as ``assets - liabilities`` — a plug that made the
+    balance check a tautology: A - L - (A - L) is always zero, so the check
+    could never reveal an imbalance. The plug also silently absorbed anything
+    the sub-ledgers and the general ledger disagreed about.
+
+    Because this system never posts year-end closing entries, earnings live in
+    the revenue and expense accounts rather than being transferred to Retained
+    Earnings, so they belong in equity until a close is implemented.
 
     Args:
         session: The async SQLAlchemy database session to use.
@@ -755,91 +764,128 @@ async def get_balance_sheet(
             counted (NULL = all stores, the historical behaviour).
 
     Returns:
-        A dictionary containing:
-            - "assets": Total assets in NGN
-            - "liabilities": Total liabilities in NGN
-            - "equity": Total equity in NGN (assets - liabilities)
-            - "asset_accounts": List of individual asset accounts with balances
-            - "liability_accounts": List of individual liability accounts with balances
-            - "equity_accounts": List of individual equity accounts with balances
+        A dictionary containing the three sections with their account
+        breakdowns, the equity build-up, ``balance_check``
+        (assets - liabilities - equity, which must be zero) and the
+        receivable/payable control reconciliations.
     """
     if as_at_date is None:
         as_at_date = datetime.now(UTC)
 
-    # Get all active accounts for the tenant
     accounts = await list_accounts(session, tenant_id)
 
-    # Separate accounts by type
-    asset_accounts = [a for a in accounts if a.account_type == "asset"]
-    liability_accounts = [a for a in accounts if a.account_type == "liability"]
-    equity_accounts = [a for a in accounts if a.account_type == "equity"]
+    # Side -> running total and per-account detail.
+    totals: dict[str, float] = {}
+    details: dict[str, list[dict]] = {}
 
-    # Calculate balances from journal entries
-    asset_total = 0.0
-    liability_total = 0.0
-    equity_total = 0.0
+    for account_type in ("asset", "liability", "equity", "revenue", "expense"):
+        totals[account_type] = 0.0
+        details[account_type] = []
 
-    asset_details = []
-    liability_details = []
-    equity_details = []
-
-    for account in asset_accounts:
+    for account in [a for a in accounts if a.account_type in totals]:
         balance = await _get_account_balance(
             session=session,
             account_id=account.id,
-            account_type="asset",
+            account_type=account.account_type,
             as_at_date=as_at_date,
             store_id=store_id,
         )
-        if balance != 0:
-            asset_total += balance
-            asset_details.append({
-                "code": account.code,
-                "name": account.name,
-                "balance": round(balance, 2),
-            })
+        if balance == 0:
+            continue
+        totals[account.account_type] += balance
+        details[account.account_type].append({
+            "code": account.code,
+            "name": account.name,
+            "balance": round(balance, 2),
+        })
 
-    for account in liability_accounts:
-        balance = await _get_account_balance(
-            session=session,
-            account_id=account.id,
-            account_type="liability",
-            as_at_date=as_at_date,
-            store_id=store_id,
-        )
-        if balance != 0:
-            liability_total += balance
-            liability_details.append({
-                "code": account.code,
-                "name": account.name,
-                "balance": round(balance, 2),
-            })
+    capital = round(totals["equity"], 2)
+    current_earnings = round(totals["revenue"] - totals["expense"], 2)
+    equity_total = round(capital + current_earnings, 2)
+    asset_total = round(totals["asset"], 2)
+    liability_total = round(totals["liability"], 2)
 
-    for account in equity_accounts:
-        balance = await _get_account_balance(
-            session=session,
-            account_id=account.id,
-            account_type="equity",
-            as_at_date=as_at_date,
-            store_id=store_id,
-        )
-        if balance != 0:
-            equity_total += balance
-            equity_details.append({
-                "code": account.code,
-                "name": account.name,
-                "balance": round(balance, 2),
-            })
+    # The sub-ledgers (accounts_receivable / accounts_payable) must agree with
+    # their general-ledger control accounts. When a receivable or payable is
+    # created without the offsetting journal, or a payment lands on a row that
+    # was never booked, these two drift apart and the difference is the size of
+    # the hole in the books.
+    receivable_subledger = await _sum_ar_balances(session, tenant_id)
+    payable_subledger = await _sum_ap_balances(session, tenant_id)
+    receivable_control = await _control_account_balance(
+        session, tenant_id, "1100", as_at_date, store_id
+    )
+    payable_control = await _control_account_balance(
+        session, tenant_id, "2000", as_at_date, store_id
+    )
 
     return {
         "as_at_date": as_at_date.date().isoformat() if hasattr(as_at_date, "date") else str(as_at_date),
-        "assets": round(asset_total, 2),
-        "liabilities": round(liability_total, 2),
-        "equity": round(asset_total - liability_total, 2),
-        "asset_accounts": asset_details,
-        "liability_accounts": liability_details,
-        "equity_accounts": equity_details,
+        "assets": asset_total,
+        "liabilities": liability_total,
+        "equity": equity_total,
+        "capital": capital,
+        "current_earnings": current_earnings,
+        "revenue": round(totals["revenue"], 2),
+        "expenses": round(totals["expense"], 2),
+        "balance_check": round(asset_total - liability_total - equity_total, 2),
+        "receivable_subledger": receivable_subledger,
+        "receivable_control": receivable_control,
+        "receivable_difference": round(receivable_subledger - receivable_control, 2),
+        "payable_subledger": payable_subledger,
+        "payable_control": payable_control,
+        "payable_difference": round(payable_subledger - payable_control, 2),
+        "asset_accounts": details["asset"],
+        "liability_accounts": details["liability"],
+        "equity_accounts": details["equity"],
     }
+
+
+async def _sum_ar_balances(session: AsyncSession, tenant_id: UUID) -> float:
+    """Total of every receivable's outstanding balance."""
+    total = await session.execute(
+        select(func.coalesce(func.sum(AccountReceivable.balance), 0)).where(
+            AccountReceivable.tenant_id == tenant_id
+        )
+    )
+    return round(float(total.scalar() or 0), 2)
+
+
+async def _sum_ap_balances(session: AsyncSession, tenant_id: UUID) -> float:
+    """Total of every payable's outstanding balance."""
+    total = await session.execute(
+        select(func.coalesce(func.sum(AccountPayable.balance), 0)).where(
+            AccountPayable.tenant_id == tenant_id
+        )
+    )
+    return round(float(total.scalar() or 0), 2)
+
+
+async def _control_account_balance(
+    session: AsyncSession,
+    tenant_id: UUID,
+    code: str,
+    as_at_date: datetime,
+    store_id: UUID | None = None,
+) -> float:
+    """Balance of the general-ledger control account backing a sub-ledger.
+
+    Asset/liability control accounts carry their natural sign: 1100 is a debit
+    balance, 2000 a credit balance.
+    """
+    account = await get_account_by_code(session, tenant_id, code)
+    if account is None:
+        return 0.0
+    return round(
+        await _get_account_balance(
+            session=session,
+            account_id=account.id,
+            account_type=account.account_type,
+            as_at_date=as_at_date,
+            store_id=store_id,
+        ),
+        2,
+    )
 
 
 async def _get_account_balance(
@@ -871,7 +917,14 @@ async def _get_account_balance(
     ).where(
         JournalEntry.account_id == account_id,
         JournalEntry.status == "posted",
-        JournalEntry.posted_at <= as_at_date,
+        # A posted line with no timestamp is a legacy data bug. Excluding it
+        # would drop the entry from the balance sheet while P&L and the trial
+        # balance (which allow NULL) still counted it, so the statements could
+        # disagree. Count it and let the reconciliation surface it instead.
+        or_(
+            JournalEntry.posted_at <= as_at_date,
+            JournalEntry.posted_at.is_(None),
+        ),
     )
     if store_id is not None:
         query = query.join(Journal, Journal.id == JournalEntry.journal_id).where(

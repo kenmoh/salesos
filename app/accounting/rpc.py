@@ -275,8 +275,13 @@ async def create_accounts_receivable(
     due_date: str,
     invoice_id: str | None = None,
     store_id: str | None = None,
+    created_by: str | None = None,
 ) -> dict:
-    """Create a new Accounts Receivable record."""
+    """Create a new Accounts Receivable record.
+
+    The SQL function also posts Dr 1100 Receivable / Cr 4000 Revenue so the
+    general ledger and the receivable sub-ledger stay in step.
+    """
     rows = await call(
         session,
         "fn_create_accounts_receivable",
@@ -288,6 +293,7 @@ async def create_accounts_receivable(
         p_due_date=due_date,
         p_invoice_id=UUID(invoice_id) if invoice_id else None,
         p_store_id=UUID(store_id) if store_id else None,
+        p_created_by=UUID(created_by) if created_by else None,
     )
     row = _stringify(rows[0]) if rows else {}
     if "out_id" in row:
@@ -375,8 +381,15 @@ async def create_accounts_payable(
     due_date: str,
     description: str | None = None,
     store_id: str | None = None,
+    expense_category: str | None = None,
+    created_by: str | None = None,
 ) -> dict:
-    """Create a new Accounts Payable record."""
+    """Create a new Accounts Payable record.
+
+    The SQL function also posts Dr <expense> / Cr 2000 Payable so the accrual
+    is recognised when the bill arrives. ``expense_category`` picks the
+    counterpart account from the same map the expense endpoint uses.
+    """
     rows = await call(
         session,
         "fn_create_accounts_payable",
@@ -387,6 +400,8 @@ async def create_accounts_payable(
         p_due_date=due_date,
         p_description=description,
         p_store_id=UUID(store_id) if store_id else None,
+        p_expense_category=expense_category or "other",
+        p_created_by=UUID(created_by) if created_by else None,
     )
     row = _stringify(rows[0]) if rows else {}
     if "out_id" in row:

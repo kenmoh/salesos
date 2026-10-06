@@ -400,6 +400,9 @@ class AccountPayable(StoreFlowBase):
     store_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), nullable=True, index=True
     )
+    expense_category: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="other", server_default="other"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
