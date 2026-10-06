@@ -150,6 +150,11 @@ class RoleUpdateRequest(Base):
 
 class RoleSetPermissionsRequest(Base):
     permission_ids: list[str]
+    # Required only when the caller is not an owner: rewriting a role's
+    # permissions changes what every holder of it can do.
+    supervisor_pin: str | None = Field(
+        default=None, min_length=4, max_length=6, pattern=r"^\d+$"
+    )
 
 
 class UserProfile(Base):

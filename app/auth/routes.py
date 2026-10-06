@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from app.core.approval import require_supervisor_approval
 from app.core.dependencies import TenantDep, DbTenantDep, get_db, require_permission
 from app.core.ratelimit import auth_rate_limit
 from app.core.responses import DataResponse, DataMessageResponse, ok
@@ -460,12 +461,17 @@ async def employees(ctx: DbTenantDep):
     return ok(
         [
             {
-                "user_id": str(r["id"]),
+                # Keyed as the schema declares. It used to answer with
+                # ``user_id``/``status``, which extra="ignore" dropped, so every
+                # employee serialised with an empty id and is_active=True
+                # regardless of the real status.
+                "id": str(r["id"]),
                 "email": r["email"],
                 "full_name": r["full_name"],
                 "phone": r["phone"],
                 "role": r["role"] or "",
                 "status": r["status"],
+                "is_active": r["status"] == "active",
                 "last_login_at": r["last_login_at"].isoformat() if r["last_login_at"] else None,
                 "created_at": r["created_at"].isoformat() if r["created_at"] else None,
                 "store_id": str(r["store_id"]) if r["store_id"] else None,
@@ -559,13 +565,17 @@ async def all_roles(ctx: TenantDep):
     dependencies=[Depends(require_permission("roles:assign"))],
 )
 async def create_role(payload: RoleCreateRequest, ctx: TenantDep):
-    result = await create_role_for_tenant(
-        tenant_id=ctx.user.business_id,
-        name=payload.name,
-        rank=payload.rank,
-        description=payload.description,
-        permission_ids=payload.permission_ids,
-    )
+    try:
+        result = await create_role_for_tenant(
+            tenant_id=ctx.user.business_id,
+            name=payload.name,
+            rank=payload.rank,
+            description=payload.description,
+            permission_ids=payload.permission_ids,
+        )
+    except ValueError as exc:
+        # Duplicate name, or a rank above the owner ceiling: the caller's fault.
+        raise HTTPException(status_code=400, detail=str(exc))
     return ok(result)
 
 
@@ -575,13 +585,16 @@ async def create_role(payload: RoleCreateRequest, ctx: TenantDep):
     dependencies=[Depends(require_permission("roles:assign"))],
 )
 async def update_role_by_id(role_id: str, payload: RoleUpdateRequest, ctx: TenantDep):
-    result = await update_role_for_tenant(
-        tenant_id=ctx.user.business_id,
-        role_id=role_id,
-        name=payload.name,
-        rank=payload.rank,
-        description=payload.description,
-    )
+    try:
+        result = await update_role_for_tenant(
+            tenant_id=ctx.user.business_id,
+            role_id=role_id,
+            name=payload.name,
+            rank=payload.rank,
+            description=payload.description,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     if result is None:
         raise HTTPException(status_code=404, detail="Role not found")
     return ok(result)
@@ -604,11 +617,31 @@ async def delete_role(role_id: str, ctx: TenantDep):
     response_model=DataResponse[RoleDetail],
     dependencies=[Depends(require_permission("roles:assign"))],
 )
-async def set_role_permissions(role_id: str, payload: RoleSetPermissionsRequest, ctx: TenantDep):
+async def set_role_permissions(
+    role_id: str,
+    payload: RoleSetPermissionsRequest,
+    ctx: DbTenantDep,
+    request: Request,
+):
+    """Replace the permission set of a role.
+
+    This rewrites what every holder of the role can do, so it needs a supervisor
+    PIN unless the caller is an owner or higher. The change is audited with the
+    before/after sets, and the affected users' cached permissions are dropped so
+    nobody keeps access they just lost until the cache expires.
+    """
+    supervisor_id = await require_supervisor_approval(
+        ctx,
+        permission="roles:assign",
+        supervisor_pin=payload.supervisor_pin,
+        request=request,
+    )
     result = await set_role_permissions_for_tenant(
         tenant_id=ctx.user.business_id,
         role_id=role_id,
         permission_ids=payload.permission_ids,
+        actor_id=ctx.user.user_id,
+        supervisor_id=supervisor_id,
     )
     if result is None:
         raise HTTPException(status_code=404, detail="Role not found")

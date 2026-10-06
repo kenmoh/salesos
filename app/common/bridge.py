@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.common.db.engine import ServiceDatabase, create_database
 from app.common.settings import get_common_settings
 from app.common.utils import generate_random_timestamp_string
+from app.identity.constants import OWNER_RANK, OWNER_ROLE_NAME
 
 
 common_settings = get_common_settings()
@@ -268,13 +269,13 @@ async def create_tenant(
 
         # Create the "owner" role for this tenant (if missing)
         tenant_uid = tenant_model.id
-        role = await get_role_by_name_for_tenant(session, tenant_uid, "owner")
+        role = await get_role_by_name_for_tenant(session, tenant_uid, OWNER_ROLE_NAME)
         if not role:
             from app.identity.models import Role
 
             role = Role(
-                name="owner",
-                rank=1,
+                name=OWNER_ROLE_NAME,
+                rank=OWNER_RANK,
                 description="Full access to all features",
                 tenant_id=tenant_uid,
             )
@@ -8055,13 +8056,16 @@ async def create_role_for_tenant(
 
     Raises:
         ValueError: If a role with the same name already exists for the
-            tenant.
+            tenant, or if ``rank`` would outrank the tenant's owner role.
     """
     from app.identity.repository import (
         create_role as repo_create_role,
         get_role_by_name_for_tenant,
         set_role_permissions,
     )
+
+    if rank > OWNER_RANK:
+        raise ValueError(f"rank must not exceed {OWNER_RANK} (the owner rank)")
 
     tenant_uid = UUID(tenant_id)
     sdb = _get_sdb("identity")
@@ -8107,12 +8111,18 @@ async def update_role_for_tenant(
         rank: Optional new rank value.
         description: Optional new description for the role.
 
-    Returns:
+Returns:
         A dictionary containing the updated role details including ``id``,
-        ``name``, ``rank``, ``description``, and ``tenant_id``, or ``None``
-        if the role does not exist.
+        ``name``, ``rank``, ``description``, ``permissions`` and ``tenant_id``,
+        or ``None`` if the role does not exist.
+
+    Raises:
+        ValueError: If ``rank`` would outrank the tenant's owner role.
     """
     from app.identity.repository import get_role_by_id, update_role as repo_update_role
+
+    if rank is not None and rank > OWNER_RANK:
+        raise ValueError(f"rank must not exceed {OWNER_RANK} (the owner rank)")
 
     role_uid = UUID(role_id)
     sdb = _get_sdb("identity")
@@ -8126,12 +8136,20 @@ async def update_role_for_tenant(
         )
         await session.commit()
 
+        # The response model is RoleDetail, whose permissions field defaults to
+        # an empty list. Returning the role without them made every client that
+        # trusted this response cache the role as granting nothing.
+        from app.identity.repository import get_permissions_for_role
+
+        perms = await get_permissions_for_role(session, role_uid)
+        await _invalidate_role_caches(tenant_id, await _role_holders(session, role_uid))
+
         return {
             "id": str(updated.id),
             "name": updated.name,
             "rank": updated.rank,
             "description": updated.description,
-            "tenant_id": str(updated.tenant_id),
+            "permissions": [p.name for p in perms],
         }
 
 
@@ -8163,28 +8181,72 @@ async def delete_role_for_tenant(tenant_id: str, role_id: str) -> bool:
         return result
 
 
+async def _invalidate_role_caches(tenant_id: str, holders: list) -> None:
+    """Drop the caches a role edit makes stale.
+
+    Two separate caches disagree after an edit: the per-user permission set
+    (``sf:perms``) that authorises requests, and the per-user rank
+    (``sm:role_rank``) that owner-only gates compare against. Both are read on
+    the hot path and both outlive an edit, so leaving them means people keep
+    access they just lost, and a promoted owner keeps being refused. The cached
+    role list goes too, or the UI shows the old permission set until it expires.
+    """
+    from app.common.auth_service import bust_perms
+    from app.common.cache import invalidate_tenant
+    from app.core.redis_client import cache_del
+
+    for user_id in holders:
+        await bust_perms(str(user_id))
+        await cache_del(f"sm:role_rank:{user_id}")
+    await invalidate_tenant(tenant_id, prefix="roles:all")
+
+
+async def _role_holders(session, role_uid: UUID) -> list:
+    from app.identity.models import UserRole
+
+    return list(
+        (
+            await session.execute(select(UserRole.user_id).where(UserRole.role_id == role_uid))
+        )
+        .scalars()
+        .all()
+    )
+
+
 async def set_role_permissions_for_tenant(
     tenant_id: str,
     role_id: str,
     permission_ids: list[str],
+    actor_id: str | None = None,
+    supervisor_id: str | None = None,
 ) -> dict | None:
     """Replace all permissions for a role with a new set.
 
     Clears the existing permission assignments for the role and sets them
     to the provided list of permission identifiers.
 
+    Rewriting a role's permissions changes what every holder of it can do, so
+    this writes an audit entry, drops the affected users' cached permissions and
+    invalidates the cached role lists in the same transaction as the change. A
+    role edit that silently left people on their old permissions for five
+    minutes, or left no record of who did it, is worse than no edit at all.
+
     Args:
         tenant_id: Unique identifier of the tenant that owns the role.
         role_id: Unique identifier of the role to update permissions for.
-        permission_ids: List of permission identifiers to assign to the
-            role.
+        permission_ids: List of permission identifiers to assign to the role.
+        actor_id: The user who made the change.
+        supervisor_id: The supervisor who approved it, when the change needed
+            one. None means the actor was authorised on their own.
 
     Returns:
-        A dictionary containing ``id``, ``name``, and ``permissions``
-        (list of permission name strings), or ``None`` if the role does
+        A dictionary containing ``id``, ``name``, ``rank``, ``description`` and
+        ``permissions`` (permission name strings), or ``None`` if the role does
         not exist.
     """
+    from app.identity.models import AuthAuditLog
     from app.identity.repository import (
+        get_permissions_for_role,
         get_role_by_id,
         set_role_permissions as repo_set_permissions,
     )
@@ -8196,16 +8258,40 @@ async def set_role_permissions_for_tenant(
         if not role or str(role.tenant_id) != tenant_id:
             return None
 
+        before = [p.name for p in await get_permissions_for_role(session, role_uid)]
+        holders = await _role_holders(session, role_uid)
+
         await repo_set_permissions(session, role_uid, [UUID(pid) for pid in permission_ids])
+        after = [p.name for p in await get_permissions_for_role(session, role_uid)]
+
+        session.add(
+            AuthAuditLog(
+                user_id=UUID(actor_id) if actor_id else None,
+                tenant_id=UUID(tenant_id),
+                action="role_permissions_updated",
+                details=json.dumps(
+                    {
+                        "role_id": str(role_uid),
+                        "role_name": role.name,
+                        "added": sorted(set(after) - set(before)),
+                        "removed": sorted(set(before) - set(after)),
+                        "permission_count": len(after),
+                        "holders_affected": len(holders),
+                        "supervisor_id": supervisor_id,
+                    }
+                ),
+            )
+        )
         await session.commit()
 
-        from app.identity.repository import get_permissions_for_role
+        await _invalidate_role_caches(tenant_id, holders)
 
-        perms = await get_permissions_for_role(session, role_uid)
         return {
             "id": str(role.id),
             "name": role.name,
-            "permissions": [p.name for p in perms],
+            "rank": role.rank,
+            "description": role.description,
+            "permissions": after,
         }
 
 

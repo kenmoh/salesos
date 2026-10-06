@@ -12,6 +12,7 @@ from app.core.redis_client import cache_get, cache_set
 from app.core.security import decode_access_token, is_token_blacklisted
 from app.common.db.session import clear_rls_context, set_rls_context
 from app.common.db.engine import set_current_tenant, reset_current_tenant
+from app.identity.constants import OWNER_RANK, ROLE_RANKS, UNKNOWN_ROLE_RANK
 from app.identity.models import Role, UserRole
 
 bearer = HTTPBearer(auto_error=False)
@@ -77,18 +78,7 @@ class TokenData:
 
     async def min_role(self, session: AsyncSession | None = None, role: str = "") -> bool:
         max_rank = await get_cached_role_rank(self.user_id, self.business_id, session)
-        rank_map = {
-            "super_admin": 100,
-            "developer": 90,
-            "admin": 85,
-            "moderator": 75,
-            "auditor": 70,
-            "owner": 80,
-            "manager": 60,
-            "cashier": 40,
-            "viewer": 20,
-        }
-        return max_rank >= rank_map.get(role, 999)
+        return max_rank >= ROLE_RANKS.get(role, UNKNOWN_ROLE_RANK)
 
 
 class TenantContext:
@@ -249,7 +239,6 @@ def require_min_role(minimum: str):
 
 async def require_owner(ctx: TenantDep) -> TenantContext:
     max_rank = await get_cached_role_rank(ctx.user.user_id, ctx.user.business_id)
-    rank_map = {"super_admin": 100, "owner": 80}
-    if max_rank < rank_map.get("owner", 999):
+    if max_rank < OWNER_RANK:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Owner or higher required")
     return ctx

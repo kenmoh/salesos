@@ -348,7 +348,11 @@ class EmployeeListItem(_Base):
     full_name: str | None = None
     role: str | None = None
     is_active: bool = True
+    status: str = "active"
+    phone: str | None = None
     store_id: str | None = None
+    last_login_at: str | None = None
+    created_at: str | None = None
 
 
 class RoleCreated(_Base):
