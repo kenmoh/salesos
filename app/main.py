@@ -60,7 +60,13 @@ async def lifespan(app: FastAPI):
     spawn("Outbox relay", [sys.executable, "-m", "app.worker.outbox_runner"], quiet=False)
     spawn("Event consumer", [sys.executable, "-m", "app.worker.consumer_runner"], quiet=False)
 
+    # Live event stream. The subscriber lives here rather than in the consumer
+    # subprocess because it feeds SSE connections held by this process.
+    from app.core.sse import broker
+
     yield
+
+    await broker.shutdown()
 
     # Shutdown background workers
     for proc in reversed(child_procs):
@@ -180,9 +186,11 @@ def create_app() -> FastAPI:
     ):
         app.include_router(router, prefix=prefix)
 
+    from app.events.routes import router as events_router
     from app.catalog.routes import scan_router as scan_products_router
 
     app.include_router(scan_products_router, prefix=prefix)
+    app.include_router(events_router, prefix=prefix)
 
     from app.platform.routes import router as platform_router
 

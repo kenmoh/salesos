@@ -7,10 +7,32 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.common.events.envelope import EventEnvelope
+from app.common.events.names import (
+    PAYMENT_FAILED,
+    PAYMENT_INTENT_CREATED,
+    PAYMENT_SUCCEEDED,
+)
 from app.common.events.outbox import OutboxEvent
 from app.common.messagebus.publisher import EventPublisher
 
 logger = logging.getLogger("storeflow.outbox_relay")
+
+# Events worth waking a connected client for, mapped to the SSE event name.
+#
+# The relay is the one place every payment state change already passes through:
+# the API routes, the gateway webhook and any Celery task all write an outbox
+# row, so notifying here catches all of them. Publishing from the handlers
+# instead would mean remembering every site that settles a payment, and the one
+# most worth catching is the webhook, which is exactly the path a handler-side
+# hook gets forgotten on.
+#
+# ``payment.pending`` fires when an intent is created and ``payment.updated``
+# when it settles either way; the client refetches, so no state rides along.
+SSE_EVENTS: dict[str, str] = {
+    PAYMENT_INTENT_CREATED: "payment.pending",
+    PAYMENT_SUCCEEDED: "payment.updated",
+    PAYMENT_FAILED: "payment.updated",
+}
 
 
 class OutboxRelay:
@@ -59,6 +81,31 @@ class OutboxRelay:
         self._running = False
         logger.info("OutboxRelay stopped")
 
+    async def _notify_subscribers(self, envelope: EventEnvelope) -> None:
+        """Wake SSE clients so they refetch.
+
+        Best effort by design: a client that misses a frame falls back to its
+        safety poll, so a Redis problem must never stop an event reaching
+        RabbitMQ and its handlers.
+        """
+        event = SSE_EVENTS.get(envelope.event_type)
+        if event is None:
+            return
+        try:
+            from app.core.sse import broker
+
+            payload = envelope.payload or {}
+            await broker.publish(
+                str(envelope.tenant_id),
+                event,
+                {
+                    "payment_id": str(payload.get("payment_id", "")),
+                    "sale_id": str(payload.get("sale_id", "")),
+                },
+            )
+        except Exception as exc:
+            logger.warning("SSE notify failed for %s: %s", envelope.event_type, exc)
+
     async def _poll(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         async with session_factory() as session:
             async with session.begin():
@@ -90,6 +137,7 @@ class OutboxRelay:
                         )
 
                         await self.publisher.publish(envelope)
+                        await self._notify_subscribers(envelope)
                         await session.execute(
                             update(OutboxEvent)
                             .where(OutboxEvent.id == outbox_event.id)
