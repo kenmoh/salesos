@@ -35,6 +35,10 @@ class Tax(StoreFlowBase):
     )
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     rate: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False, default=0)
+    #: Liability account the tax is owed to. A tenant's taxes are whatever they
+    #: say they are, so the account is chosen when the tax is created rather
+    #: than inferred from its name at posting time.
+    account_code: Mapped[str | None] = mapped_column(String(10), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)

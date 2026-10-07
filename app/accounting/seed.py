@@ -95,6 +95,14 @@ DEFAULT_ACCOUNTS: list[dict[str, str]] = [
         "name": "VAT Payable",
         "account_type": "liability",
     },
+    {
+        # Tax that is not VAT still has to be owed to someone. Naming accounts
+        # after a tax type we cannot know does not scale past VAT, so every tax
+        # that is not VAT books here unless its creator says otherwise.
+        "code": "2400",
+        "name": "Other Taxes Payable",
+        "account_type": "liability",
+    },
     # ─────────────────────────────────────────────────────────────────────────
     #  EQUITY ACCOUNTS (3xxx)
     #  Equity represents the owner's claim on the business assets.

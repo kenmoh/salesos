@@ -44,6 +44,7 @@ from app.documents.schemas import (
     DocumentResult,
     DocumentStatusCommand,
 )
+from app.taxes.calc import DEFAULT_TAX_ACCOUNT, TaxLine, compute_taxes
 
 # Valid statuses per document type, in the order they should be reached.
 #
@@ -89,6 +90,28 @@ def _new_doc_number(doc_type: str) -> str:
     return f"{p}-{datetime.now(UTC).strftime('%Y%m%d')}-{uuid4().hex[:8].upper()}"
 
 
+def _line_taxes(line) -> list[dict]:
+    """The taxes a document line carries, or its bare rate as a stand-in.
+
+    A caller that only knows a rate -- a client that predates tax selection,
+    or a one-off script -- still gets taxed, but a rate has no name and no
+    liability account, so it books as a generic tax rather than vanishing.
+    """
+    if line.taxes:
+        return list(line.taxes)
+    rate = float(line.tax_rate or 0)
+    if not rate:
+        return []
+    return [
+        {
+            "id": None,
+            "name": "Tax",
+            "rate": rate,
+            "account_code": DEFAULT_TAX_ACCOUNT,
+        }
+    ]
+
+
 def plan_document_creation(
     command: DocumentCreateCommand,
 ) -> tuple[DocumentResult, Document, list[DocumentItem], list[OutboxWrite]]:
@@ -100,7 +123,7 @@ def plan_document_creation(
     Financial Calculations:
         1. subtotal = sum(qty × unit_price) for all items
         2. discount = sum(qty × unit_price × discount_pct / 100) for all items
-        3. tax = sum(qty × unit_price × tax_rate / 100) for all items
+        3. tax = sum over lines of their assigned taxes on the discounted base
         4. total = (subtotal - discount) + tax
 
     Args:
@@ -130,16 +153,25 @@ def plan_document_creation(
     doc_id = uuid4()
     doc_number = _new_doc_number(command.doc_type)
 
-    # Calculate financial totals from line items
-    subtotal = sum(float(i.qty) * float(i.unit_price) for i in command.items)
-    discount_amt = sum(
-        float(i.qty) * float(i.unit_price) * (float(i.discount_pct) / 100) for i in command.items
+    # Calculate financial totals from line items. Discounts are per line here,
+    # so the calculator needs no cart discount to spread -- but it is still the
+    # same calculator a sale uses, because a document that converts must keep
+    # the tax it quoted.
+    calc = compute_taxes(
+        [
+            TaxLine(
+                qty=float(i.qty),
+                unit_price=float(i.unit_price),
+                discount_pct=float(i.discount_pct),
+                taxes=_line_taxes(i),
+            )
+            for i in command.items
+        ]
     )
-    taxable = subtotal - discount_amt
-    tax = sum(
-        float(i.qty) * float(i.unit_price) * (float(i.tax_rate or 0) / 100) for i in command.items
-    )
-    total = taxable + tax
+    subtotal = calc.subtotal
+    discount_amt = calc.discount
+    tax = calc.total_tax
+    total = round(calc.taxable + tax, 2)
 
     # Receipts linked to sales start as "issued" (no draft needed)
     initial_status = "draft"
@@ -172,23 +204,19 @@ def plan_document_creation(
 
     # Create line items
     items = []
-    for line in command.items:
-        qty = float(line.qty)
-        unit_price = float(line.unit_price)
-        discount_pct = float(line.discount_pct)
-        tax_rate = float(line.tax_rate or 0)
-        line_discount = unit_price * qty * (discount_pct / 100)
-        line_total = (unit_price * qty) - line_discount
-
+    for line, line_taxes, tax_rate, line_total in zip(
+        command.items, calc.line_taxes, calc.line_rates, calc.line_bases
+    ):
         item = DocumentItem(
             id=uuid4(),
             document_id=doc_id,
             product_id=line.product_id,
             description=line.description,
-            qty=qty,
-            unit_price=unit_price,
-            discount_pct=discount_pct,
-            tax_rate=tax_rate if tax_rate else None,
+            qty=float(line.qty),
+            unit_price=float(line.unit_price),
+            discount_pct=float(line.discount_pct),
+            tax_rate=tax_rate if line_taxes else None,
+            tax_breakdown=line_taxes or None,
             line_total=line_total,
         )
         items.append(item)

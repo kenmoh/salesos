@@ -67,8 +67,8 @@ class ProductCreateForStore(Base):
     unit: str = "unit"
     cost_price: Decimal = Decimal("0")
     selling_price: Decimal = Field(..., ge=0)
-    tax_id: UUID | None = None
-    tax_rate: Decimal | None = None
+    #: Taxes this product carries. Zero means untaxed, several all apply.
+    tax_ids: list[UUID] = Field(default_factory=list)
     reorder_point: int = 0
     image_url: str | None = None
     qty: float = Field(default=0, ge=0)
@@ -79,7 +79,7 @@ class StoreProductUpdate(Base):
     sku: str | None = None
     selling_price: Decimal | None = None
     cost_price: Decimal | None = None
-    tax_id: UUID | None = None
+    tax_ids: list[UUID] | None = None
     reorder_point: int | None = None
     image_url: str | None = None
     status: str | None = None
@@ -241,6 +241,9 @@ class DocumentItem(Base):
     unit_price: Decimal = Field(..., ge=0)
     discount_pct: Decimal = Decimal("0")
     tax_rate: Decimal = Decimal("0")
+    #: Taxes a custom (non-catalog) line is taxed by. The rate and the
+    #: liability account still come from the tenant's own tax rows.
+    tax_ids: list[UUID] = Field(default_factory=list)
 
 
 class DocumentCreate(Base):

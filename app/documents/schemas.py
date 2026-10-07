@@ -44,6 +44,11 @@ class DocumentItemLine(BaseModel):
     unit_price: Decimal = Field(..., ge=0)
     discount_pct: Decimal = Decimal("0")
     tax_rate: Decimal | None = None
+    #: Resolved taxes for this line: ``id``, ``name``, ``rate``,
+    #: ``account_code``. Read from the product when there is one, and from the
+    #: tenant's own tax rows when a custom line picks its own -- see
+    #: app.taxes.resolve. Never priced by the client.
+    taxes: list[dict] = Field(default_factory=list)
 
 
 class DocumentCreateCommand(BaseModel):

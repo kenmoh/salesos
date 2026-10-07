@@ -12,6 +12,10 @@ class SaleItemLine(BaseModel):
     discount_pct: Decimal = Decimal("0")
     tax_id: UUID | None = None
     tax_rate: Decimal | None = None
+    #: The taxes resolved for this line: ``id``, ``name``, ``rate`` and
+    #: ``account_code``. Resolved server-side from the product, never from the
+    #: client -- see app.taxes.resolve.
+    taxes: list[dict] = Field(default_factory=list)
 
 
 class SaleCreateCommand(BaseModel):
@@ -22,7 +26,6 @@ class SaleCreateCommand(BaseModel):
     customer_phone: str | None = None
     items: list[SaleItemLine] = Field(..., min_length=1)
     discount: Decimal = Decimal("0")
-    taxes: list[dict] = Field(default_factory=list)
     notes: str | None = None
     correlation_id: str | None = None
 

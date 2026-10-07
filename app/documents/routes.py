@@ -104,6 +104,7 @@ async def _create_document(payload: DocumentCreate, ctx, store_id: str | None):
                     "unit_price": float(i.unit_price),
                     "discount_pct": float(i.discount_pct),
                     "tax_rate": float(i.tax_rate) if i.tax_rate else None,
+                    "tax_ids": [str(t) for t in i.tax_ids],
                 }
                 for i in payload.items
             ],

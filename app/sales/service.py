@@ -16,6 +16,7 @@ from app.sales.schemas import (
     SaleResult,
     VoidSaleCommand,
 )
+from app.taxes.calc import TaxLine, compute_taxes
 
 
 def _new_sale_number() -> str:
@@ -28,20 +29,21 @@ def plan_sale_creation(
     sale_id = uuid4()
     sale_number = _new_sale_number()
 
-    subtotal = sum(float(i.qty) * float(i.unit_price) for i in command.items)
-    discount_amt = float(command.discount)
-    taxable_amt = subtotal - discount_amt
-
-    tax_breakdown = []
-    total_tax = 0.0
-    for t in command.taxes:
-        rate = float(t["rate"])
-        name = t.get("name", "")
-        amt = round(taxable_amt * (rate / 100), 2)
-        tax_breakdown.append({"name": name, "rate": rate, "amount": amt})
-        total_tax += amt
-
-    total = taxable_amt + total_tax
+    # Tax belongs to the lines that earned it. The command carries only a
+    # cart-level discount, which the calculator spreads across the lines so
+    # nothing is taxed on money the customer never paid.
+    calc = compute_taxes(
+        [
+            TaxLine(
+                qty=float(line.qty),
+                unit_price=float(line.unit_price),
+                discount_pct=float(line.discount_pct),
+                taxes=list(line.taxes or []),
+            )
+            for line in command.items
+        ],
+        cart_discount=float(command.discount),
+    )
 
     sale = Sale(
         id=sale_id,
@@ -52,40 +54,39 @@ def plan_sale_creation(
         customer_phone=command.customer_phone,
         store_id=command.store_id,
         cashier_id=command.cashier_id,
-        subtotal=subtotal,
-        discount=discount_amt,
-        tax=total_tax,
-        tax_breakdown=tax_breakdown if tax_breakdown else None,
-        total=total,
+        subtotal=calc.subtotal,
+        discount=calc.discount,
+        tax=calc.total_tax,
+        tax_breakdown=calc.breakdown or None,
+        total=round(calc.taxable + calc.total_tax, 2),
         notes=command.notes,
     )
 
     items = []
-    for line in command.items:
-        qty = float(line.qty)
-        unit_price = float(line.unit_price)
-        discount_pct = float(line.discount_pct)
-        line_discount = unit_price * qty * (discount_pct / 100)
-        line_total = (unit_price * qty) - line_discount
-
-        item = SaleItem(
-            id=uuid4(),
-            sale_id=sale_id,
-            product_id=line.product_id,
-            product_name=line.product_name,
-            qty=qty,
-            unit_price=unit_price,
-            discount_pct=discount_pct,
-            tax_id=line.tax_id,
-            line_total=line_total,
+    for line, line_taxes, tax_rate, line_total in zip(
+        command.items, calc.line_taxes, calc.line_rates, calc.line_bases
+    ):
+        items.append(
+            SaleItem(
+                id=uuid4(),
+                sale_id=sale_id,
+                product_id=line.product_id,
+                product_name=line.product_name,
+                qty=float(line.qty),
+                unit_price=float(line.unit_price),
+                discount_pct=float(line.discount_pct),
+                tax_id=line.tax_id,
+                tax_rate=tax_rate if line_taxes else None,
+                tax_breakdown=line_taxes or None,
+                line_total=line_total,
+            )
         )
-        items.append(item)
 
     event = sale_created_event(
         tenant_id=command.tenant_id,
         sale_id=sale_id,
         sale_number=sale_number,
-        total=str(total),
+        total=str(sale.total),
         cashier_id=command.cashier_id,
         item_count=len(items),
         correlation_id=command.correlation_id,
@@ -96,10 +97,10 @@ def plan_sale_creation(
         tenant_id=command.tenant_id,
         sale_number=sale_number,
         status="pending",
-        subtotal=subtotal,
-        discount=discount_amt,
-        tax=total_tax,
-        total=total,
+        subtotal=calc.subtotal,
+        discount=calc.discount,
+        tax=calc.total_tax,
+        total=sale.total,
         amount_paid=0,
         item_count=len(items),
     )

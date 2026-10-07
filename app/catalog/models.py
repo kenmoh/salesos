@@ -82,9 +82,9 @@ class Product(StoreFlowBase):
     unit: Mapped[str] = mapped_column(String(20), nullable=False, default="unit")
     cost_price: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False, default=0)
     selling_price: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
-    tax_id: Mapped[UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("taxes.id"), nullable=True
-    )
+    #: The taxes this product carries. Kept on the product, not the cart, so
+    #: every path that prices it (sale, document, conversion) charges one rate.
+    tax_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     reorder_point: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     track_inventory: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)

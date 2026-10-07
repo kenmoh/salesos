@@ -34,7 +34,7 @@ Status Lifecycle by Document Type:
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Numeric, String, Text
+from sqlalchemy import DateTime, JSON, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -175,4 +175,5 @@ class DocumentItem(StoreFlowBase):
     unit_price: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
     discount_pct: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False, default=0)
     tax_rate: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    tax_breakdown: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
     line_total: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)

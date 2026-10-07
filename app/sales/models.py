@@ -126,6 +126,7 @@ class SaleItem(StoreFlowBase):
         PG_UUID(as_uuid=True), nullable=True
     )
     tax_rate: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    tax_breakdown: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
     line_total: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
 
 

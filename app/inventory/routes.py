@@ -163,7 +163,7 @@ async def create_product_for_store(store_id: str, payload: ProductCreateForStore
             unit=payload.unit,
             cost_price=payload.cost_price,
             selling_price=payload.selling_price,
-            tax_id=str(payload.tax_id) if payload.tax_id else None,
+            tax_ids=[str(t) for t in payload.tax_ids],
             reorder_point=payload.reorder_point,
             image_url=payload.image_url,
             qty=payload.qty,

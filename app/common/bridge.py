@@ -23,6 +23,7 @@ from app.common.db.engine import ServiceDatabase, create_database
 from app.common.settings import get_common_settings
 from app.common.utils import generate_random_timestamp_string
 from app.identity.constants import OWNER_RANK, OWNER_ROLE_NAME
+from app.taxes.resolve import product_tax_map, taxes_for_ids
 
 
 common_settings = get_common_settings()
@@ -1041,10 +1042,11 @@ async def _post_sale_journal(
     total: float,
     discount: float,
     tax_amount: float,
-    cashier_id: str | None,
-    payment_method: str,
-    store_id: str | None,
-    settled: bool,
+    tax_lines: list[dict] | None = None,
+    cashier_id: str | None = None,
+    payment_method: str = "cash",
+    store_id: str | None = None,
+    settled: bool = False,
 ) -> None:
     """Plan, resolve and post the journal for a sale.
 
@@ -1068,6 +1070,7 @@ async def _post_sale_journal(
         total=total,
         discount=discount,
         tax_amount=tax_amount,
+        tax_lines=tax_lines,
         cashier_id=UUID(cashier_id) if cashier_id else None,
         payment_method=payment_method,
         store_id=UUID(store_id) if store_id else None,
@@ -1085,12 +1088,14 @@ async def _post_sale_journal(
         await set_rls_context(
             session, "00000000-0000-0000-0000-000000000000", tenant_id, "owner"
         )
+        # Every code this journal needs, taken from the entries themselves:
+        # a tax that books to a liability account we have never hardcoded here
+        # would otherwise resolve to nothing and post against a placeholder id.
+        wanted_codes = {e.account_code for e in entries}
         acct_res = await session.execute(
             select(ChartOfAccount).where(
                 ChartOfAccount.tenant_id == tenant_uid,
-                ChartOfAccount.code.in_(
-                    ["1000", "1010", "1100", "1200", "2300", "4000", "5000"]
-                ),
+                ChartOfAccount.code.in_(wanted_codes),
             )
         )
         code_to_account = {a.code: a for a in acct_res.scalars().all()}
@@ -1141,7 +1146,6 @@ async def create_sale_via_service(
     store_id: str | None = None,
     notes: str | None = None,
     correlation_id: str | None = None,
-    taxes: list[dict] | None = None,
 ) -> dict:
     """Create a sale record through the sales service.
 
@@ -1153,7 +1157,8 @@ async def create_sale_via_service(
         cashier_id: Identifier of the cashier or user processing the sale.
         items: List of sale item dictionaries, each containing
             ``product_id``, ``product_name``, ``qty``, ``unit_price``, and
-            optionally ``discount_pct``.
+            optionally ``discount_pct`` and ``taxes`` (the resolved tax
+            entries for that line, as app.taxes.resolve produces them).
         discount: Optional discount applied to the entire sale.
         customer_name: Optional name of the customer.
         customer_phone: Optional phone number of the customer.
@@ -1161,7 +1166,6 @@ async def create_sale_via_service(
         notes: Optional notes attached to the sale.
         correlation_id: Optional correlation identifier for distributed
             tracing.
-        taxes: List of active tax dicts with ``name`` and ``rate`` keys.
 
     Returns:
         A dictionary containing the newly created sale details including
@@ -1171,39 +1175,50 @@ async def create_sale_via_service(
     from app.sales.service import plan_sale_creation
     from app.sales.repository import create_sale as repo_create_sale, create_sale_items
 
-    sale_items = [
-        SaleItemLine(
-            product_id=UUID(i["product_id"]),
-            product_name=i["product_name"],
-            qty=Decimal(str(i["qty"])),
-            unit_price=Decimal(str(i["unit_price"])),
-            discount_pct=Decimal(str(i.get("discount_pct", 0))),
-        )
-        for i in items
-    ]
-
     if not store_id:
         # Every sale is attributed to a store for per-store cash and reporting.
         # Say so plainly rather than letting SaleCreateCommand raise a
         # ValidationError about UUIDs, which surfaced as an opaque 500.
         raise ValueError("A sale must be attributed to a store")
 
-    command = SaleCreateCommand(
-        tenant_id=UUID(tenant_id),
-        cashier_id=UUID(cashier_id),
-        store_id=UUID(store_id),
-        customer_name=customer_name,
-        customer_phone=customer_phone,
-        items=sale_items,
-        discount=discount or Decimal("0"),
-        taxes=taxes or [],
-        notes=notes,
-        correlation_id=correlation_id,
-    )
-
-    result, sale_model, sale_item_models, outbox = plan_sale_creation(command)
     sdb = _get_sdb("sales")
     async with sdb.session() as session:
+        # Any line that arrives without its taxes gets them from its product.
+        # Taxing every line with every active tax (what callers used to do)
+        # would charge one customer's consumption tax to another's VAT, and a
+        # client that named its own rate would price the government's cut.
+        tax_map = await product_tax_map(
+            session,
+            UUID(tenant_id),
+            [UUID(str(i["product_id"])) for i in items if i.get("product_id")],
+        )
+        sale_items = [
+            SaleItemLine(
+                product_id=UUID(i["product_id"]),
+                product_name=i["product_name"],
+                qty=Decimal(str(i["qty"])),
+                unit_price=Decimal(str(i["unit_price"])),
+                discount_pct=Decimal(str(i.get("discount_pct", 0))),
+                taxes=list(i.get("taxes"))
+                if i.get("taxes")
+                else tax_map.get(str(i["product_id"]), []),
+            )
+            for i in items
+        ]
+
+        command = SaleCreateCommand(
+            tenant_id=UUID(tenant_id),
+            cashier_id=UUID(cashier_id),
+            store_id=UUID(store_id),
+            customer_name=customer_name,
+            customer_phone=customer_phone,
+            items=sale_items,
+            discount=discount or Decimal("0"),
+            notes=notes,
+            correlation_id=correlation_id,
+        )
+
+        result, sale_model, sale_item_models, outbox = plan_sale_creation(command)
         await repo_create_sale(session, sale_model)
         await create_sale_items(session, sale_item_models)
         for write in outbox:
@@ -1230,8 +1245,8 @@ async def create_sale_via_service(
         total=float(result.total),
         discount=float(result.discount),
         tax_amount=float(result.tax),
+        tax_lines=sale_model.tax_breakdown,
         cashier_id=cashier_id,
-        payment_method=payment_method,
         store_id=store_id,
         settled=False,
     )
@@ -2537,6 +2552,7 @@ async def get_store_products(
                 Product.reorder_point,
                 Product.status,
                 Product.qr_url,
+                Product.tax_ids,
                 Category.name.label("category_name"),
             )
             .join(Product, StockBalance.product_id == Product.id)
@@ -2550,6 +2566,12 @@ async def get_store_products(
         query = query.order_by(Product.name).limit(page_size).offset((page - 1) * page_size)
         result = await session.execute(query)
         rows = result.all()
+
+        # Resolve the taxes the listed products carry, so the cart can show
+        # its breakdown instead of guessing from a global rate.
+        taxes_by_product = await product_tax_map(
+            session, UUID(tenant_id), [row.StockBalance.product_id for row in rows]
+        )
 
         count_query = (
             select(func.count())
@@ -2584,6 +2606,9 @@ async def get_store_products(
                     "unit_cost": float(row.StockBalance.unit_cost)
                     if row.StockBalance.unit_cost
                     else None,
+                    "taxes": taxes_by_product.get(
+                        str(row.StockBalance.product_id), []
+                    ),
                 }
                 for row in rows
             ],
@@ -2658,8 +2683,7 @@ async def create_product_for_store(
     unit: str = "unit",
     cost_price: Decimal = Decimal("0"),
     selling_price: Decimal = Decimal("0"),
-    tax_id: str | None = None,
-    tax_rate: Decimal | None = None,
+    tax_ids: list[str] | None = None,
     reorder_point: int = 0,
     image_url: str | None = None,
     qty: float = 0,
@@ -2669,16 +2693,27 @@ async def create_product_for_store(
 
     Creates the product in catalog.products, then creates a store_products
     record and a stock_balances record for the specified store.
+
+    Raises:
+        ValueError: "unknown_tax_id" when a tax in ``tax_ids`` is not one of
+            the tenant's active taxes.
     """
     from app.catalog.models import Product
     from app.catalog.ids import new_product_public_id
     from app.inventory.models import StockBalance
     from app.stores.models import StoreProduct
 
+    tax_ids = [t for t in (tax_ids or [])]
     sdb_catalog = _get_sdb("catalog")
     _random = generate_random_timestamp_string()
     sku = f'{name}-{_random}'.upper().replace(" ", "")
     async with sdb_catalog.session() as session:
+        # Refuse a tax the tenant does not own or has deactivated, before
+        # anything is written: an unknown id would otherwise save as a
+        # permanent-looking assignment that quietly applies nothing.
+        found = await taxes_for_ids(session, UUID(tenant_id), [UUID(t) for t in tax_ids])
+        if {t["id"] for t in found} != {str(UUID(t)) for t in tax_ids}:
+            raise ValueError("unknown_tax_id")
         product = Product(
             tenant_id=UUID(tenant_id),
             public_id=new_product_public_id(),
@@ -2689,7 +2724,7 @@ async def create_product_for_store(
             unit=unit,
             cost_price=cost_price,
             selling_price=selling_price,
-            tax_id=UUID(tax_id) if tax_id else None,
+            tax_ids=[UUID(t) for t in tax_ids],
             reorder_point=reorder_point,
             image_url=image_url,
         )
@@ -2707,7 +2742,7 @@ async def create_product_for_store(
             sku=sku,
             selling_price=float(selling_price),
             cost_price=float(cost_price) if cost_price else 0,
-            tax_id=UUID(tax_id) if tax_id else None,
+            tax_id=UUID(tax_ids[0]) if tax_ids else None,
             reorder_point=reorder_point,
             image_url=image_url,
             status="active",
@@ -2985,8 +3020,8 @@ async def update_store_product(
     """Update a store-specific product record.
 
     Modifies store-specific fields on a StoreProduct. Only provided
-    fields are updated. If tax_id is provided, also updates the
-    catalog Product's tax_id.
+    fields are updated. If tax_ids is provided, also updates the
+    catalog Product's tax_ids -- the row the sale reads.
 
     Args:
         tenant_id: Unique identifier of the tenant.
@@ -3009,7 +3044,21 @@ async def update_store_product(
     from app.catalog.models import Product
     from sqlalchemy import update as sa_update
 
-    tax_id = kwargs.pop("tax_id", None)
+    tax_ids = kwargs.pop("tax_ids", None)
+
+    if tax_ids is not None:
+        # Validate before the first write: a rejected assignment must not
+        # leave the store record updated and the catalog row untouched.
+        sdb_catalog = _get_sdb("catalog")
+        async with sdb_catalog.session() as session:
+            found = await taxes_for_ids(
+                session, UUID(tenant_id), [UUID(str(t)) for t in tax_ids]
+            )
+            if {t["id"] for t in found} != {str(UUID(str(t))) for t in tax_ids}:
+                raise ValueError("unknown_tax_id")
+        # store_products still has one column for older readers; the sale
+        # reads products.tax_ids.
+        kwargs["tax_id"] = UUID(str(tax_ids[0])) if tax_ids else None
 
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
@@ -3025,13 +3074,13 @@ async def update_store_product(
         await session.commit()
         await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{store_id}*")
 
-    if tax_id is not None or "tax_id" in kwargs:
+    if tax_ids is not None:
         sdb_catalog = _get_sdb("catalog")
         async with sdb_catalog.session() as session:
             await session.execute(
                 sa_update(Product)
                 .where(Product.id == UUID(product_id), Product.tenant_id == UUID(tenant_id))
-                .values(tax_id=UUID(tax_id) if tax_id else None)
+                .values(tax_ids=[UUID(str(t)) for t in tax_ids])
             )
             await session.commit()
 
@@ -3112,12 +3161,15 @@ async def get_store_product(
         prod_result = await session.execute(
             select(Product.id, Product.name, Product.sku, Product.selling_price,
                    Product.cost_price, Product.reorder_point, Product.image_url,
-                   Product.status, Product.qr_url,
+                   Product.status, Product.qr_url, Product.tax_ids,
                    Category.name.label("category_name"))
             .outerjoin(Category, Product.category_id == Category.id)
             .where(Product.id == UUID(product_id))
         )
         row = prod_result.one_or_none()
+        taxes = []
+        if row:
+            taxes = await taxes_for_ids(session, UUID(tenant_id), row.tax_ids or [])
 
     if not row:
         return None
@@ -3148,6 +3200,7 @@ async def get_store_product(
         "unit_cost": float(balance.unit_cost) if balance.unit_cost else None,
         "qr_url": qr_url,
         "category": category,
+        "taxes": taxes,
         "history": history,
     }
 
@@ -5828,31 +5881,27 @@ async def checkout_cart(
                 if missing:
                     raise ValueError(f"products_not_found:{','.join(missing)}")
 
+                # A product carries the taxes that apply to it. Resolved from
+                # the product rows here, in the same session, so the client
+                # cannot price its own tax and the store no longer has to agree
+                # before a tax applies -- that switch was unreachable from the
+                # app and defaulted to off.
+                product_taxes = await product_tax_map(
+                    cat_session, tenant_uid, [p.id for p in products]
+                )
+
             # Resolve prices from store_products if store_id is on the cart.
-            # Single inventory pass (store row + all store_products + tax rates)
-            # instead of N+1 per-product sessions.
+            # Single inventory pass for the store's product overrides instead
+            # of N+1 per-product sessions.
             store_product_map = {}
             cart_store_id = getattr(cart, "store_id", None)
-            tax_enabled = False
-            tax_rate_map: dict[UUID, float] = {}
             if cart_store_id:
                 from sqlalchemy import select as sa_select
 
-                from app.stores.models import Store, StoreProduct
-                from app.taxes.models import Tax
+                from app.stores.models import StoreProduct
 
                 sdb_inv = _get_sdb("inventory")
                 async with sdb_inv.session() as inv_session:
-                    store_result = await inv_session.execute(
-                        sa_select(Store).where(
-                            Store.id == UUID(str(cart_store_id)),
-                            Store.tenant_id == tenant_uid,
-                        )
-                    )
-                    store = store_result.scalar_one_or_none()
-                    if store:
-                        tax_enabled = getattr(store, "tax_enabled", False)
-
                     sp_result = await inv_session.execute(
                         sa_select(StoreProduct).where(
                             StoreProduct.store_id == UUID(str(cart_store_id)),
@@ -5864,23 +5913,6 @@ async def checkout_cart(
                         pub = id_to_pub.get(sp.product_id)
                         if pub:
                             store_product_map[pub] = sp
-
-                    if tax_enabled:
-                        # Collect unique tax_ids from store_products and catalog products
-                        tax_ids: set[UUID] = set()
-                        for sp in store_product_map.values():
-                            if hasattr(sp, "tax_id") and sp.tax_id:
-                                tax_ids.add(sp.tax_id)
-                        for p in products:
-                            if hasattr(p, "tax_id") and p.tax_id:
-                                tax_ids.add(p.tax_id)
-                        # Batch-fetch tax rates
-                        if tax_ids:
-                            tax_result = await inv_session.execute(
-                                sa_select(Tax).where(Tax.id.in_(tax_ids), Tax.is_active == True)
-                            )
-                            for tax in tax_result.scalars().all():
-                                tax_rate_map[tax.id] = float(tax.rate)
 
             product_map = {p.public_id: p for p in products}
             cost_map = {}
@@ -5918,25 +5950,22 @@ async def checkout_cart(
             sale_items = []
             for i in validated:
                 pid = product_map[i.product_public_id].id
-                sp = store_product_map.get(i.product_public_id)
-                # Resolve tax_id: prefer store_product, fallback to catalog product
-                item_tax_id = None
-                item_tax_rate = None
-                if tax_enabled:
-                    if sp and hasattr(sp, "tax_id") and sp.tax_id:
-                        item_tax_id = sp.tax_id
-                    elif hasattr(product_map[i.product_public_id], "tax_id") and product_map[i.product_public_id].tax_id:
-                        item_tax_id = product_map[i.product_public_id].tax_id
-                    if item_tax_id and item_tax_id in tax_rate_map:
-                        item_tax_rate = tax_rate_map[item_tax_id]
+                # Resolved from the product rows above, so what a line is taxed
+                # at is decided by the product and never by the caller.
+                line_taxes = product_taxes.get(str(pid), [])
 
                 sale_items.append(SaleItemLine(
                     product_id=pid,
                     product_name=product_map[i.product_public_id].name,
                     qty=i.qty,
                     unit_price=Decimal(str(product_map[i.product_public_id].selling_price)),
-                    tax_id=item_tax_id,
-                    tax_rate=Decimal(str(item_tax_rate)) if item_tax_rate else None,
+                    tax_id=UUID(line_taxes[0]["id"]) if line_taxes else None,
+                    tax_rate=(
+                        Decimal(str(sum(t["rate"] for t in line_taxes)))
+                        if line_taxes
+                        else None
+                    ),
+                    taxes=line_taxes,
                 ))
 
             # Calculate subtotal
@@ -6069,6 +6098,7 @@ async def checkout_cart(
                 total=float(result.total),
                 discount=float(discount_amount),
                 tax_amount=float(result.tax),
+                tax_lines=sale_model.tax_breakdown,
                 cashier_id=UUID(actor_id) if actor_id else None,
                 payment_method=payment_method,
                 store_id=sale_model.store_id,
@@ -6079,10 +6109,14 @@ async def checkout_cart(
 
             from app.accounting.models import ChartOfAccount
 
+            # Codes come from the entries: a tax owed to an account outside
+            # this list would otherwise resolve to nothing and post a
+            # placeholder id.
+            wanted_codes = {e.account_code for e in journal_entries}
             acct_res = await cart_session.execute(
                 sa_select(ChartOfAccount).where(
                     ChartOfAccount.tenant_id == tenant_uid,
-                    ChartOfAccount.code.in_(["1000", "1010", "2300", "4000", "5000", "1200"]),
+                    ChartOfAccount.code.in_(wanted_codes),
                 )
             )
             code_to_account = {a.code: a for a in acct_res.scalars().all()}
@@ -6094,8 +6128,15 @@ async def checkout_cart(
                     acct = code_to_account.get("1000")
                     if acct:
                         entry.account_code = "1000"
-                if acct:
-                    entry.account_id = acct.id
+                if acct is None:
+                    # Same refusal as _post_sale_journal: plan_sale_journal
+                    # leaves a placeholder id, and posting it would write an
+                    # entry against a UUID matching no account at all.
+                    raise ValueError(
+                        f"Cannot book {result.sale_number}: account "
+                        f"{entry.account_code} is missing from the chart of accounts"
+                    )
+                entry.account_id = acct.id
 
             await create_journal(cart_session, journal)
             for entry in journal_entries:
@@ -6130,43 +6171,35 @@ async def checkout_cart(
         if not existing_items:
             raise ValueError("cart_empty")
 
-        # Resolve tax for legacy flow
-        legacy_tax_enabled = False
-        legacy_tax_rate_map: dict[UUID, float] = {}
-        cart_store_id_legacy = getattr(cart, "store_id", None)
-        if cart_store_id_legacy:
-            from app.stores.repository import get_store
-            sdb_inv_legacy = _get_sdb("inventory")
-            async with sdb_inv_legacy.session() as inv_session:
-                store = await get_store(inv_session, UUID(str(cart_store_id_legacy)))
-                if store:
-                    legacy_tax_enabled = getattr(store, "tax_enabled", False)
-            if legacy_tax_enabled:
-                tax_ids_legacy: set[UUID] = set()
-                for ci in existing_items:
-                    if hasattr(ci, "tax_id") and ci.tax_id:
-                        tax_ids_legacy.add(ci.tax_id)
-                if tax_ids_legacy:
-                    from app.taxes.models import Tax
-                    from sqlalchemy import select as sa_select
-                    async with sdb_inv_legacy.session() as tax_session:
-                        result = await tax_session.execute(
-                            sa_select(Tax).where(Tax.id.in_(tax_ids_legacy), Tax.is_active == True)
-                        )
-                        for tax in result.scalars().all():
-                            legacy_tax_rate_map[tax.id] = float(tax.rate)
-
-        sale_items = [
-            SaleItemLine(
-                product_id=i.product_id,
-                product_name=i.name,
-                qty=Decimal(str(i.qty)),
-                unit_price=Decimal(str(i.unit_price)),
-                tax_id=getattr(i, "tax_id", None),
-                tax_rate=Decimal(str(legacy_tax_rate_map[getattr(i, "tax_id", None)])) if getattr(i, "tax_id", None) and getattr(i, "tax_id", None) in legacy_tax_rate_map else None,
+        # Legacy carts still carry one tax_id per line, but the assignment that
+        # matters lives on the product, so resolve from there -- the same way
+        # the modern flow does, and no store switch in between.
+        sdb_cat_legacy = _get_sdb("catalog")
+        async with sdb_cat_legacy.session() as cat_session:
+            legacy_product_taxes = await product_tax_map(
+                cat_session,
+                tenant_uid,
+                [i.product_id for i in existing_items if getattr(i, "product_id", None)],
             )
-            for i in existing_items
-        ]
+
+        sale_items = []
+        for i in existing_items:
+            line_taxes = legacy_product_taxes.get(str(getattr(i, "product_id", "")), [])
+            sale_items.append(
+                SaleItemLine(
+                    product_id=i.product_id,
+                    product_name=i.name,
+                    qty=Decimal(str(i.qty)),
+                    unit_price=Decimal(str(i.unit_price)),
+                    tax_id=UUID(line_taxes[0]["id"]) if line_taxes else None,
+                    tax_rate=(
+                        Decimal(str(sum(t["rate"] for t in line_taxes)))
+                        if line_taxes
+                        else None
+                    ),
+                    taxes=line_taxes,
+                )
+            )
 
         # Calculate subtotal
         subtotal = sum(float(si.unit_price) * float(si.qty) for si in sale_items)
@@ -6264,13 +6297,14 @@ async def checkout_cart(
             total=float(result.total),
             discount=float(discount_amount),
             tax_amount=float(result.tax),
+            tax_lines=sale_model.tax_breakdown,
             cashier_id=UUID(actor_id) if actor_id else None,
             payment_method=payment_method,
             store_id=sale_model.store_id,
         )
 
         resolved_accounts: dict[str, UUID] = {}
-        for acct_code in ["1000", "1010", "2300", "4000", "5000", "1200"]:
+        for acct_code in sorted({e.account_code for e in journal_entries}):
             acct = await get_account_by_code(acct_session, UUID(tenant_id), acct_code)
             if acct:
                 resolved_accounts[acct_code] = acct.id
@@ -6283,8 +6317,12 @@ async def checkout_cart(
                 acct_id = resolved_accounts.get("1000")
                 if acct_id:
                     entry.account_code = "1000"
-            if acct_id:
-                entry.account_id = acct_id
+            if acct_id is None:
+                raise ValueError(
+                    f"Cannot book {result.sale_number}: account "
+                    f"{entry.account_code} is missing from the chart of accounts"
+                )
+            entry.account_id = acct_id
 
         await create_journal(acct_session, journal)
         for entry in journal_entries:
@@ -7849,7 +7887,10 @@ async def convert_document_to_sale(
                 "qty": i.qty,
                 "unit_price": i.unit_price,
                 "discount_pct": i.discount_pct,
-                "tax_rate": i.tax_rate,
+                # The document's tax is carried across, not recomputed from
+                # whatever the product happens to be taxed at today: the
+                # customer was quoted a figure and converting must not change it.
+                "taxes": list(i.tax_breakdown or []),
             }
             for i in items
         ]
@@ -7876,7 +7917,6 @@ async def convert_document_to_sale(
             tenant_id=tenant_id,
             cashier_id=cashier_id,
             items=sale_items,
-            discount=Decimal(str(doc.discount)),
             customer_name=doc.customer_name,
             customer_phone=doc.customer_phone,
             store_id=sale_store_id,
@@ -7967,36 +8007,6 @@ async def create_document(
         create_document_items,
     )
 
-    item_lines = [
-        DocumentItemLine(
-            product_id=UUID(i["product_id"]) if i.get("product_id") else None,
-            description=i["description"],
-            qty=Decimal(str(i["qty"])),
-            unit_price=Decimal(str(i["unit_price"])),
-            discount_pct=Decimal(str(i.get("discount_pct", 0))),
-            tax_rate=Decimal(str(i["tax_rate"])) if i.get("tax_rate") else None,
-        )
-        for i in items
-    ]
-
-    command = DocumentCreateCommand(
-        tenant_id=UUID(tenant_id),
-        actor_id=UUID(actor_id),
-        doc_type=doc_type,
-        customer_id=UUID(customer_id) if customer_id else None,
-        customer_name=customer_name,
-        customer_email=customer_email,
-        customer_phone=customer_phone,
-        customer_address=customer_address,
-        due_date=due_date,
-        notes=notes,
-        terms=terms,
-        items=item_lines,
-        linked_sale_id=UUID(linked_sale_id) if linked_sale_id else None,
-        store_id=UUID(store_id) if store_id else None,
-        correlation_id=correlation_id,
-    )
-
     sdb = _get_sdb("documents")
     async with sdb.session() as session:
         # A document is the start of a sale, and a sale is what accrues unpaid
@@ -8006,6 +8016,66 @@ async def create_document(
         from app.platform.fee_calculator import assert_fee_headroom
 
         await assert_fee_headroom(session, UUID(tenant_id))
+
+        # Catalog lines take their taxes from the product; custom lines take
+        # the ones picked for them. Both are resolved from the tenant's own
+        # tax rows, so the client names a tax and never prices it.
+        from app.taxes.resolve import taxes_for_ids
+
+        tenant = UUID(tenant_id)
+        product_ids = [
+            UUID(i["product_id"]) for i in items if i.get("product_id")
+        ]
+        product_taxes = await product_tax_map(session, tenant, product_ids)
+
+        chosen_ids: set[UUID] = set()
+        for i in items:
+            if not i.get("product_id"):
+                for raw in i.get("tax_ids") or []:
+                    chosen_ids.add(UUID(str(raw)))
+        chosen_map = {
+            entry["id"]: entry
+            for entry in await taxes_for_ids(session, tenant, sorted(chosen_ids))
+        }
+
+        item_lines = []
+        for i in items:
+            if i.get("product_id"):
+                line_taxes = product_taxes.get(str(UUID(i["product_id"])), [])
+            else:
+                line_taxes = [
+                    chosen_map[str(raw)] for raw in (i.get("tax_ids") or [])
+                    if str(raw) in chosen_map
+                ]
+            item_lines.append(
+                DocumentItemLine(
+                    product_id=UUID(i["product_id"]) if i.get("product_id") else None,
+                    description=i["description"],
+                    qty=Decimal(str(i["qty"])),
+                    unit_price=Decimal(str(i["unit_price"])),
+                    discount_pct=Decimal(str(i.get("discount_pct", 0))),
+                    tax_rate=Decimal(str(i["tax_rate"])) if i.get("tax_rate") else None,
+                    taxes=line_taxes,
+                )
+            )
+
+        command = DocumentCreateCommand(
+            tenant_id=tenant,
+            actor_id=UUID(actor_id),
+            doc_type=doc_type,
+            customer_id=UUID(customer_id) if customer_id else None,
+            customer_name=customer_name,
+            customer_email=customer_email,
+            customer_phone=customer_phone,
+            customer_address=customer_address,
+            due_date=due_date,
+            notes=notes,
+            terms=terms,
+            items=item_lines,
+            linked_sale_id=UUID(linked_sale_id) if linked_sale_id else None,
+            store_id=UUID(store_id) if store_id else None,
+            correlation_id=correlation_id,
+        )
 
         result, doc_model, item_models, outbox = plan_document_creation(command)
         await repo_create_document(session, doc_model)
@@ -8117,6 +8187,7 @@ async def get_document_by_id(tenant_id: str, document_id: str) -> dict | None:
         ``None`` if the document does not exist.
     """
     from app.documents.repository import get_document_by_id, get_document_items
+    from app.taxes.calc import group_tax_lines
 
     sdb = _get_sdb("documents")
     async with sdb.session() as session:
@@ -8124,6 +8195,11 @@ async def get_document_by_id(tenant_id: str, document_id: str) -> dict | None:
         if not doc or str(doc.tenant_id) != tenant_id:
             return None
         items = await get_document_items(session, UUID(document_id))
+        # Lines carry their own tax snapshots; the header shows the same
+        # entries grouped by tax, the way the cart and the receipt do.
+        tax_breakdown = group_tax_lines(
+            tax for item in items for tax in (item.tax_breakdown or [])
+        )
         return {
             "id": str(doc.id),
             "doc_number": doc.doc_number,
@@ -8138,6 +8214,7 @@ async def get_document_by_id(tenant_id: str, document_id: str) -> dict | None:
             "subtotal": float(doc.subtotal),
             "discount": float(doc.discount),
             "tax": str(doc.tax),
+            "tax_breakdown": tax_breakdown,
             "total": str(doc.total),
             "due_date": doc.due_date.isoformat() if doc.due_date else None,
             "notes": doc.notes,
@@ -8154,6 +8231,7 @@ async def get_document_by_id(tenant_id: str, document_id: str) -> dict | None:
                     "unit_price": str(i.unit_price),
                     "discount_pct": str(i.discount_pct),
                     "tax_rate": str(i.tax_rate) if i.tax_rate else None,
+                    "taxes": list(i.tax_breakdown or []),
                     "line_total": str(i.line_total),
                 }
                 for i in items

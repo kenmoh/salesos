@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from app.common.events.outbox import OutboxWrite
+from app.taxes.calc import DEFAULT_TAX_ACCOUNT
 
 from .events import journal_posted_event
 from .models import (
@@ -726,6 +727,7 @@ def plan_sale_journal(
     total: float,
     discount: float,
     tax_amount: float = 0,
+    tax_lines: list[dict] | None = None,
     cashier_id: UUID | None = None,
     payment_method: str = "cash",
     store_id: UUID | None = None,
@@ -758,7 +760,12 @@ def plan_sale_journal(
         sale_items: List of dicts with keys: product_name, qty, unit_price, cost_price.
         total: The total sale amount (after discount, including tax).
         discount: The discount amount applied.
-        tax_amount: The tax amount collected (goes to VAT Payable liability).
+        tax_amount: The tax amount collected.
+        tax_lines: The sale's tax breakdown -- name, rate, amount and the
+            account it is owed to. Preferred over tax_amount: a tenant's taxes
+            are whatever they named them, so VAT goes to 2300 and everything
+            else to its own liability account instead of being called VAT
+            because that was the only account there was.
         cashier_id: The user who processed the sale.
         payment_method: cash | card | transfer | split.
         store_id: The store the sale belongs to (NULL = business-wide).
@@ -783,6 +790,10 @@ def plan_sale_journal(
     )
 
     entries: list[JournalEntry] = []
+    # Take the tax total from the breakdown when there is one, so the credit
+    # legs and the revenue leg cannot drift apart by a rounding error.
+    if tax_lines:
+        tax_amount = round(sum(float(t.get("amount") or 0) for t in tax_lines), 2)
     revenue = total - tax_amount
 
     is_bank = payment_method in ("card", "transfer")
@@ -824,21 +835,50 @@ def plan_sale_journal(
         amount=revenue,
     ))
 
-    # 3. Credit: VAT Payable (2300) -- tax liability (if tax > 0)
+    # 3. Credit tax liability -- one entry per account the tax is owed to
     if tax_amount > 0:
-        entries.append(JournalEntry(
-            id=uuid4(),
-            journal_id=journal_id,
-            tenant_id=tenant_id,
-            account_id=uuid4(),  # Resolved by bridge layer
-            account_code="2300",
-            debit=0,
-            credit=tax_amount,
-            description=f"VAT collected: {sale_number}",
-            type="liability",
-            status="draft",
-            amount=tax_amount,
-        ))
+        if tax_lines:
+            grouped: dict[str, dict] = {}
+            for line in tax_lines:
+                code = str(line.get("account_code") or DEFAULT_TAX_ACCOUNT)
+                bucket = grouped.setdefault(code, {"amount": 0.0, "names": []})
+                bucket["amount"] = round(
+                    bucket["amount"] + float(line.get("amount") or 0), 2
+                )
+                name = str(line.get("name") or "Tax")
+                if name not in bucket["names"]:
+                    bucket["names"].append(name)
+
+            for code, bucket in grouped.items():
+                entries.append(JournalEntry(
+                    id=uuid4(),
+                    journal_id=journal_id,
+                    tenant_id=tenant_id,
+                    account_id=uuid4(),  # Resolved by bridge layer
+                    account_code=code,
+                    debit=0,
+                    credit=bucket["amount"],
+                    description=f"{' + '.join(bucket['names'])} collected: {sale_number}",
+                    type="liability",
+                    status="draft",
+                    amount=bucket["amount"],
+                ))
+        else:
+            # No breakdown: a sale that predates per-line tax, or a caller that
+            # only knows a total. VAT is the only honest guess we can make.
+            entries.append(JournalEntry(
+                id=uuid4(),
+                journal_id=journal_id,
+                tenant_id=tenant_id,
+                account_id=uuid4(),  # Resolved by bridge layer
+                account_code="2300",
+                debit=0,
+                credit=tax_amount,
+                description=f"VAT collected: {sale_number}",
+                type="liability",
+                status="draft",
+                amount=tax_amount,
+            ))
 
     # 3 & 4. COGS + Inventory (only if cost data available)
     total_cost = sum(

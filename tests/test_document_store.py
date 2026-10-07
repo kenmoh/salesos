@@ -353,7 +353,7 @@ class TestConversionCarriesTheStore:
                 "app.documents.repository.get_document_items",
                 AsyncMock(return_value=[NS(product_id=None, description="Thing",
                                            qty=1, unit_price=100, discount_pct=0,
-                                           tax_rate=None)]),
+                                           tax_breakdown=None)]),
             ),
             patch.object(bridge, "create_sale_via_service", create_sale),
             patch(

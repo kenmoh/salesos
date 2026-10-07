@@ -142,6 +142,9 @@ class StoreProductListItem(_Base):
     status: str = "active"
     category: str | None = None
     qr_url: str | None = None
+    #: The taxes this product carries -- name, rate, account -- so a cart can
+    #: show what it will be charged before the customer pays for it.
+    taxes: list[dict] = []
 
 
 class StoreProductUpdated(_Base):
@@ -211,6 +214,7 @@ class StoreProductDetail(_Base):
     image_url: str | None = None
     qr_url: str | None = None
     category: str | None = None
+    taxes: list[dict] = []
     history: list[StockMovementItem] = []
 
 
@@ -637,6 +641,11 @@ class DocumentDetail(_Base):
     customer_phone: str | None = None
     due_date: datetime | None = None
     store_id: str | None = None
+    subtotal: float = 0
+    discount: float = 0
+    tax: float = 0
+    #: Tax snapshots from the line items, grouped by tax for display.
+    tax_breakdown: list[dict] = []
     total: float = 0
     items: list[dict] = []
     created_at: datetime | None = None
