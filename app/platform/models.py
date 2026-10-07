@@ -171,7 +171,13 @@ class PlatformFeeLedger(StoreFlowBase):
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
-    sale_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    # A fee belongs to a sale, or to a document that never became one: a
+    # converted document leaves its sale pending forever, and a standalone
+    # receipt has no sale at all. Exactly one is set.
+    sale_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
+    document_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True, index=True
+    )
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
     fee_type: Mapped[str] = mapped_column(String(10), nullable=False)
     rate: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)

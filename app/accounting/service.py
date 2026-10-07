@@ -729,6 +729,7 @@ def plan_sale_journal(
     cashier_id: UUID | None = None,
     payment_method: str = "cash",
     store_id: UUID | None = None,
+    settled: bool = True,
 ) -> tuple[Journal, list[JournalEntry]]:
     """Plan automatic journal entries for a completed sale.
 
@@ -742,6 +743,14 @@ def plan_sale_journal(
     The debit goes to Bank (1010) for card/transfer payments and to
     Cash (1000) for cash (and split, whose cash leg is unknown here).
 
+    ``settled=False`` books the sale as unpaid instead: the debit goes to
+    Accounts Receivable (1100) and no cash has moved. That is the honest entry
+    for a sale nobody has paid for yet, and it is what keeps revenue and the
+    receivable in step — a pending sale used to produce no journal at all, so an
+    unpaid document was absent from the books entirely. When the money arrives,
+    the payment settles the receivable rather than recognising the revenue a
+    second time.
+
     Args:
         tenant_id: The business tenant UUID.
         sale_id: The sale UUID to link the journal to.
@@ -753,6 +762,8 @@ def plan_sale_journal(
         cashier_id: The user who processed the sale.
         payment_method: cash | card | transfer | split.
         store_id: The store the sale belongs to (NULL = business-wide).
+        settled: False to book the sale as unpaid, debiting receivables rather
+            than cash. True (default) for a sale whose money has been received.
 
     Returns:
         A tuple of (Journal, list[JournalEntry]).
@@ -775,10 +786,15 @@ def plan_sale_journal(
     revenue = total - tax_amount
 
     is_bank = payment_method in ("card", "transfer")
-    cash_code = "1010" if is_bank else "1000"
-    cash_label = "Bank transfer" if is_bank else "Cash"
+    if settled:
+        cash_code = "1010" if is_bank else "1000"
+        cash_label = "Bank transfer" if is_bank else "Cash"
+    else:
+        # No money has arrived yet, so the debit is what the customer owes.
+        cash_code = "1100"
+        cash_label = "Receivable"
 
-    # 1. Debit: Cash (1000) / Bank (1010) -- money received
+    # 1. Debit: Cash / Bank, or Receivable when the sale is unpaid
     entries.append(JournalEntry(
         id=uuid4(),
         journal_id=journal_id,

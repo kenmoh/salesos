@@ -188,6 +188,7 @@ async def handle_payment_succeeded(envelope: EventEnvelope, session: AsyncSessio
     if existing_payment.first():
         return
     sale_id = envelope.payload.get("sale_id")
+    settles_receivable = False
     if sale_id:
         existing = await session.execute(
             select(Journal.id).where(
@@ -197,8 +198,26 @@ async def handle_payment_succeeded(envelope: EventEnvelope, session: AsyncSessio
                 Journal.status == "posted",
             ).limit(1)
         )
-        if existing.first():
-            return
+        sale_journal_id = existing.scalar_one_or_none()
+        if sale_journal_id:
+            # A sale journal means the revenue is already recognised, so this
+            # payment must not recognise it a second time — it settles what is
+            # owed. Which is true depends on how the sale was booked: a sale
+            # taken at the till already debited cash, so there is nothing left
+            # to do, while one booked as unpaid debited receivables (1100) and
+            # is waiting for exactly this entry. Read that off the entry rather
+            # than the description, which is just the sale number.
+            already_debited_receivable = await session.execute(
+                select(JournalEntry.id).where(
+                    JournalEntry.tenant_id == UUID(tenant_id),
+                    JournalEntry.journal_id == sale_journal_id,
+                    JournalEntry.account_code == "1100",
+                    JournalEntry.debit > 0,
+                ).limit(1)
+            )
+            if not already_debited_receivable.scalar_one_or_none():
+                return
+            settles_receivable = True
 
     # Store attribution: payment journals reference the payment (not the
     # sale), so the store must be resolved from the linked sale when present.
@@ -233,7 +252,48 @@ async def handle_payment_succeeded(envelope: EventEnvelope, session: AsyncSessio
         store_id=store_id,
     )
 
-    # Debit entry: Accounts Receivable (customer owes us)
+    # Debit entry. When settling a sale already recognised as a receivable, the
+    # money has now arrived, so cash is debited and the receivable credited.
+    # Otherwise there is no sale journal and this payment is the recognition:
+    # debit the receivable, credit revenue.
+    if settles_receivable:
+        cash_account = await get_account_by_code(session, UUID(tenant_id), "1000")
+        if not cash_account:
+            return
+        debit_entry = JournalEntry(
+            id=uuid4(),
+            journal_id=journal_id,
+            tenant_id=UUID(tenant_id),
+            account_id=cash_account.id,
+            account_code=cash_account.code,
+            debit=float(amount),
+            credit=0,
+            description=f"Payment {payment_id} - cash received",
+            type="asset",
+            status="posted",
+            posted_at=datetime.now(UTC),
+            amount=float(amount),
+        )
+        credit_entry = JournalEntry(
+            id=uuid4(),
+            journal_id=journal_id,
+            tenant_id=UUID(tenant_id),
+            account_id=receivable_account.id,
+            account_code=receivable_account.code,
+            debit=0,
+            credit=float(amount),
+            description=f"Payment {payment_id} - settles receivable",
+            type="asset",
+            status="posted",
+            posted_at=datetime.now(UTC),
+            amount=float(amount),
+        )
+        session.add(journal)
+        session.add(debit_entry)
+        session.add(credit_entry)
+        await session.flush()
+        return
+
     debit_entry = JournalEntry(
         id=uuid4(),
         journal_id=journal_id,

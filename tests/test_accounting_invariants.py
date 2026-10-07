@@ -170,6 +170,13 @@ class TestReceivableSubledgerReconciliation:
     """AR rows and account 1100 must agree, to the naira."""
 
     async def test_receivables_have_an_opening_journal(self, db):
+        """Every receivable row must be backed by something that debited 1100.
+
+        An invoice-backed row is opened by its own `receivable` journal. A
+        receivable that came from an unpaid sale is opened by that sale's
+        journal instead, so both count as backing — otherwise the row looks
+        unsupported when the ledger is fine.
+        """
         missing = await db.fetch(
             """
             SELECT ar.invoice_number, ar.amount
@@ -180,6 +187,20 @@ class TestReceivableSubledgerReconciliation:
                   WHERE j.tenant_id = ar.tenant_id
                     AND j.reference_type = 'receivable'
                     AND j.reference_id = ar.id
+              )
+              AND NOT EXISTS (
+                  -- A sale journal references the sale's id, so the match to
+                  -- the receivable row goes through the sale's number.
+                  SELECT 1
+                  FROM journals j
+                  JOIN sales s ON s.id = j.reference_id
+                  JOIN journal_entries e ON e.journal_id = j.id
+                  WHERE j.tenant_id = ar.tenant_id
+                    AND j.reference_type = 'sale'
+                    AND j.status = 'posted'
+                    AND s.sale_number = ar.invoice_number
+                    AND e.account_code = '1100'
+                    AND e.debit > 0
               )
             """,
             db.tenant_id,

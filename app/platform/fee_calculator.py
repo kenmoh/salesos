@@ -151,3 +151,74 @@ async def get_max_pending_balance(session: AsyncSession) -> float:
     result = await session.execute(select(PlatformCommission.max_pending_balance).limit(1))
     val = result.scalar()
     return float(val) if val else 1000.0
+
+
+async def record_platform_fee(
+    session: AsyncSession,
+    *,
+    tenant_id: UUID,
+    total: float,
+    sale_id: UUID | None = None,
+    document_id: UUID | None = None,
+    payment_method: str = "document",
+    status: str = "pending",
+) -> dict | None:
+    """Book the platform's commission for something that earned it.
+
+    The fee was only ever charged when a sale reached "completed", which left
+    two paths earning revenue for the tenant with nothing booked against them: a
+    converted document, whose sale is pending forever because nothing pays it,
+    and a standalone receipt, which is not a sale at all. Both are charged here,
+    when the document is created.
+
+    The existing row for the same sale or document is checked first. Without
+    that, a converted sale charged here would be charged again when it is later
+    paid in full and completes through the normal payment path.
+
+    Exactly one of ``sale_id`` / ``document_id`` identifies what the fee is for.
+
+    Returns the fee result, or None when no rule matched or a fee already
+    exists.
+    """
+    from sqlalchemy import or_
+
+    from app.platform.models import PlatformFeeLedger
+
+    if not sale_id and not document_id:
+        raise ValueError("a platform fee must reference a sale or a document")
+
+    existing = (
+        await session.execute(
+            select(PlatformFeeLedger.id).where(
+                PlatformFeeLedger.tenant_id == tenant_id,
+                or_(
+                    PlatformFeeLedger.sale_id == sale_id
+                    if sale_id
+                    else False,
+                    PlatformFeeLedger.document_id == document_id
+                    if document_id
+                    else False,
+                ),
+            ).limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing:
+        return None
+
+    fee_result = await calculate_platform_fee(session, total)
+    if fee_result["platform_fee"] <= 0:
+        return None
+
+    session.add(
+        PlatformFeeLedger(
+            tenant_id=tenant_id,
+            sale_id=sale_id,
+            document_id=document_id,
+            amount=float(Decimal(str(fee_result["platform_fee"])).quantize(Decimal("0.01"))),
+            fee_type=fee_result["fee_type"],
+            rate=fee_result["rate"],
+            payment_method=payment_method,
+            status=status,
+        )
+    )
+    return fee_result

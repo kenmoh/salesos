@@ -15,6 +15,7 @@ from app.common.cache import cache, cached
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.accounting.models import ChartOfAccount
 from app.accounting.repository import get_account_by_id
 from app.common import flutterwave_service, logging
 from app.core.config import settings
@@ -1031,6 +1032,105 @@ async def create_cart(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+async def _post_sale_journal(
+    *,
+    tenant_id: str,
+    sale_id: str,
+    sale_number: str,
+    sale_items: list[dict],
+    total: float,
+    discount: float,
+    tax_amount: float,
+    cashier_id: str | None,
+    payment_method: str,
+    store_id: str | None,
+    settled: bool,
+) -> None:
+    """Plan, resolve and post the journal for a sale.
+
+    ``settled=False`` books the sale as unpaid, debiting receivables; the payment
+    that eventually arrives settles it. Shared by checkout and by the converted
+    and other unpaid sale paths so both produce the same entry.
+    """
+    from app.accounting.repository import (
+        create_journal as repo_create_journal,
+        create_journal_entry as repo_create_entry,
+        post_journal as repo_post_journal,
+    )
+    from app.accounting.service import plan_sale_journal
+
+    tenant_uid = UUID(tenant_id)
+    journal, entries = plan_sale_journal(
+        tenant_id=tenant_uid,
+        sale_id=UUID(sale_id),
+        sale_number=sale_number,
+        sale_items=sale_items,
+        total=total,
+        discount=discount,
+        tax_amount=tax_amount,
+        cashier_id=UUID(cashier_id) if cashier_id else None,
+        payment_method=payment_method,
+        store_id=UUID(store_id) if store_id else None,
+        settled=settled,
+    )
+
+    sdb = _get_sdb("accounting")
+    async with sdb.session() as session:
+        # This helper opens its own session, so it has to establish the tenant
+        # context itself. chart_of_accounts is under row-level security, and
+        # without it the lookup below returns nothing and every account looks
+        # missing.
+        from app.common.db.session import set_rls_context
+
+        await set_rls_context(
+            session, "00000000-0000-0000-0000-000000000000", tenant_id, "owner"
+        )
+        acct_res = await session.execute(
+            select(ChartOfAccount).where(
+                ChartOfAccount.tenant_id == tenant_uid,
+                ChartOfAccount.code.in_(
+                    ["1000", "1010", "1100", "1200", "2300", "4000", "5000"]
+                ),
+            )
+        )
+        code_to_account = {a.code: a for a in acct_res.scalars().all()}
+        for entry in entries:
+            acct = code_to_account.get(entry.account_code)
+            if acct is None and entry.account_code == "1010":
+                # Tenant COA predates the Bank Account seed -- fall back to Cash
+                # rather than posting to an unresolved id.
+                acct = code_to_account.get("1000")
+                if acct:
+                    entry.account_code = "1000"
+            if acct is None and entry.account_code == "1100":
+                # No receivable account in this tenant's chart: fall back to
+                # cash so the entry still balances against real accounts.
+                acct = code_to_account.get("1000")
+                if acct:
+                    entry.account_code = "1000"
+            if acct is None:
+                # plan_sale_journal leaves a placeholder id for the bridge to
+                # resolve. Posting one of those would write an entry against a
+                # UUID that matches no account, and the ledger would be wrong
+                # in a way that is very hard to spot later. Refuse instead: the
+                # tenant is missing an account their chart needs.
+                raise ValueError(
+                    f"Cannot book {sale_number}: account {entry.account_code} "
+                    f"is missing from the chart of accounts"
+                )
+            entry.account_id = acct.id
+
+        await repo_create_journal(session, journal)
+        for entry in entries:
+            entry.status = "posted"
+            entry.posted_at = datetime.now(UTC)
+            await repo_create_entry(session, entry)
+        await repo_post_journal(
+            session, journal.id, UUID(cashier_id) if cashier_id else None
+        )
+        await session.commit()
+
+
 async def create_sale_via_service(
     tenant_id: str,
     cashier_id: str,
@@ -1109,6 +1209,32 @@ async def create_sale_via_service(
         for write in outbox:
             session.add(write.to_model())
         await session.commit()
+
+    # Book the sale. This path creates unpaid sales — a converted document is
+    # never paid, so it stays pending — and an unpaid sale with no journal was
+    # absent from the books entirely. The debit goes to receivables rather than
+    # cash, which is where the money actually is until someone pays.
+    await _post_sale_journal(
+        tenant_id=tenant_id,
+        sale_id=str(result.id),
+        sale_number=result.sale_number,
+        sale_items=[
+            {
+                "product_name": i.product_name,
+                "qty": float(i.qty),
+                "unit_price": float(i.unit_price),
+                "cost_price": 0,
+            }
+            for i in sale_item_models
+        ],
+        total=float(result.total),
+        discount=float(result.discount),
+        tax_amount=float(result.tax),
+        cashier_id=cashier_id,
+        payment_method=payment_method,
+        store_id=store_id,
+        settled=False,
+    )
 
     return result.model_dump(mode="json")
 
@@ -7764,6 +7890,21 @@ async def convert_document_to_sale(
             correlation_id=correlation_id,
         )
 
+        # The platform's commission is booked when a sale completes, and a
+        # converted sale is never paid, so nothing would ever be charged for the
+        # revenue this document just earned. Charge it in the same transaction as
+        # the document update, and record_platform_fee refuses a second charge if
+        # the sale is later paid in full.
+        from app.platform.fee_calculator import record_platform_fee
+
+        await record_platform_fee(
+            session,
+            tenant_id=UUID(tenant_id),
+            total=float(doc.total or 0),
+            sale_id=UUID(sale_result["id"]),
+            payment_method="converted",
+        )
+
         await update_document_status(session, doc.id, "accepted")
         doc.linked_sale_id = UUID(sale_result["id"])
         await session.commit()
@@ -7869,6 +8010,22 @@ async def create_document(
         await create_document_items(session, item_models)
         for write in outbox:
             session.add(write.to_model())
+
+        # A receipt is revenue the tenant has collected, so the platform earns
+        # its commission on it. One that is linked to an existing sale is a
+        # receipt *for* that sale, which is charged when the sale completes —
+        # charging again would bill the tenant twice for the same money.
+        if doc_model.doc_type == "receipt" and not doc_model.linked_sale_id:
+            from app.platform.fee_calculator import record_platform_fee
+
+            await record_platform_fee(
+                session,
+                tenant_id=UUID(tenant_id),
+                total=float(doc_model.total or 0),
+                document_id=doc_model.id,
+                payment_method="receipt",
+            )
+
         await session.commit()
 
     return result.model_dump(mode="json")
