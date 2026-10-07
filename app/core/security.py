@@ -56,13 +56,30 @@ def _token(
 
 
 def create_access_token(
-    user_id: str, business_id: str, role: str, permissions: list[str]
+    user_id: str,
+    business_id: str,
+    role: str,
+    permissions: list[str],
+    roles: list[str] | None = None,
 ) -> tuple[str, datetime]:
-    return _token(
-        {"sub": user_id, "bid": business_id, "role": role, "perms": permissions, "type": "access"},
-        settings.jwt_access_secret,
-        minutes=settings.access_token_expire_minutes,
-    )
+    """Mint an access token.
+
+    ``role`` is the comma-joined role string that the login response and audit
+    trail display, and is kept so existing clients keep working. ``roles`` is the
+    authoritative list; callers that hold several roles pass both. A token
+    without ``roles`` still authenticates, since TokenData falls back to
+    splitting the string.
+    """
+    claims: dict = {
+        "sub": user_id,
+        "bid": business_id,
+        "role": role,
+        "perms": permissions,
+        "type": "access",
+    }
+    if roles:
+        claims["roles"] = roles
+    return _token(claims, settings.jwt_access_secret, minutes=settings.access_token_expire_minutes)
 
 
 def create_refresh_token(user_id: str, business_id: str, session_id: str) -> tuple[str, datetime]:

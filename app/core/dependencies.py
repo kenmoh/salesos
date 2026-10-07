@@ -61,20 +61,50 @@ async def get_cached_role_rank(
             # below is side-effect free, so retry once on a fresh checkout.
 
 
+def _roles_from_payload(payload: dict) -> list[str]:
+    """Read the roles a token grants.
+
+    The ``roles`` claim is the source of truth, but tokens minted before it
+    existed carry only the joined ``role`` string, and those are still valid
+    until they expire. Splitting the string keeps a signed-in session working
+    across a deploy instead of silently losing every role check.
+    """
+    roles = payload.get("roles")
+    if isinstance(roles, list) and roles:
+        return [str(role) for role in roles if role]
+    return [role.strip() for role in str(payload.get("role", "")).split(",") if role.strip()]
+
+
 class TokenData:
     def __init__(self, payload: dict):
         self.user_id = payload["sub"]
         self.business_id = payload["bid"]
+        # ``role`` stays the comma-joined string: it is what the login response
+        # and the audit trail display, and changing its shape would invalidate
+        # every client reading it. Membership checks go through ``roles``.
         self.role = payload["role"]
+        self.roles: list[str] = _roles_from_payload(payload)
         self.permissions: list[str] = payload.get("perms", [])
         self.jti = payload["jti"]
         self.exp = payload["exp"]
+
+    @property
+    def primary_role(self) -> str:
+        """The highest ranked role, for display."""
+        return self.roles[0] if self.roles else self.role
 
     def has_perm(self, perm: str) -> bool:
         return perm in self.permissions
 
     def has_role(self, *roles: str) -> bool:
-        return self.role in roles
+        """True when the token holds any of ``roles``.
+
+        A user can hold several roles at once, so this is a membership test
+        rather than an equality check. Comparing the whole joined string meant
+        every multi-role user failed every role check — a manager who was also a
+        cashier was neither.
+        """
+        return any(role in roles for role in self.roles)
 
     async def min_role(self, session: AsyncSession | None = None, role: str = "") -> bool:
         max_rank = await get_cached_role_rank(self.user_id, self.business_id, session)

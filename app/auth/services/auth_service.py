@@ -90,7 +90,14 @@ async def _get_perms(user_id: str, session) -> list[str]:
     return perms
 
 
-async def _get_role_names(user_id: str, session) -> str:
+async def _get_role_names(user_id: str, session) -> list[str]:
+    """Every role the user holds, highest ranked first.
+
+    A user can hold several roles, and the permissions in the token are the
+    union of all of them. Returning the list rather than one joined string is
+    what lets a role check be a membership test; callers that need the display
+    form join it themselves.
+    """
     result = await session.execute(
         select(Role.name)
         .join(UserRole, UserRole.role_id == Role.id)
@@ -98,7 +105,12 @@ async def _get_role_names(user_id: str, session) -> str:
         .order_by(Role.rank.desc())
     )
     roles = [row[0] for row in result.all()]
-    return ",".join(roles) if roles else "viewer"
+    return roles or ["viewer"]
+
+
+def role_claim(roles: list[str]) -> str:
+    """The display form of the roles claim."""
+    return ",".join(roles)
 
 
 async def bust_perms(user_id: str):
@@ -140,7 +152,9 @@ async def login(*, session, email, password, totp_code, req, device_name=None):
             raise AuthError("Invalid TOTP code", "invalid_totp")
     perms = await _get_perms(user["user_id"], session)
     role_names = await _get_role_names(user["user_id"], session)
-    access, _ = create_access_token(user["user_id"], user["business_id"], role_names, perms)
+    access, _ = create_access_token(
+        user["user_id"], user["business_id"], role_claim(role_names), perms, roles=role_names
+    )
     sid = generate_session_id()
     refresh, _ = create_refresh_token(user["user_id"], user["business_id"], sid)
     await store_refresh_session(
@@ -177,7 +191,8 @@ async def login(*, session, email, password, totp_code, req, device_name=None):
         "business_id": user["business_id"],
         "email": user["email"],
         "full_name": user["full_name"],
-        "role": role_names,
+        "role": role_claim(role_names),
+        "roles": role_names,
         "status": user.get("status", "active"),
         "permissions": perms,
         "totp_enabled": bool(user.get("totp_enabled")),
@@ -209,7 +224,9 @@ async def refresh_tokens(*, session, raw_token, req):
     )
     perms = await _get_perms(payload["sub"], session)
     role_names = await _get_role_names(payload["sub"], session)
-    new_access, _ = create_access_token(payload["sub"], payload["bid"], role_names, perms)
+    new_access, _ = create_access_token(
+            payload["sub"], payload["bid"], role_claim(role_names), perms, roles=role_names
+        )
     return {"access_token": new_access, "refresh_token": new_refresh}
 
 
