@@ -5205,14 +5205,11 @@ async def create_or_resume_cart(
         ValueError: If the tenant's pending fee balance has exceeded the
             maximum allowed threshold.
     """
-    from app.platform.fee_calculator import get_max_pending_balance, get_pending_fee_balance
+    from app.platform.fee_calculator import assert_fee_headroom
 
     sdb_payments = _get_sdb("payments")
     async with sdb_payments.session() as pay_session:
-        pending_balance = await get_pending_fee_balance(pay_session, UUID(tenant_id))
-        max_balance = await get_max_pending_balance(pay_session)
-        if pending_balance >= max_balance:
-            raise ValueError("fee_balance_exceeded")
+        await assert_fee_headroom(pay_session, UUID(tenant_id))
 
     sdb = _get_sdb("cart")
     async with sdb.session() as session:
@@ -5771,14 +5768,11 @@ async def checkout_cart(
     from app.sales.schemas import SaleCreateCommand, SaleItemLine
     from app.sales.service import plan_sale_creation
     from app.sales.repository import create_sale as repo_create_sale, create_sale_items
-    from app.platform.fee_calculator import get_max_pending_balance, get_pending_fee_balance
+    from app.platform.fee_calculator import assert_fee_headroom
 
     sdb_payments = _get_sdb("payments")
     async with sdb_payments.session() as pay_session:
-        pending_balance = await get_pending_fee_balance(pay_session, UUID(tenant_id))
-        max_balance = await get_max_pending_balance(pay_session)
-        if pending_balance >= max_balance:
-            raise ValueError("fee_balance_exceeded")
+        await assert_fee_headroom(pay_session, UUID(tenant_id))
 
     cart_uid = UUID(cart_id)
     tenant_uid = UUID(tenant_id)
@@ -8003,9 +7997,17 @@ async def create_document(
         correlation_id=correlation_id,
     )
 
-    result, doc_model, item_models, outbox = plan_document_creation(command)
     sdb = _get_sdb("documents")
     async with sdb.session() as session:
+        # A document is the start of a sale, and a sale is what accrues unpaid
+        # platform fees. Refuse once the tenant has reached its limit, the same
+        # as opening a cart or checking one out. Checked before planning so a
+        # refused document costs nothing.
+        from app.platform.fee_calculator import assert_fee_headroom
+
+        await assert_fee_headroom(session, UUID(tenant_id))
+
+        result, doc_model, item_models, outbox = plan_document_creation(command)
         await repo_create_document(session, doc_model)
         await create_document_items(session, item_models)
         for write in outbox:

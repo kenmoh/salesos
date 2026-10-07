@@ -65,6 +65,24 @@ async def _resolve_document_store(ctx, requested: UUID | None) -> str | None:
 )
 async def create_document_endpoint(payload: DocumentCreate, ctx: DbTenantDep):
     store_id = await _resolve_document_store(ctx, payload.store_id)
+    try:
+        return await _create_document(payload, ctx, store_id)
+    except ValueError as exc:
+        if str(exc) == "fee_balance_exceeded":
+            # The tenant's unpaid platform fees have reached the limit. Same
+            # answer as opening a cart, and it says why rather than surfacing as
+            # a server fault.
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    "Fee balance exceeded. Please clear outstanding fees before "
+                    "creating a document."
+                ),
+            )
+        raise
+
+
+async def _create_document(payload: DocumentCreate, ctx, store_id: str | None):
     return ok(
         await create_document(
             tenant_id=ctx.user.business_id,

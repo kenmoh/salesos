@@ -153,6 +153,23 @@ async def get_max_pending_balance(session: AsyncSession) -> float:
     return float(val) if val else 1000.0
 
 
+async def assert_fee_headroom(session: AsyncSession, tenant_id: UUID) -> None:
+    """Refuse the action when the tenant's unpaid fees have reached the limit.
+
+    Selling is what accrues the debt, so every path that produces revenue checks
+    here: opening a cart, checking one out, and creating a document. A quote,
+    invoice, receipt or purchase order is the beginning of a sale, and letting
+    one be written while the tenant is already over the threshold just deepens
+    the hole.
+
+    Raises ValueError("fee_balance_exceeded"), which the routes surface as 402.
+    """
+    pending_balance = await get_pending_fee_balance(session, tenant_id)
+    max_balance = await get_max_pending_balance(session)
+    if pending_balance >= max_balance:
+        raise ValueError("fee_balance_exceeded")
+
+
 async def record_platform_fee(
     session: AsyncSession,
     *,

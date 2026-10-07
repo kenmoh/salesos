@@ -46,6 +46,19 @@ def _token() -> TokenData:
     )
 
 
+def _identity_session():
+    """A session mock that answers the fee-ledger queries."""
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.commit = AsyncMock()
+    session.add = MagicMock()
+    empty = MagicMock()
+    empty.scalar_one_or_none = MagicMock(return_value=None)
+    session.execute = AsyncMock(return_value=empty)
+    return session
+
+
 @pytest.fixture
 async def post_document():
     """POST a document and report what the route resolved the store to."""
@@ -403,3 +416,103 @@ class TestConversionCarriesTheStore:
                 ],
                 store_id=None,
             )
+
+
+class TestFeeLimitBlocksDocumentCreation:
+    """A document is the start of a sale, and a sale is what accrues unpaid
+    platform fees. Once the tenant is at the limit, no document type may be
+    written."""
+
+    async def test_creation_is_refused_over_the_limit(self):
+        from app.common import bridge
+
+        session = _identity_session()
+
+        with (
+            patch.object(bridge, "_get_sdb") as sdb,
+            patch(
+                "app.platform.fee_calculator.get_pending_fee_balance",
+                AsyncMock(return_value=5000.0),
+            ),
+            patch(
+                "app.platform.fee_calculator.get_max_pending_balance",
+                AsyncMock(return_value=1000.0),
+            ),
+            patch(
+                "app.documents.service.plan_document_creation",
+                AsyncMock(
+                    side_effect=lambda *a, **k: (_ for _ in ()).throw(
+                        AssertionError("must not plan a document past the limit")
+                    )
+                ),
+            ),
+            patch(
+                "app.documents.repository.create_document", AsyncMock()
+            ) as create,
+        ):
+            sdb.return_value.session.return_value = session
+            with pytest.raises(ValueError, match="fee_balance_exceeded"):
+                await bridge.create_document(
+                    tenant_id=BID,
+                    actor_id=str(uuid4()),
+                    doc_type="invoice",
+                    items=[{"description": "x", "qty": 1, "unit_price": 100}],
+                )
+
+        create.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "doc_type", ["invoice", "quote", "receipt", "purchase_order"]
+    )
+    async def test_every_document_type_is_covered(self, doc_type):
+        from app.common import bridge
+
+        session = _identity_session()
+
+        with (
+            patch.object(bridge, "_get_sdb") as sdb,
+            patch(
+                "app.platform.fee_calculator.get_pending_fee_balance",
+                AsyncMock(return_value=1000.0),
+            ),
+            patch(
+                "app.platform.fee_calculator.get_max_pending_balance",
+                AsyncMock(return_value=1000.0),
+            ),
+        ):
+            sdb.return_value.session.return_value = session
+            with pytest.raises(ValueError, match="fee_balance_exceeded"):
+                await bridge.create_document(
+                    tenant_id=BID,
+                    actor_id=str(uuid4()),
+                    doc_type=doc_type,
+                    items=[{"description": "x", "qty": 1, "unit_price": 100}],
+                )
+
+    async def test_the_route_answers_402_and_says_why(self):
+        from app.documents import routes as doc_routes
+
+        app = FastAPI()
+        app.include_router(doc_routes.router)
+
+        # The route resolves the store before creating, which reads the user.
+        session = _identity_session()
+
+        async def override():
+            yield TenantContext(user=_token(), session=session)
+
+        async def override_db():
+            yield TenantContext(user=_token(), session=session)
+
+        app.dependency_overrides[get_tenant_context] = override
+        app.dependency_overrides[get_tenant_db_context] = override_db
+
+        with patch(
+            "app.documents.routes.create_document",
+            AsyncMock(side_effect=ValueError("fee_balance_exceeded")),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+                resp = await ac.post("/documents", json=_payload())
+
+        assert resp.status_code == 402
+        assert "outstanding fees" in resp.json()["detail"]

@@ -152,6 +152,14 @@ class TestFeeOnBothPaths:
             ),
             patch.object(bridge, "_get_sdb") as sdb,
             patch(
+                "app.platform.fee_calculator.get_pending_fee_balance",
+                AsyncMock(return_value=0.0),
+            ),
+            patch(
+                "app.platform.fee_calculator.get_max_pending_balance",
+                AsyncMock(return_value=1000.0),
+            ),
+            patch(
                 "app.platform.fee_calculator.record_platform_fee",
                 AsyncMock(return_value={"platform_fee": 27.5}),
             ) as charge,
@@ -200,6 +208,14 @@ class TestFeeOnBothPaths:
                 ),
             ),
             patch.object(bridge, "_get_sdb") as sdb,
+            patch(
+                "app.platform.fee_calculator.get_pending_fee_balance",
+                AsyncMock(return_value=0.0),
+            ),
+            patch(
+                "app.platform.fee_calculator.get_max_pending_balance",
+                AsyncMock(return_value=1000.0),
+            ),
             patch(
                 "app.platform.fee_calculator.record_platform_fee",
                 AsyncMock(return_value={"platform_fee": 27.5}),
