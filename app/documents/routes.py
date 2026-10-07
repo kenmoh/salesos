@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from uuid import UUID
 
-from app.core.dependencies import TenantDep, require_permission
+from app.core.dependencies import DbTenantDep, TenantDep, require_permission
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
 from app.auth.schemas.schema import DocumentCreate, DocumentStatusUpdate
 from app.auth.schemas.responses import (
@@ -24,13 +24,47 @@ from app.common.bridge import (
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
 
+async def _resolve_document_store(ctx, requested: UUID | None) -> str | None:
+    """Decide which store a new document belongs to.
+
+    A document drives accounting: it becomes an AR record, a payable or a
+    journal, all of which are attributed to a store. So the store is not a
+    free-text choice, and it is not the client's to pick.
+
+    An owner picks, because they are responsible for the whole business. Anyone
+    else is bound to the store on their own account — a cashier must not be able
+    to book a sale into a store they do not work in, and relying on the client
+    to hide the picker would leave that one request away from happening.
+
+    A non-owner naming a different store is refused rather than quietly
+    corrected: silently writing to one store what the caller asked to file
+    against another is worse than telling them no.
+    """
+    from app.identity.repository import get_user_by_id
+
+    user = await get_user_by_id(ctx.session, UUID(ctx.user.user_id))
+    own_store_id = str(user.store_id) if user and user.store_id else None
+
+    if await ctx.user.min_role(session=ctx.session, role="owner"):
+        # The owner may also file a business-wide document, which has no store.
+        return str(requested) if requested else None
+
+    if requested and own_store_id and str(requested) != own_store_id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only create documents for your own store",
+        )
+    return own_store_id
+
+
 @router.post(
     "",
     status_code=201,
     response_model=DataResponse[DocumentCreated],
     dependencies=[Depends(require_permission("documents:create"))],
 )
-async def create_document_endpoint(payload: DocumentCreate, ctx: TenantDep):
+async def create_document_endpoint(payload: DocumentCreate, ctx: DbTenantDep):
+    store_id = await _resolve_document_store(ctx, payload.store_id)
     return ok(
         await create_document(
             tenant_id=ctx.user.business_id,
@@ -56,7 +90,7 @@ async def create_document_endpoint(payload: DocumentCreate, ctx: TenantDep):
                 for i in payload.items
             ],
             linked_sale_id=str(payload.sale_id) if payload.sale_id else None,
-            store_id=str(payload.store_id) if payload.store_id else None,
+            store_id=store_id,
         )
     )
 
@@ -112,14 +146,22 @@ async def get_document_endpoint(doc_id: str, ctx: TenantDep):
 async def update_document_status_endpoint(
     doc_id: str, payload: DocumentStatusUpdate, ctx: TenantDep
 ):
-    return ok(
-        await update_document_status(
-            tenant_id=ctx.user.business_id,
-            document_id=doc_id,
-            actor_id=ctx.user.user_id,
-            new_status=payload.status,
+    try:
+        return ok(
+            await update_document_status(
+                tenant_id=ctx.user.business_id,
+                document_id=doc_id,
+                actor_id=ctx.user.user_id,
+                new_status=payload.status,
+            )
         )
-    )
+    except ValueError as exc:
+        message = str(exc)
+        if message == "document_not_found":
+            raise HTTPException(status_code=404, detail="Document not found")
+        # An invalid transition is the caller's mistake. It used to surface as a
+        # 500, which told the user nothing and looked like a server fault.
+        raise HTTPException(status_code=400, detail=message)
 
 
 @router.post(
@@ -129,14 +171,22 @@ async def update_document_status_endpoint(
     dependencies=[Depends(require_permission("documents:create"))],
 )
 async def convert_to_sale_endpoint(doc_id: str, ctx: TenantDep):
-    return ok(
-        await convert_document_to_sale(
-            tenant_id=ctx.user.business_id,
-            document_id=doc_id,
-            cashier_id=ctx.user.user_id,
-            actor_id=ctx.user.user_id,
+    try:
+        return ok(
+            await convert_document_to_sale(
+                tenant_id=ctx.user.business_id,
+                document_id=doc_id,
+                cashier_id=ctx.user.user_id,
+                actor_id=ctx.user.user_id,
+            )
         )
-    )
+    except ValueError as exc:
+        message = str(exc)
+        if message == "document_not_found":
+            raise HTTPException(status_code=404, detail="Document not found")
+        # A rejected conversion is the caller's situation to resolve, not a
+        # server fault, so it answers 400 and says what was wrong.
+        raise HTTPException(status_code=400, detail=message)
 
 
 def _ensure_pdf_bytes(data) -> bytes:

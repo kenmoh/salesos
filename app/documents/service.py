@@ -45,9 +45,17 @@ from app.documents.schemas import (
     DocumentStatusCommand,
 )
 
-# Valid status transitions for each document type.
-# Keys are document types, values are lists of valid statuses.
-# Transitions flow from left to right (e.g., draft → sent → paid).
+# Valid statuses per document type, in the order they should be reached.
+#
+# Transitions are not enforced as a graph: a status in the list is reachable,
+# so a sent invoice can still be paid after being marked overdue, and a draft
+# can be voided directly. What matters is that the spellings here are the only
+# ones accepted, because the client sends them verbatim — the app asked for
+# "voided" and this said "void", which failed as a 500 until it was caught.
+#
+# Note the split: quotes, invoices and receipts are voided; a purchase order is
+# cancelled, since a PO that has already been received is not "voided" so much
+# as called off.
 VALID_TRANSITIONS: dict[str, list[str]] = {
     "quote": ["draft", "sent", "accepted", "expired", "void"],
     "invoice": ["draft", "sent", "paid", "overdue", "void"],

@@ -717,6 +717,9 @@ async def assign_role(
             session.add(write.to_model())
         await session.commit()
         await cache.delete_pattern(f"sf:cache:roles:*:{tenant_id}*")
+        # The new role's permissions have to take effect now, not when the
+        # cached set happens to expire.
+        await _invalidate_user_auth_caches(UUID(user_id))
 
         return {"user_id": user_id, "role": role_name}
 
@@ -760,6 +763,9 @@ async def remove_role(tenant_id: str, user_id: str, role_name: str) -> dict:
         await remove_role_from_user(session, UUID(user_id), role.id)
         await session.commit()
         await cache.delete_pattern(f"sf:cache:roles:*:{tenant_id}*")
+        # Without this the revoked permissions kept authorising requests until
+        # the cache expired.
+        await _invalidate_user_auth_caches(UUID(user_id))
 
         return {"user_id": user_id, "role": role_name, "removed": True}
 
@@ -1076,10 +1082,16 @@ async def create_sale_via_service(
         for i in items
     ]
 
+    if not store_id:
+        # Every sale is attributed to a store for per-store cash and reporting.
+        # Say so plainly rather than letting SaleCreateCommand raise a
+        # ValidationError about UUIDs, which surfaced as an opaque 500.
+        raise ValueError("A sale must be attributed to a store")
+
     command = SaleCreateCommand(
         tenant_id=UUID(tenant_id),
         cashier_id=UUID(cashier_id),
-        store_id=UUID(store_id) if store_id else None,
+        store_id=UUID(store_id),
         customer_name=customer_name,
         customer_phone=customer_phone,
         items=sale_items,
@@ -7701,6 +7713,13 @@ async def convert_document_to_sale(
             raise ValueError("Only quotes and invoices can be converted to sales")
         if doc.status not in ("sent", "accepted"):
             raise ValueError(f"Document must be 'sent' or 'accepted', currently '{doc.status}'")
+        if doc.linked_sale_id:
+            # Converting leaves the document at "accepted", which still offers
+            # the action, so without this a second press would raise a duplicate
+            # sale against the same document. The check belongs here rather
+            # than in a confirmation dialog: it is the only thing that holds
+            # when two presses race.
+            raise ValueError("This document has already been converted to a sale")
 
         items = await get_document_items(session, UUID(document_id))
         sale_items = [
@@ -7715,6 +7734,24 @@ async def convert_document_to_sale(
             for i in items
         ]
 
+        # A converted document must carry its store into the sale, or the sale
+        # lands with no store and every per-store figure that includes it is
+        # wrong. Documents predating store attribution fall back to the store of
+        # whoever is converting, since that is where the sale is taking place.
+        sale_store_id = str(doc.store_id) if doc.store_id else None
+        if not sale_store_id:
+            from app.identity.repository import get_user_by_id as _get_user
+
+            identity_db = _get_sdb("identity")
+            async with identity_db.session() as identity_session:
+                cashier = await _get_user(identity_session, UUID(cashier_id))
+                sale_store_id = str(cashier.store_id) if cashier and cashier.store_id else None
+        if not sale_store_id:
+            raise ValueError(
+                "This document has no store, so it cannot be converted to a sale. "
+                "Assign it to a store first."
+            )
+
         sale_result = await create_sale_via_service(
             tenant_id=tenant_id,
             cashier_id=cashier_id,
@@ -7722,6 +7759,7 @@ async def convert_document_to_sale(
             discount=Decimal(str(doc.discount)),
             customer_name=doc.customer_name,
             customer_phone=doc.customer_phone,
+            store_id=sale_store_id,
             notes=f"Converted from {doc.doc_type} {doc.doc_number}",
             correlation_id=correlation_id,
         )
@@ -8181,23 +8219,31 @@ async def delete_role_for_tenant(tenant_id: str, role_id: str) -> bool:
         return result
 
 
-async def _invalidate_role_caches(tenant_id: str, holders: list) -> None:
-    """Drop the caches a role edit makes stale.
+async def _invalidate_user_auth_caches(user_id) -> None:
+    """Drop the two caches that decide what one user may do.
 
-    Two separate caches disagree after an edit: the per-user permission set
-    (``sf:perms``) that authorises requests, and the per-user rank
-    (``sm:role_rank``) that owner-only gates compare against. Both are read on
-    the hot path and both outlive an edit, so leaving them means people keep
-    access they just lost, and a promoted owner keeps being refused. The cached
-    role list goes too, or the UI shows the old permission set until it expires.
+    ``sf:perms`` holds their permission set and ``sm:role_rank`` their rank;
+    both outlive a change to what they should be. Stale entries are not a
+    cosmetic problem — a role removed from a user kept working for the length of
+    the TTL, and a newly added role did nothing until it expired.
     """
     from app.common.auth_service import bust_perms
-    from app.common.cache import invalidate_tenant
     from app.core.redis_client import cache_del
 
+    await bust_perms(str(user_id))
+    await cache_del(f"sm:role_rank:{user_id}")
+
+
+async def _invalidate_role_caches(tenant_id: str, holders: list) -> None:
+    """Drop every cache a role edit makes stale.
+
+    The per-user caches for each holder, plus the cached role list, or the UI
+    shows the old permission set until it expires.
+    """
+    from app.common.cache import invalidate_tenant
+
     for user_id in holders:
-        await bust_perms(str(user_id))
-        await cache_del(f"sm:role_rank:{user_id}")
+        await _invalidate_user_auth_caches(user_id)
     await invalidate_tenant(tenant_id, prefix="roles:all")
 
 
