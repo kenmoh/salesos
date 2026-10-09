@@ -165,6 +165,54 @@ async def inventory_history(
     return {"data": [], "total": 0, "page": page, "page_size": page_size}
 
 
+async def product_stock_series(
+    *,
+    session: AsyncSession,
+    business_id: str,
+    store_id: str,
+    product_id: str,
+    from_date: str,
+    to_date: str,
+) -> dict:
+    """Daily closing balance and quantity moved for one product in one store.
+
+    The range is a half-open UTC window on ``created_at`` so the filter stays
+    sargable; movement counts per product are small either way.
+    """
+    from datetime import UTC, datetime, time, timedelta
+    from uuid import UUID
+
+    from sqlalchemy import select
+
+    from app.inventory.models import StockMovement
+    from app.inventory.service import group_movements_by_day
+
+    d_from = datetime.fromisoformat(from_date).date()
+    d_to = datetime.fromisoformat(to_date).date()
+    start = datetime.combine(d_from, time.min, tzinfo=UTC)
+    end = datetime.combine(d_to + timedelta(days=1), time.min, tzinfo=UTC)
+
+    result = await session.execute(
+        select(StockMovement)
+        .where(
+            StockMovement.tenant_id == UUID(business_id),
+            StockMovement.store_id == UUID(store_id),
+            StockMovement.product_id == UUID(product_id),
+            StockMovement.created_at >= start,
+            StockMovement.created_at < end,
+        )
+        .order_by(StockMovement.created_at)
+    )
+    points = group_movements_by_day(result.scalars().all())
+
+    balance = points[-1]["balance"] if points else 0.0
+    moved = round(sum(p["qty_change"] for p in points), 2)
+    return {
+        "items": points,
+        "totals": {"balance": balance, "qty_change": moved},
+    }
+
+
 async def create_sale(*, session: AsyncSession, business_id: str, user_id: str, data: dict) -> dict:
     rows = await call(
         session,

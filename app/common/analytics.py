@@ -238,6 +238,73 @@ async def sales_summary(
     }
 
 
+@cached(
+    prefix="analytics:product_sales",
+    ttl=60,
+    key_func=lambda *, session, tenant_id, store_id, product_id, from_date, to_date, **kw: f"{tenant_id}:{store_id}:{product_id}:{from_date}:{to_date}",
+)
+async def product_sales_series(
+    *,
+    session: AsyncSession,
+    tenant_id: str,
+    store_id: str,
+    product_id: str,
+    from_date: str,
+    to_date: str,
+) -> dict:
+    """One point per day for one product's sales in one store.
+
+    Read from the store-scoped rankings materialized view, which is already
+    grouped by (store, product, day) and refreshed after every sale, so a
+    range read rather than a walk over every sale line.
+    """
+    tid = UUID(tenant_id)
+    sid = UUID(store_id)
+    pid = UUID(product_id)
+    d_from = date.fromisoformat(from_date)
+    d_to = date.fromisoformat(to_date)
+
+    rows = await session.execute(
+        select(
+            MvStoreProductRanking.date.label("period"),
+            MvStoreProductRanking.units_sold,
+            MvStoreProductRanking.revenue,
+        )
+        .where(
+            MvStoreProductRanking.tenant_id == tid,
+            MvStoreProductRanking.store_id == sid,
+            MvStoreProductRanking.product_id == pid,
+            MvStoreProductRanking.date >= d_from,
+            MvStoreProductRanking.date <= d_to,
+        )
+        .order_by(MvStoreProductRanking.date)
+    )
+
+    items = []
+    tot_units = 0.0
+    tot_revenue = 0.0
+    for r in rows.mappings():
+        units = float(r["units_sold"])
+        revenue = float(r["revenue"])
+        items.append(
+            {
+                "period": r["period"].isoformat(),
+                "units_sold": units,
+                "revenue": revenue,
+            }
+        )
+        tot_units += units
+        tot_revenue += revenue
+
+    return {
+        "items": items,
+        "totals": {
+            "units_sold": round(tot_units, 2),
+            "revenue": round(tot_revenue, 2),
+        },
+    }
+
+
 @cached(prefix="analytics:top_products", ttl=60, key_func=lambda *, session, tenant_id, from_date, to_date, limit=10, **kw: f"{tenant_id}:{from_date}:{to_date}:{limit}")
 async def top_products(
     *,

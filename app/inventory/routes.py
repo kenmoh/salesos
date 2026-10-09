@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.dependencies import TenantDep, DbTenantDep, require_permission
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
@@ -11,6 +11,7 @@ from app.auth.schemas.responses import (
     ProductCreatedForStore,
     StockAdjustmentResult,
     StockBalanceItem,
+    ProductStockSeries,
     StockMovementItem,
     StoreProductAdded,
     StoreProductDetail,
@@ -200,6 +201,30 @@ async def store_products(
     )
     return paginated(
         result["items"], total=result["total"], page=result["page"], page_size=result["page_size"]
+    )
+
+
+@router.get(
+    "/{store_id}/products/{product_id}/stock-series",
+    response_model=DataResponse[ProductStockSeries],
+    dependencies=[Depends(require_permission("inventory:read"))],
+)
+async def product_stock_series_endpoint(
+    store_id: str,
+    product_id: str,
+    ctx: DbTenantDep,
+    from_date: str = Query(..., description="ISO 8601 date"),
+    to_date: str = Query(..., description="ISO 8601 date"),
+):
+    return ok(
+        await services.product_stock_series(
+            session=ctx.session,
+            business_id=ctx.user.business_id,
+            store_id=store_id,
+            product_id=product_id,
+            from_date=from_date,
+            to_date=to_date,
+        )
     )
 
 

@@ -27,6 +27,36 @@ from app.inventory.schemas import (
 )
 
 
+def group_movements_by_day(rows) -> list[dict]:
+    """Collapse stock movements into one point per calendar day.
+
+    Rows are sorted by time first, so the balance kept for a day is the
+    balance after its last movement and the quantity is the day's total --
+    later movements replace the balance rather than being averaged with
+    whatever came before. Each day also carries the balance it started from.
+    """
+    ordered = sorted(rows, key=lambda row: row.created_at)
+    points: dict[str, dict] = {}
+    for row in ordered:
+        day = row.created_at.date().isoformat()
+        point = points.get(day)
+        if point is None:
+            points[day] = {
+                "date": day,
+                "balance": float(row.balance_after),
+                # What the stock was before this day's first movement, so a
+                # chart can draw the flat run that came before the window.
+                "balance_before": float(row.balance_before),
+                "qty_change": round(float(row.qty_change), 2),
+            }
+        else:
+            point["balance"] = float(row.balance_after)
+            point["qty_change"] = round(
+                point["qty_change"] + float(row.qty_change), 2
+            )
+    return list(points.values())
+
+
 def plan_adjust_stock(
     command: AdjustStockCommand,
     current_balance: StockBalance | None,

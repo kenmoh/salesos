@@ -564,6 +564,16 @@ class SalesSummary(_Base):
     totals: dict = {}
 
 
+class ProductStockSeries(_Base):
+    items: list[dict] = []
+    totals: dict = {}
+
+
+class ProductSalesSeries(_Base):
+    items: list[dict] = []
+    totals: dict = {}
+
+
 class TopProduct(_Base):
     product_id: str
     product_name: str

@@ -9,12 +9,14 @@ from app.auth.schemas.responses import (
     DocumentSummaryResult,
     InventoryAlertsResult,
     PaymentBreakdown,
+    ProductSalesSeries,
     ProfitLossResult,
     SalesSummary,
     TopProduct,
 )
 from app.common.analytics import (
     cashier_performance,
+    product_sales_series,
     customer_insights,
     dashboard_summary,
     document_summary,
@@ -57,6 +59,30 @@ async def sales_summary_endpoint(
             from_date=from_date,
             to_date=to_date,
             group_by=group_by,
+        )
+    )
+
+
+@router.get(
+    "/product-sales",
+    response_model=DataResponse[ProductSalesSeries],
+    dependencies=[Depends(require_permission("reports:read"))],
+)
+async def product_sales_endpoint(
+    ctx: DbTenantDep,
+    store_id: str = Query(..., description="Store the product sells in"),
+    product_id: str = Query(...),
+    from_date: str = Query(..., description="ISO 8601 date"),
+    to_date: str = Query(..., description="ISO 8601 date"),
+):
+    return ok(
+        await product_sales_series(
+            session=ctx.session,
+            tenant_id=ctx.user.business_id,
+            store_id=store_id,
+            product_id=product_id,
+            from_date=from_date,
+            to_date=to_date,
         )
     )
 
