@@ -731,6 +731,11 @@ async def profit_loss(
     gp = tot_rev - tot_cogs
     np_ = gp - tot_exp
     return {
+        "revenue": tot_rev,
+        "cost_of_goods": tot_cogs,
+        "gross_profit": gp,
+        "expenses": tot_exp,
+        "net_profit": np_,
         "items": items,
         "totals": {
             "revenue": tot_rev,

@@ -499,6 +499,11 @@ class TestProfitLossEndToEnd:
                 assert totals["expenses"] == 30.0
                 assert totals["gross_profit"] == 80.0
                 assert totals["net_profit"] == 50.0
+                assert pl["revenue"] == 100.0
+                assert pl["cost_of_goods"] == 20.0
+                assert pl["gross_profit"] == 80.0
+                assert pl["expenses"] == 30.0
+                assert pl["net_profit"] == 50.0
                 (item,) = pl["items"]
                 assert item["period"] == TODAY.isoformat()
                 assert item["cogs"] == 20.0
