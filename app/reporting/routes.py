@@ -35,9 +35,18 @@ router = APIRouter(prefix="/reports", tags=["Reports"])
     response_model=DataResponse[DashboardSummary],
     dependencies=[Depends(require_permission("reports:read"))],
 )
-async def dashboard(ctx: DbTenantDep, days: int = Query(30, ge=1, le=365)):
+async def dashboard(
+    ctx: DbTenantDep,
+    days: int = Query(30, ge=1, le=365),
+    store_id: str | None = Query(None, description="Scope to one store"),
+):
     return ok(
-        await dashboard_summary(session=ctx.session, tenant_id=ctx.user.business_id, days=days)
+        await dashboard_summary(
+            session=ctx.session,
+            tenant_id=ctx.user.business_id,
+            days=days,
+            store_id=store_id,
+        )
     )
 
 
@@ -51,6 +60,7 @@ async def sales_summary_endpoint(
     from_date: str = Query(..., description="ISO 8601 date"),
     to_date: str = Query(..., description="ISO 8601 date"),
     group_by: str = Query("day", pattern="^(day|week|month)$"),
+    store_id: str | None = Query(None, description="Scope to one store"),
 ):
     return ok(
         await sales_summary(
@@ -59,6 +69,7 @@ async def sales_summary_endpoint(
             from_date=from_date,
             to_date=to_date,
             group_by=group_by,
+            store_id=store_id,
         )
     )
 
@@ -97,6 +108,7 @@ async def top_products_endpoint(
     from_date: str = Query(..., description="ISO 8601 date"),
     to_date: str = Query(..., description="ISO 8601 date"),
     limit: int = Query(10, ge=1, le=100),
+    store_id: str | None = Query(None, description="Scope to one store"),
 ):
     return ok(
         await top_products(
@@ -105,6 +117,7 @@ async def top_products_endpoint(
             from_date=from_date,
             to_date=to_date,
             limit=limit,
+            store_id=store_id,
         )
     )
 
@@ -118,6 +131,7 @@ async def payment_methods_endpoint(
     ctx: DbTenantDep,
     from_date: str = Query(..., description="ISO 8601 date"),
     to_date: str = Query(..., description="ISO 8601 date"),
+    store_id: str | None = Query(None, description="Scope to one store"),
 ):
     return ok(
         await payment_breakdown(
@@ -125,6 +139,7 @@ async def payment_methods_endpoint(
             tenant_id=ctx.user.business_id,
             from_date=from_date,
             to_date=to_date,
+            store_id=store_id,
         )
     )
 
@@ -139,6 +154,7 @@ async def cashier_performance_endpoint(
     from_date: str = Query(..., description="ISO 8601 date"),
     to_date: str = Query(..., description="ISO 8601 date"),
     limit: int = Query(20, ge=1, le=100),
+    store_id: str | None = Query(None, description="Scope to one store"),
 ):
     return ok(
         await cashier_performance(
@@ -147,6 +163,7 @@ async def cashier_performance_endpoint(
             from_date=from_date,
             to_date=to_date,
             limit=limit,
+            store_id=store_id,
         )
     )
 
@@ -159,12 +176,14 @@ async def cashier_performance_endpoint(
 async def inventory_alerts_endpoint(
     ctx: DbTenantDep,
     alert_type: str | None = Query(None, description="low_stock|out_of_stock|overstocked|all"),
+    store_id: str | None = Query(None, description="Scope to one store"),
 ):
     return ok(
         await inventory_alerts(
             session=ctx.session,
             tenant_id=ctx.user.business_id,
             alert_type=alert_type,
+            store_id=store_id,
         )
     )
 
@@ -179,6 +198,7 @@ async def profit_loss_endpoint(
     from_date: str = Query(..., description="ISO 8601 date"),
     to_date: str = Query(..., description="ISO 8601 date"),
     group_by: str = Query("day", pattern="^(day|week|month)$"),
+    store_id: str | None = Query(None, description="Scope to one store"),
 ):
     return ok(
         await profit_loss(
@@ -187,6 +207,7 @@ async def profit_loss_endpoint(
             from_date=from_date,
             to_date=to_date,
             group_by=group_by,
+            store_id=store_id,
         )
     )
 
@@ -201,6 +222,7 @@ async def customer_insights_endpoint(
     from_date: str = Query(..., description="ISO 8601 date"),
     to_date: str = Query(..., description="ISO 8601 date"),
     limit: int = Query(20, ge=1, le=100),
+    store_id: str | None = Query(None, description="Scope to one store"),
 ):
     return ok(
         await customer_insights(
@@ -209,6 +231,7 @@ async def customer_insights_endpoint(
             from_date=from_date,
             to_date=to_date,
             limit=limit,
+            store_id=store_id,
         )
     )
 
@@ -223,6 +246,7 @@ async def document_summary_endpoint(
     from_date: str = Query(..., description="ISO 8601 date"),
     to_date: str = Query(..., description="ISO 8601 date"),
     doc_type: str | None = Query(None, description="invoice|receipt|credit_note|all"),
+    store_id: str | None = Query(None, description="Scope to one store"),
 ):
     return ok(
         await document_summary(
@@ -231,5 +255,6 @@ async def document_summary_endpoint(
             from_date=from_date,
             to_date=to_date,
             doc_type=doc_type,
+            store_id=store_id,
         )
     )

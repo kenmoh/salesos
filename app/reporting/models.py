@@ -169,6 +169,8 @@ class MvStoreSales(StoreFlowBase):
     date: Mapped[date] = mapped_column(Date, primary_key=True)
     total_sales: Mapped[int] = mapped_column(Integer, nullable=False)
     total_revenue: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
+    total_discounts: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
+    total_tax: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
     voided_amount: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
     voided_count: Mapped[int] = mapped_column(Integer, nullable=False)
     avg_order_value: Mapped[float | None] = mapped_column(Numeric(15, 2), nullable=True)

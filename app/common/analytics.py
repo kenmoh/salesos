@@ -11,7 +11,7 @@ from sqlalchemy import Date, cast, desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.cache import cache, cached
-from app.accounting.models import CommissionLedger, JournalEntry
+from app.accounting.models import CommissionLedger, Journal, JournalEntry
 from app.catalog.models import Product
 from app.documents.models import Document
 from app.identity.models import User
@@ -44,57 +44,54 @@ def _pct(curr: float, prev: float) -> float:
     return round((curr - prev) / prev * 100, 1)
 
 
-@cached(prefix="analytics:dashboard", ttl=60, key_func=lambda *, session, tenant_id, days=30, **kw: f"{tenant_id}:{days}")
-async def dashboard_summary(*, session: AsyncSession, tenant_id: str, days: int = 30) -> dict:
+@cached(prefix="analytics:dashboard", ttl=60, key_func=lambda *, session, tenant_id, days=30, store_id=None, **kw: f"{tenant_id}:{days}:{store_id or 'all'}")
+async def dashboard_summary(
+    *, session: AsyncSession, tenant_id: str, days: int = 30, store_id: str | None = None
+) -> dict:
     tid = UUID(tenant_id)
+    sid = UUID(store_id) if store_id else None
     current_start = _days_ago(days)
     prev_start = _days_ago(days * 2)
     prev_end = current_start
 
-    cur = (
-        await session.execute(
-            select(
-                func.coalesce(func.sum(MvDailySales.total_revenue), 0),
-                func.coalesce(func.sum(MvDailySales.total_sales), 0),
-            ).where(
-                MvDailySales.tenant_id == tid,
-                MvDailySales.date >= current_start,
-            )
-        )
-    ).one()
-    prev = (
-        await session.execute(
-            select(
-                func.coalesce(func.sum(MvDailySales.total_revenue), 0),
-                func.coalesce(func.sum(MvDailySales.total_sales), 0),
-            ).where(
-                MvDailySales.tenant_id == tid,
-                MvDailySales.date >= prev_start,
-                MvDailySales.date < prev_end,
-            )
-        )
-    ).one()
+    view = MvStoreSales if sid else MvDailySales
 
-    cur_rev = float(cur[0])
-    prev_rev = float(prev[0])
-    cur_cnt = int(cur[1])
-    prev_cnt = int(prev[1])
+    async def range_totals(view, start: date, end: date | None = None) -> tuple[float, int]:
+        conds = [view.tenant_id == tid, view.date >= start]
+        if end is not None:
+            conds.append(view.date < end)
+        if sid:
+            conds.append(view.store_id == sid)
+        row = (
+            await session.execute(
+                select(
+                    func.coalesce(func.sum(view.total_revenue), 0),
+                    func.coalesce(func.sum(view.total_sales), 0),
+                ).where(*conds)
+            )
+        ).one()
+        return float(row[0]), int(row[1])
+
+    cur_rev, cur_cnt = await range_totals(view, current_start)
+    prev_rev, prev_cnt = await range_totals(view, prev_start, prev_end)
+
     cur_aov = round(cur_rev / cur_cnt, 2) if cur_cnt else 0
     prev_aov = round(prev_rev / prev_cnt, 2) if prev_cnt else 0
 
+    rank_view = MvStoreProductRanking if sid else MvProductRanking
+    rank_conds = [rank_view.tenant_id == tid, rank_view.date >= current_start]
+    if sid:
+        rank_conds.append(rank_view.store_id == sid)
     top = (
         (
             await session.execute(
                 select(
-                    MvProductRanking.product_name.label("name"),
-                    func.sum(MvProductRanking.units_sold).label("qty_sold"),
-                    func.sum(MvProductRanking.revenue).label("revenue"),
+                    rank_view.product_name.label("name"),
+                    func.sum(rank_view.units_sold).label("qty_sold"),
+                    func.sum(rank_view.revenue).label("revenue"),
                 )
-                .where(
-                    MvProductRanking.tenant_id == tid,
-                    MvProductRanking.date >= current_start,
-                )
-                .group_by(MvProductRanking.product_name)
+                .where(*rank_conds)
+                .group_by(rank_view.product_name)
                 .order_by(desc("revenue"))
                 .limit(1)
             )
@@ -103,15 +100,18 @@ async def dashboard_summary(*, session: AsyncSession, tenant_id: str, days: int 
         .first()
     )
 
+    low_conds = [
+        MvInventoryStatus.tenant_id == tid,
+        or_(
+            MvInventoryStatus.status == "low_stock",
+            MvInventoryStatus.status == "out_of_stock",
+        ),
+    ]
+    if sid:
+        low_conds.append(MvInventoryStatus.store_id == sid)
     low = (
         await session.execute(
-            select(func.count(MvInventoryStatus.product_id)).where(
-                MvInventoryStatus.tenant_id == tid,
-                or_(
-                    MvInventoryStatus.status == "low_stock",
-                    MvInventoryStatus.status == "out_of_stock",
-                ),
-            )
+            select(func.count(MvInventoryStatus.product_id)).where(*low_conds)
         )
     ).scalar() or 0
 
@@ -125,20 +125,20 @@ async def dashboard_summary(*, session: AsyncSession, tenant_id: str, days: int 
         )
     ).scalar() or 0
 
+    coll_conds = [view.tenant_id == tid, view.date >= current_start]
+    if sid:
+        coll_conds.append(view.store_id == sid)
     coll = (
         await session.execute(
             select(
-                func.coalesce(func.sum(MvDailySales.total_revenue), 0),
+                func.coalesce(func.sum(view.total_revenue), 0),
                 func.coalesce(
-                    func.sum(MvDailySales.total_revenue)
-                    + func.sum(MvDailySales.total_discounts)
-                    + func.sum(MvDailySales.total_tax),
+                    func.sum(view.total_revenue)
+                    + func.sum(view.total_discounts)
+                    + func.sum(view.total_tax),
                     0,
                 ),
-            ).where(
-                MvDailySales.tenant_id == tid,
-                MvDailySales.date >= current_start,
-            )
+            ).where(*coll_conds)
         )
     ).one()
     paid = float(coll[0])
@@ -178,7 +178,7 @@ async def dashboard_summary(*, session: AsyncSession, tenant_id: str, days: int 
     }
 
 
-@cached(prefix="analytics:sales", ttl=60, key_func=lambda *, session, tenant_id, from_date, to_date, group_by="day", **kw: f"{tenant_id}:{from_date}:{to_date}:{group_by}")
+@cached(prefix="analytics:sales", ttl=60, key_func=lambda *, session, tenant_id, from_date, to_date, group_by="day", store_id=None, **kw: f"{tenant_id}:{from_date}:{to_date}:{group_by}:{store_id or 'all'}")
 async def sales_summary(
     *,
     session: AsyncSession,
@@ -186,25 +186,28 @@ async def sales_summary(
     from_date: str,
     to_date: str,
     group_by: str = "day",
+    store_id: str | None = None,
 ) -> dict:
     tid = UUID(tenant_id)
+    sid = UUID(store_id) if store_id else None
     d_from = date.fromisoformat(from_date)
     d_to = date.fromisoformat(to_date)
 
+    view = MvStoreSales if sid else MvDailySales
+    conds = [view.tenant_id == tid, view.date >= d_from, view.date <= d_to]
+    if sid:
+        conds.append(view.store_id == sid)
+
     rows = await session.execute(
         select(
-            MvDailySales.date.label("period"),
-            MvDailySales.total_revenue.label("revenue"),
-            MvDailySales.total_sales.label("sales_count"),
-            MvDailySales.total_discounts.label("discount_total"),
-            MvDailySales.total_tax.label("tax_total"),
+            view.date.label("period"),
+            view.total_revenue.label("revenue"),
+            view.total_sales.label("sales_count"),
+            view.total_discounts.label("discount_total"),
+            view.total_tax.label("tax_total"),
         )
-        .where(
-            MvDailySales.tenant_id == tid,
-            MvDailySales.date >= d_from,
-            MvDailySales.date <= d_to,
-        )
-        .order_by(MvDailySales.date)
+        .where(*conds)
+        .order_by(view.date)
     )
 
     items = []
@@ -305,7 +308,7 @@ async def product_sales_series(
     }
 
 
-@cached(prefix="analytics:top_products", ttl=60, key_func=lambda *, session, tenant_id, from_date, to_date, limit=10, **kw: f"{tenant_id}:{from_date}:{to_date}:{limit}")
+@cached(prefix="analytics:top_products", ttl=60, key_func=lambda *, session, tenant_id, from_date, to_date, limit=10, store_id=None, **kw: f"{tenant_id}:{from_date}:{to_date}:{limit}:{store_id or 'all'}")
 async def top_products(
     *,
     session: AsyncSession,
@@ -313,34 +316,64 @@ async def top_products(
     from_date: str,
     to_date: str,
     limit: int = 10,
+    store_id: str | None = None,
 ) -> list:
     tid = UUID(tenant_id)
+    sid = UUID(store_id) if store_id else None
     d_from = date.fromisoformat(from_date)
     d_to = date.fromisoformat(to_date)
 
-    rows = await session.execute(
-        select(
-            MvProductRanking.product_id,
-            MvProductRanking.product_name,
-            MvProductRanking.sku,
-            func.sum(MvProductRanking.units_sold).label("qty_sold"),
-            func.sum(MvProductRanking.revenue).label("revenue"),
-            func.avg(MvProductRanking.avg_selling_price).label("avg_selling_price"),
-            func.avg(MvProductRanking.cost_price).label("cost_price"),
+    if sid:
+        rows = await session.execute(
+            select(
+                MvStoreProductRanking.product_id,
+                MvStoreProductRanking.product_name,
+                MvStoreProductRanking.sku,
+                func.sum(MvStoreProductRanking.units_sold).label("qty_sold"),
+                func.sum(MvStoreProductRanking.revenue).label("revenue"),
+                func.avg(MvStoreProductRanking.avg_selling_price).label("avg_selling_price"),
+                Product.cost_price.label("cost_price"),
+            )
+            .join(Product, Product.id == MvStoreProductRanking.product_id)
+            .where(
+                MvStoreProductRanking.tenant_id == tid,
+                MvStoreProductRanking.store_id == sid,
+                MvStoreProductRanking.date >= d_from,
+                MvStoreProductRanking.date <= d_to,
+            )
+            .group_by(
+                MvStoreProductRanking.product_id,
+                MvStoreProductRanking.product_name,
+                MvStoreProductRanking.sku,
+                Product.id,
+            )
+            .order_by(desc("revenue"))
+            .limit(limit)
         )
-        .where(
-            MvProductRanking.tenant_id == tid,
-            MvProductRanking.date >= d_from,
-            MvProductRanking.date <= d_to,
+    else:
+        rows = await session.execute(
+            select(
+                MvProductRanking.product_id,
+                MvProductRanking.product_name,
+                MvProductRanking.sku,
+                func.sum(MvProductRanking.units_sold).label("qty_sold"),
+                func.sum(MvProductRanking.revenue).label("revenue"),
+                func.avg(MvProductRanking.avg_selling_price).label("avg_selling_price"),
+                func.avg(MvProductRanking.cost_price).label("cost_price"),
+            )
+            .where(
+                MvProductRanking.tenant_id == tid,
+                MvProductRanking.date >= d_from,
+                MvProductRanking.date <= d_to,
+            )
+            .group_by(
+                MvProductRanking.product_id,
+                MvProductRanking.product_name,
+                MvProductRanking.sku,
+            )
+            .order_by(desc("revenue"))
+            .limit(limit)
         )
-        .group_by(
-            MvProductRanking.product_id,
-            MvProductRanking.product_name,
-            MvProductRanking.sku,
-        )
-        .order_by(desc("revenue"))
-        .limit(limit)
-    )
 
     items = []
     for r in rows.mappings():
@@ -362,47 +395,57 @@ async def top_products(
     return items
 
 
-@cached(prefix="analytics:payments", ttl=60, key_func=lambda *, session, tenant_id, from_date, to_date, **kw: f"{tenant_id}:{from_date}:{to_date}")
+@cached(prefix="analytics:payments", ttl=60, key_func=lambda *, session, tenant_id, from_date, to_date, store_id=None, **kw: f"{tenant_id}:{from_date}:{to_date}:{store_id or 'all'}")
 async def payment_breakdown(
     *,
     session: AsyncSession,
     tenant_id: str,
     from_date: str,
     to_date: str,
+    store_id: str | None = None,
 ) -> dict:
-    from app.sales.models import Sale
+    """Per-method totals for completed sales, read from the payments table.
 
+    The payments table is the only place a method is actually recorded:
+    sale.payment_methods never carries a method key for single-method
+    sales, so the old JSON walk counted every card and transfer payment
+    as cash. Split sales already write one payment row per leg, so both
+    shapes come out of the same query.
+    """
     tid = UUID(tenant_id)
+    sid = UUID(store_id) if store_id else None
     d_from = date.fromisoformat(from_date)
     d_to = date.fromisoformat(to_date)
 
+    conds = [
+        Sale.tenant_id == tid,
+        Sale.status == "completed",
+        Payment.status == "completed",
+        cast(Sale.created_at, Date) >= d_from,
+        cast(Sale.created_at, Date) <= d_to,
+    ]
+    if sid:
+        conds.append(Sale.store_id == sid)
+
     rows = await session.execute(
-        select(
-            Sale.payment_methods,
-        )
-        .where(
-            Sale.tenant_id == tid,
-            Sale.status == "completed",
-            cast(Sale.created_at, Date) >= d_from,
-            cast(Sale.created_at, Date) <= d_to,
-        )
+        select(Payment.method, func.coalesce(func.sum(Payment.amount), 0))
+        .join(Sale, Sale.id == Payment.sale_id)
+        .where(*conds)
+        .group_by(Payment.method)
     )
 
     cash_total = 0.0
     card_total = 0.0
     transfer_total = 0.0
 
-    for (pm,) in rows:
-        if not pm:
-            continue
-        split = pm.get("split") if isinstance(pm, dict) else None
-        if split:
-            cash_total += float(split.get("cash", 0) or 0)
-            card_total += float(split.get("card", 0) or 0)
-            transfer_total += float(split.get("transfer", 0) or 0)
+    for method, amount in rows.all():
+        value = float(amount)
+        if method == "card":
+            card_total += value
+        elif method == "transfer":
+            transfer_total += value
         else:
-            total_val = float(pm.get("compare_total", 0) or 0)
-            cash_total += total_val
+            cash_total += value
 
     total = cash_total + card_total + transfer_total
 
@@ -416,10 +459,50 @@ async def cashier_performance(
     from_date: str,
     to_date: str,
     limit: int = 20,
+    store_id: str | None = None,
 ) -> list:
     tid = UUID(tenant_id)
+    sid = UUID(store_id) if store_id else None
     d_from = date.fromisoformat(from_date)
     d_to = date.fromisoformat(to_date)
+
+    if sid:
+        rows = await session.execute(
+            select(
+                Sale.cashier_id,
+                func.count(Sale.id).filter(Sale.status == "completed").label("sales_count"),
+                func.coalesce(
+                    func.sum(Sale.total).filter(Sale.status == "completed"), 0
+                ).label("total_revenue"),
+                func.count(Sale.id).filter(Sale.status == "voided").label("void_count"),
+            )
+            .where(
+                Sale.tenant_id == tid,
+                Sale.store_id == sid,
+                Sale.status.in_(["completed", "voided"]),
+                Sale.cashier_id.is_not(None),
+                cast(Sale.created_at, Date) >= d_from,
+                cast(Sale.created_at, Date) <= d_to,
+            )
+            .group_by(Sale.cashier_id)
+            .order_by(desc("total_revenue"))
+            .limit(limit)
+        )
+
+        items = []
+        for r in rows.mappings():
+            rev = float(r["total_revenue"])
+            cnt = int(r["sales_count"])
+            items.append(
+                {
+                    "user_id": str(r["cashier_id"]),
+                    "sales_count": cnt,
+                    "total_revenue": rev,
+                    "avg_transaction": round(rev / cnt, 2) if cnt else 0,
+                    "void_count": int(r["void_count"]),
+                }
+            )
+        return items
 
     rows = await session.execute(
         select(
@@ -455,14 +538,20 @@ async def cashier_performance(
     return items
 
 
-@cached(prefix="analytics:inventory", ttl=60, key_func=lambda *, session, tenant_id, alert_type=None, **kw: f"{tenant_id}:{alert_type or 'all'}")
+@cached(prefix="analytics:inventory", ttl=60, key_func=lambda *, session, tenant_id, alert_type=None, store_id=None, **kw: f"{tenant_id}:{alert_type or 'all'}:{store_id or 'all'}")
 async def inventory_alerts(
     *,
     session: AsyncSession,
     tenant_id: str,
     alert_type: str | None = None,
+    store_id: str | None = None,
 ) -> dict:
     tid = UUID(tenant_id)
+    sid = UUID(store_id) if store_id else None
+
+    base_conds = [MvInventoryStatus.tenant_id == tid]
+    if sid:
+        base_conds.append(MvInventoryStatus.store_id == sid)
 
     base = (
         select(
@@ -473,7 +562,7 @@ async def inventory_alerts(
             func.max(MvInventoryStatus.reorder_point).label("min_stock_level"),
             func.min(MvInventoryStatus.status).label("status"),
         )
-        .where(MvInventoryStatus.tenant_id == tid)
+        .where(*base_conds)
         .group_by(MvInventoryStatus.product_id, MvInventoryStatus.product_name, MvInventoryStatus.sku)
     )
 
@@ -510,7 +599,7 @@ async def inventory_alerts(
                 MvInventoryStatus.status,
                 func.count(func.distinct(MvInventoryStatus.product_id)),
             )
-            .where(MvInventoryStatus.tenant_id == tid)
+            .where(*base_conds)
             .group_by(MvInventoryStatus.status)
         )
     ).all()
@@ -540,23 +629,30 @@ async def profit_loss(
     from_date: str,
     to_date: str,
     group_by: str = "day",
+    store_id: str | None = None,
 ) -> dict:
     tid = UUID(tenant_id)
+    sid = UUID(store_id) if store_id else None
     d_from = date.fromisoformat(from_date)
     d_to = date.fromisoformat(to_date)
 
+    sales_view = MvStoreSales if sid else MvDailySales
+    sales_conds = [
+        sales_view.tenant_id == tid,
+        sales_view.date >= d_from,
+        sales_view.date <= d_to,
+    ]
+    if sid:
+        sales_conds.append(sales_view.store_id == sid)
+
     sales_rows = await session.execute(
         select(
-            MvDailySales.date.label("period"),
-            MvDailySales.total_revenue,
-            MvDailySales.total_discounts,
+            sales_view.date.label("period"),
+            sales_view.total_revenue,
+            sales_view.total_discounts,
         )
-        .where(
-            MvDailySales.tenant_id == tid,
-            MvDailySales.date >= d_from,
-            MvDailySales.date <= d_to,
-        )
-        .order_by(MvDailySales.date)
+        .where(*sales_conds)
+        .order_by(sales_view.date)
     )
 
     sales_map = {}
@@ -566,6 +662,15 @@ async def profit_loss(
             "discounts": float(r["total_discounts"]),
         }
 
+    cogs_conds = [
+        Sale.tenant_id == tid,
+        Sale.status != "voided",
+        cast(Sale.created_at, Date) >= d_from,
+        cast(Sale.created_at, Date) <= d_to,
+    ]
+    if sid:
+        cogs_conds.append(Sale.store_id == sid)
+
     cogs_rows = await session.execute(
         select(
             cast(SaleItem.sale_id, text("date(created_at)")).label("period"),
@@ -573,29 +678,27 @@ async def profit_loss(
         )
         .join(Sale, Sale.id == SaleItem.sale_id)
         .join(Product, Product.id == SaleItem.product_id)
-        .where(Sale.tenant_id == tid, Sale.status != "voided")
-        .where(
-            cast(Sale.created_at, Date) >= d_from,
-            cast(Sale.created_at, Date) <= d_to,
-        )
+        .where(*cogs_conds)
         .group_by(text("1"))
     )
     cogs_map = {r["period"]: float(r["cogs"]) for r in cogs_rows.mappings()}
 
-    expense_rows = await session.execute(
-        select(
-            cast(JournalEntry.posted_at, Date).label("period"),
-            func.sum(JournalEntry.amount).label("expenses"),
-        )
-        .where(
-            JournalEntry.tenant_id == tid,
-            JournalEntry.type == "expense",
-            JournalEntry.status == "posted",
-            cast(JournalEntry.posted_at, Date) >= d_from,
-            cast(JournalEntry.posted_at, Date) <= d_to,
-        )
-        .group_by(text("1"))
+    exp_query = select(
+        cast(JournalEntry.posted_at, Date).label("period"),
+        func.sum(JournalEntry.amount).label("expenses"),
     )
+    if sid:
+        exp_query = exp_query.join(Journal, Journal.id == JournalEntry.journal_id)
+    exp_conds = [
+        JournalEntry.tenant_id == tid,
+        JournalEntry.type == "expense",
+        JournalEntry.status == "posted",
+        cast(JournalEntry.posted_at, Date) >= d_from,
+        cast(JournalEntry.posted_at, Date) <= d_to,
+    ]
+    if sid:
+        exp_conds.append(or_(Journal.store_id == sid, Journal.store_id.is_(None)))
+    expense_rows = await session.execute(exp_query.where(*exp_conds).group_by(text("1")))
     expense_map = {r["period"]: float(r["expenses"]) for r in expense_rows.mappings()}
 
     periods = sorted(set(list(sales_map.keys()) + list(cogs_map.keys()) + list(expense_map.keys())))
@@ -646,49 +749,91 @@ async def customer_insights(
     from_date: str,
     to_date: str,
     limit: int = 20,
+    store_id: str | None = None,
 ) -> dict:
     tid = UUID(tenant_id)
+    sid = UUID(store_id) if store_id else None
     d_from = date.fromisoformat(from_date)
     d_to = date.fromisoformat(to_date)
 
-    since = (
-        await session.execute(
-            select(
-                func.count(MvCustomerSummary.customer_key).label("unique_customers"),
-                func.coalesce(func.sum(MvCustomerSummary.total_purchases), 0).label(
-                    "total_purchases"
-                ),
-                func.coalesce(func.sum(MvCustomerSummary.total_revenue), 0).label("total_revenue"),
-            ).where(MvCustomerSummary.tenant_id == tid)
+    if sid:
+        since = (
+            await session.execute(
+                select(
+                    func.count(func.distinct(func.coalesce(Sale.customer_name, "Walk-in"))),
+                    func.count(Sale.id),
+                    func.coalesce(func.sum(Sale.total), 0),
+                ).where(
+                    Sale.tenant_id == tid,
+                    Sale.store_id == sid,
+                    Sale.status == "completed",
+                )
+            )
+        ).one()
+        customer_key = func.coalesce(Sale.customer_name, "Walk-in")
+        period_customers = (
+            await session.execute(
+                select(
+                    customer_key.label("customer_key"),
+                    func.min(Sale.created_at).label("first_purchase"),
+                    func.max(Sale.created_at).label("last_purchase"),
+                    func.count(Sale.id).label("total_purchases"),
+                    func.sum(Sale.total).label("total_revenue"),
+                    func.avg(Sale.total).label("avg_order_value"),
+                )
+                .where(
+                    Sale.tenant_id == tid,
+                    Sale.store_id == sid,
+                    Sale.status == "completed",
+                )
+                .group_by(customer_key)
+                .having(
+                    cast(func.max(Sale.created_at), Date) >= d_from,
+                    cast(func.max(Sale.created_at), Date) <= d_to,
+                )
+                .order_by(desc("total_revenue"))
+                .limit(limit)
+            )
+        ).mappings().all()
+    else:
+        since = (
+            await session.execute(
+                select(
+                    func.count(MvCustomerSummary.customer_key).label("unique_customers"),
+                    func.coalesce(func.sum(MvCustomerSummary.total_purchases), 0).label(
+                        "total_purchases"
+                    ),
+                    func.coalesce(func.sum(MvCustomerSummary.total_revenue), 0).label("total_revenue"),
+                ).where(MvCustomerSummary.tenant_id == tid)
+            )
+        ).one()
+        period_customers = (
+            (
+                await session.execute(
+                    select(
+                        MvCustomerSummary.customer_key,
+                        MvCustomerSummary.first_purchase,
+                        MvCustomerSummary.last_purchase,
+                        MvCustomerSummary.total_purchases,
+                        MvCustomerSummary.total_revenue,
+                        MvCustomerSummary.avg_order_value,
+                    )
+                    .where(
+                        MvCustomerSummary.tenant_id == tid,
+                        MvCustomerSummary.last_purchase >= d_from,
+                        cast(MvCustomerSummary.last_purchase, Date) <= d_to,
+                    )
+                    .order_by(desc(MvCustomerSummary.total_revenue))
+                    .limit(limit)
+                )
+            )
+            .mappings()
+            .all()
         )
-    ).one()
+
     unique = int(since[0])
     total_purchases = int(since[1])
     total_spend = float(since[2])
-
-    period_customers = (
-        (
-            await session.execute(
-                select(
-                    MvCustomerSummary.customer_key,
-                    MvCustomerSummary.first_purchase,
-                    MvCustomerSummary.last_purchase,
-                    MvCustomerSummary.total_purchases,
-                    MvCustomerSummary.total_revenue,
-                    MvCustomerSummary.avg_order_value,
-                )
-                .where(
-                    MvCustomerSummary.tenant_id == tid,
-                    MvCustomerSummary.last_purchase >= d_from,
-                    MvCustomerSummary.last_purchase <= d_to,
-                )
-                .order_by(desc(MvCustomerSummary.total_revenue))
-                .limit(limit)
-            )
-        )
-        .mappings()
-        .all()
-    )
 
     new_count = sum(
         1
@@ -732,16 +877,22 @@ async def document_summary(
     from_date: str,
     to_date: str,
     doc_type: str | None = None,
+    store_id: str | None = None,
 ) -> dict:
     tid = UUID(tenant_id)
+    sid = UUID(store_id) if store_id else None
     d_from = date.fromisoformat(from_date)
     d_to = date.fromisoformat(to_date)
 
-    base = select(Document).where(
+    doc_conds = [
         Document.tenant_id == tid,
         cast(Document.created_at, Date) >= d_from,
         cast(Document.created_at, Date) <= d_to,
-    )
+    ]
+    if sid:
+        doc_conds.append(Document.store_id == sid)
+
+    base = select(Document).where(*doc_conds)
     if doc_type and doc_type != "all":
         base = base.where(Document.doc_type == doc_type)
 
@@ -782,11 +933,9 @@ async def document_summary(
             Document.status,
         )
         .where(
-            Document.tenant_id == tid,
+            *doc_conds,
             Document.status.in_(["sent", "overdue", "draft"]),
             Document.due_date.isnot(None),
-            cast(Document.created_at, Date) >= d_from,
-            cast(Document.created_at, Date) <= d_to,
         )
         .order_by(Document.due_date)
     )
