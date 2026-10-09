@@ -7,7 +7,7 @@ Results are cached in Redis with short TTLs for near-real-time updates.
 from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import Date, cast, desc, func, or_, select, text
+from sqlalchemy import Date, cast, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.cache import cache, cached
@@ -673,13 +673,13 @@ async def profit_loss(
 
     cogs_rows = await session.execute(
         select(
-            cast(SaleItem.sale_id, text("date(created_at)")).label("period"),
+            cast(Sale.created_at, Date).label("period"),
             func.sum(SaleItem.qty * Product.cost_price).label("cogs"),
         )
         .join(Sale, Sale.id == SaleItem.sale_id)
         .join(Product, Product.id == SaleItem.product_id)
         .where(*cogs_conds)
-        .group_by(text("1"))
+        .group_by(cast(Sale.created_at, Date))
     )
     cogs_map = {r["period"]: float(r["cogs"]) for r in cogs_rows.mappings()}
 
@@ -698,7 +698,9 @@ async def profit_loss(
     ]
     if sid:
         exp_conds.append(or_(Journal.store_id == sid, Journal.store_id.is_(None)))
-    expense_rows = await session.execute(exp_query.where(*exp_conds).group_by(text("1")))
+    expense_rows = await session.execute(
+        exp_query.where(*exp_conds).group_by(cast(JournalEntry.posted_at, Date))
+    )
     expense_map = {r["period"]: float(r["expenses"]) for r in expense_rows.mappings()}
 
     periods = sorted(set(list(sales_map.keys()) + list(cogs_map.keys()) + list(expense_map.keys())))

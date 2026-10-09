@@ -16,25 +16,33 @@ pinned here against the live database this suite already runs on:
 Also pinned: a customer whose most recent purchase is today still counts
 in the period list. The old bound compared a timestamp to a date at
 midnight, which cut out everyone who bought on the final day.
+
+And: the profit and loss query cast a sale id with raw
+text("date(created_at)") and grouped by text("1"). Both TextClause
+sends trip SQLAlchemy's statement cache, so /reports/profit-loss had
+always raised and the screen silently hid the section.
 """
 
 from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, insert, text
+from sqlalchemy import delete, insert, select, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.accounting.models import Journal, JournalEntry
+from app.catalog.models import Product
 from app.common.analytics import (
     cashier_performance,
     customer_insights,
     dashboard_summary,
     payment_breakdown,
+    profit_loss,
     sales_summary,
 )
 from app.core.config import settings
 from app.payments.models import Payment
-from app.sales.models import Sale
+from app.sales.models import Sale, SaleItem
 from app.stores.models import Store
 
 TODAY = datetime.now(UTC).date()
@@ -57,9 +65,17 @@ VIEWS = ("mv_daily_sales", "mv_store_sales", "mv_cashier_performance", "mv_custo
 
 async def _cleanup(engine, tenant_id) -> None:
     async with engine.begin() as conn:
+        await conn.execute(
+            delete(SaleItem).where(
+                SaleItem.sale_id.in_(select(Sale.id).where(Sale.tenant_id == tenant_id))
+            )
+        )
         await conn.execute(delete(Payment).where(Payment.tenant_id == tenant_id))
         await conn.execute(delete(Sale).where(Sale.tenant_id == tenant_id))
         await conn.execute(delete(Store).where(Store.tenant_id == tenant_id))
+        await conn.execute(delete(Product).where(Product.tenant_id == tenant_id))
+        await conn.execute(delete(JournalEntry).where(JournalEntry.tenant_id == tenant_id))
+        await conn.execute(delete(Journal).where(Journal.tenant_id == tenant_id))
     await _refresh(engine, *VIEWS)
 
 
@@ -345,6 +361,171 @@ class TestReportsCountCompletedSalesOnly:
                     store_id=str(store),
                 )
                 assert [c["customer_name"] for c in store_insights["top_customers"]] == ["Same Day"]
+        finally:
+            await _cleanup(engine, tenant)
+            await engine.dispose()
+
+
+class TestProfitLossEndToEnd:
+    async def test_profit_and_loss_computes_from_sales_costs_and_expenses(self):
+        engine = create_async_engine(settings.admin_database_url or settings.database_url)
+        tenant = uuid4()
+        store_a, store_b = uuid4(), uuid4()
+        cashier = uuid4()
+        product = uuid4()
+        now = datetime.now(UTC)
+
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(
+                    insert(Store),
+                    [
+                        {"id": store_a, "tenant_id": tenant, "name": "PL Seed A"},
+                        {"id": store_b, "tenant_id": tenant, "name": "PL Seed B"},
+                    ],
+                )
+                await conn.execute(
+                    insert(Product),
+                    {
+                        "id": product,
+                        "tenant_id": tenant,
+                        "public_id": uuid4().hex[:16],
+                        "name": "PL Widget",
+                        "cost_price": 10,
+                        "selling_price": 50,
+                    },
+                )
+                completed, voided = uuid4(), uuid4()
+                await conn.execute(
+                    insert(Sale),
+                    [
+                        {
+                            "id": completed,
+                            "tenant_id": tenant,
+                            "sale_number": _sale_number(),
+                            "status": "completed",
+                            "customer_name": None,
+                            "store_id": store_a,
+                            "cashier_id": cashier,
+                            "subtotal": 100,
+                            "discount": 0,
+                            "tax": 0,
+                            "total": 100,
+                            "amount_paid": 100,
+                            "created_at": now,
+                        },
+                        {
+                            "id": voided,
+                            "tenant_id": tenant,
+                            "sale_number": _sale_number(),
+                            "status": "voided",
+                            "customer_name": None,
+                            "store_id": store_a,
+                            "cashier_id": cashier,
+                            "subtotal": 40,
+                            "discount": 0,
+                            "tax": 0,
+                            "total": 40,
+                            "amount_paid": 0,
+                            "created_at": now,
+                        },
+                    ],
+                )
+                await conn.execute(
+                    insert(SaleItem),
+                    [
+                        {
+                            "id": uuid4(),
+                            "sale_id": completed,
+                            "product_id": product,
+                            "product_name": "PL Widget",
+                            "qty": 2,
+                            "unit_price": 50,
+                            "discount_pct": 0,
+                            "line_total": 100,
+                        },
+                        {
+                            "id": uuid4(),
+                            "sale_id": voided,
+                            "product_id": product,
+                            "product_name": "PL Widget",
+                            "qty": 4,
+                            "unit_price": 10,
+                            "discount_pct": 0,
+                            "line_total": 40,
+                        },
+                    ],
+                )
+                journal = uuid4()
+                await conn.execute(
+                    insert(Journal),
+                    {
+                        "id": journal,
+                        "tenant_id": tenant,
+                        "journal_number": f"JRN-{uuid4().hex[:8]}",
+                        "description": "PL rent",
+                        "status": "posted",
+                        "posted_at": now,
+                    },
+                )
+                await conn.execute(
+                    insert(JournalEntry),
+                    {
+                        "id": uuid4(),
+                        "journal_id": journal,
+                        "tenant_id": tenant,
+                        "account_id": uuid4(),
+                        "account_code": "5000",
+                        "debit": 30,
+                        "credit": 0,
+                        "type": "expense",
+                        "status": "posted",
+                        "posted_at": now,
+                        "amount": 30,
+                    },
+                )
+            await _refresh(engine, *VIEWS)
+
+            async with engine.connect() as session:
+                pl = await profit_loss(
+                    session=session,
+                    tenant_id=str(tenant),
+                    from_date=FROM_DATE,
+                    to_date=TO_DATE,
+                )
+                totals = pl["totals"]
+                assert totals["revenue"] == 100.0
+                assert totals["cogs"] == 20.0
+                assert totals["expenses"] == 30.0
+                assert totals["gross_profit"] == 80.0
+                assert totals["net_profit"] == 50.0
+                (item,) = pl["items"]
+                assert item["period"] == TODAY.isoformat()
+                assert item["cogs"] == 20.0
+                assert item["gross_margin_pct"] == 80.0
+
+                store_pl = await profit_loss(
+                    session=session,
+                    tenant_id=str(tenant),
+                    from_date=FROM_DATE,
+                    to_date=TO_DATE,
+                    store_id=str(store_a),
+                )
+                assert store_pl["totals"]["revenue"] == 100.0
+                assert store_pl["totals"]["cogs"] == 20.0
+                assert store_pl["totals"]["expenses"] == 30.0
+
+                other_pl = await profit_loss(
+                    session=session,
+                    tenant_id=str(tenant),
+                    from_date=FROM_DATE,
+                    to_date=TO_DATE,
+                    store_id=str(store_b),
+                )
+                assert other_pl["totals"]["revenue"] == 0.0
+                assert other_pl["totals"]["cogs"] == 0.0
+                assert other_pl["totals"]["expenses"] == 30.0
+                assert other_pl["totals"]["net_profit"] == -30.0
         finally:
             await _cleanup(engine, tenant)
             await engine.dispose()
