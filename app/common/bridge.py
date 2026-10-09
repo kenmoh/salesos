@@ -2724,7 +2724,9 @@ async def create_product_for_store(
             unit=unit,
             cost_price=cost_price,
             selling_price=selling_price,
-            tax_ids=[UUID(t) for t in tax_ids],
+            # products.tax_ids is a JSON column; the driver serializes it
+            # with json.dumps, which rejects UUID objects.
+            tax_ids=[str(UUID(t)) for t in tax_ids],
             reorder_point=reorder_point,
             image_url=image_url,
         )
@@ -3080,7 +3082,7 @@ async def update_store_product(
             await session.execute(
                 sa_update(Product)
                 .where(Product.id == UUID(product_id), Product.tenant_id == UUID(tenant_id))
-                .values(tax_ids=[UUID(str(t)) for t in tax_ids])
+                .values(tax_ids=[str(UUID(str(t))) for t in tax_ids])
             )
             await session.commit()
 

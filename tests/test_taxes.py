@@ -8,9 +8,12 @@ account named on the tax itself. What is pinned here:
   by gross share;
 * a sale and a document charging the same figure for the same lines;
 * each tax landing in its own liability account in the journal;
-* the two routes a client could previously have priced its own tax.
+* the two routes a client could previously have priced its own tax;
+* the stored assignment staying JSON-serializable, because products.tax_ids
+  is a JSON column.
 """
 
+import json
 from decimal import Decimal
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -310,6 +313,90 @@ class TestTheClientCannotPriceItsTax:
             await engine.dispose()
 
         assert found == []
+
+
+class TestTheStoredAssignmentIsJsonSerializable:
+    """products.tax_ids is a JSON column: UUID objects there raise inside the
+    driver after validation already passed, so the create route 500s."""
+
+    @staticmethod
+    def _session() -> MagicMock:
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        session.add = MagicMock()
+        session.flush = AsyncMock()
+        session.commit = AsyncMock()
+        session.execute = AsyncMock()
+        return session
+
+    async def test_creating_a_product_stores_the_tax_ids_as_strings(self):
+        from app.common import bridge
+
+        session = self._session()
+        sdb = MagicMock()
+        sdb.return_value.session.return_value = session
+
+        tax_id = uuid4()
+        owned = [{"id": str(tax_id), "name": "VAT", "rate": 7.5, "account_code": "2300"}]
+
+        with (
+            patch.object(bridge, "_get_sdb", sdb),
+            patch.object(bridge, "taxes_for_ids", AsyncMock(return_value=owned)),
+            # The QR step uploads to Cloudinary; nothing here needs it.
+            patch(
+                "app.catalog.cloudinary_upload.upload_qr_png", return_value={}
+            ),
+        ):
+            await bridge.create_product_for_store(
+                tenant_id=str(TENANT),
+                store_id=str(STORE),
+                name="Thing",
+                selling_price=Decimal("100"),
+                tax_ids=[str(tax_id)],
+            )
+
+        product = session.add.call_args_list[0].args[0]
+        assert product.tax_ids == [str(tax_id)]
+        json.dumps(product.tax_ids)  # what the driver runs on the way out
+
+    async def test_updating_a_product_stores_the_tax_ids_as_strings(self):
+        from app.common import bridge
+        from app.stores import repository
+
+        session = self._session()
+        sdb = MagicMock()
+        sdb.return_value.session.return_value = session
+
+        tax_id = uuid4()
+        owned = [{"id": str(tax_id), "name": "VAT", "rate": 7.5, "account_code": "2300"}]
+        result = MagicMock()
+        result.selling_price = 100
+        result.cost_price = 50
+
+        with (
+            patch.object(bridge, "_get_sdb", sdb),
+            patch.object(bridge, "taxes_for_ids", AsyncMock(return_value=owned)),
+            patch.object(bridge, "cache", MagicMock(delete_pattern=AsyncMock())),
+            patch.object(
+                repository, "get_store_with_tenant", AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(
+                repository, "get_store_product", AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(
+                repository, "update_store_product", AsyncMock(return_value=result)
+            ),
+        ):
+            await bridge.update_store_product(
+                tenant_id=str(TENANT),
+                store_id=str(STORE),
+                product_id=str(uuid4()),
+                tax_ids=[str(tax_id)],
+            )
+
+        stmt = session.execute.call_args[0][0]
+        assert stmt.compile().params["tax_ids"] == [str(tax_id)]
 
 
 class TestConversionKeepsTheQuotedTax:

@@ -83,16 +83,19 @@ async def product_tax_map(
 async def taxes_for_ids(
     session: AsyncSession,
     tenant_id: UUID,
-    tax_ids: list[UUID],
+    tax_ids: list[UUID] | list[str],
 ) -> list[dict]:
     """Resolve an explicitly chosen set of taxes, as a custom document line picks.
 
     The client names the tax; the rate and the liability account still come
     from the tenant's own row, so a client cannot price its own tax.
+
+    Callers hand over either UUIDs or the strings the JSON column stores;
+    normalising once keeps the query and the lookup below on the same objects.
     """
-    unique = {tid for tid in tax_ids if tid}
-    if not unique:
+    ids = [UUID(str(t)) for t in tax_ids if t]
+    if not ids:
         return []
-    active = await _active_taxes(session, tenant_id, unique)
+    active = await _active_taxes(session, tenant_id, set(ids))
     # Preserve the order the caller chose them in.
-    return [_entry(active[tid]) for tid in tax_ids if tid in active]
+    return [_entry(active[tid]) for tid in ids if tid in active]
