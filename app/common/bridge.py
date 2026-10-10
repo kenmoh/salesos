@@ -1199,7 +1199,7 @@ async def create_sale_via_service(
         )
         sale_items = [
             SaleItemLine(
-                product_id=UUID(i["product_id"]),
+                product_id=UUID(str(i["product_id"])),
                 product_name=i["product_name"],
                 qty=Decimal(str(i["qty"])),
                 unit_price=Decimal(str(i["unit_price"])),
@@ -8031,7 +8031,7 @@ async def create_document(
 
         tenant = UUID(tenant_id)
         product_ids = [
-            UUID(i["product_id"]) for i in items if i.get("product_id")
+            UUID(str(i["product_id"])) for i in items if i.get("product_id")
         ]
         product_taxes = await product_tax_map(session, tenant, product_ids)
 
@@ -8048,7 +8048,7 @@ async def create_document(
         item_lines = []
         for i in items:
             if i.get("product_id"):
-                line_taxes = product_taxes.get(str(UUID(i["product_id"])), [])
+                line_taxes = product_taxes.get(str(UUID(str(i["product_id"]))), [])
             else:
                 line_taxes = [
                     chosen_map[str(raw)] for raw in (i.get("tax_ids") or [])
@@ -8056,7 +8056,7 @@ async def create_document(
                 ]
             item_lines.append(
                 DocumentItemLine(
-                    product_id=UUID(i["product_id"]) if i.get("product_id") else None,
+                    product_id=UUID(str(i["product_id"])) if i.get("product_id") else None,
                     description=i["description"],
                     qty=Decimal(str(i["qty"])),
                     unit_price=Decimal(str(i["unit_price"])),
