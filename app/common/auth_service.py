@@ -156,6 +156,12 @@ async def login(*, session, email, password, totp_code, req, device_name=None):
                 ),
             )
             raise AuthError("Invalid TOTP code", "invalid_totp")
+    # The request session is anonymous, so the RLS GUCs are unset; the role
+    # lookup below reads the tenant-scoped roles table and needs them pointed
+    # at this user's tenant.
+    from app.common.db.session import set_rls_context
+
+    await set_rls_context(session, user["user_id"], user["business_id"], "")
     perms = await _get_perms(user["user_id"], session)
     role_names = await _get_role_names(user["user_id"], session)
     access, _ = create_access_token(
@@ -228,6 +234,9 @@ async def refresh_tokens(*, session, raw_token, req):
         {},
         settings.refresh_token_expire_days * 86400,
     )
+    from app.common.db.session import set_rls_context
+
+    await set_rls_context(session, payload["sub"], payload["bid"], "")
     perms = await _get_perms(payload["sub"], session)
     role_names = await _get_role_names(payload["sub"], session)
     new_access, _ = create_access_token(
@@ -619,6 +628,12 @@ async def login_with_social(*, session, id_token: str, provider: str, req):
             # Update user's tenant_id
             user.tenant_id = UUID(tenant_result["tenant_id"])
 
+            # The request session is anonymous; point the RLS GUCs at the new
+            # tenant so the roles lookup below can see its owner role.
+            from app.common.db.session import set_rls_context
+
+            await set_rls_context(session, str(user.id), str(user.tenant_id), "")
+
             # Assign default owner role
             from app.identity.models import Role, UserRole
 
@@ -632,6 +647,11 @@ async def login_with_social(*, session, id_token: str, provider: str, req):
             if role_obj:
                 ur = UserRole(user_id=user.id, role_id=role_obj.id)
                 session.add(ur)
+
+    if user.tenant_id:
+        from app.common.db.session import set_rls_context
+
+        await set_rls_context(session, str(user.id), str(user.tenant_id), "")
 
     # Issue tokens
     perms = await _get_perms(str(user.id), session)

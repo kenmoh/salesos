@@ -266,11 +266,22 @@ async def create_tenant(
     result, tenant_model, user_model, outbox = plan_tenant_creation(command, slug)
 
     async with sdb.session() as session:
+        # Tenant bootstrap runs before any request identity exists, so point
+        # the RLS session GUCs at the tenant being created; the roles, outbox
+        # and chart-of-accounts rows written below are all checked against it.
+        from app.common.db.session import set_rls_context
+        from app.identity.repository import get_all_permissions, set_role_permissions
+
+        await set_rls_context(
+            session, str(user_model.id), str(tenant_model.id), OWNER_ROLE_NAME
+        )
         await repo_create_tenant(session, tenant_model)
         await repo_create_user(session, user_model)
 
         # Create the "owner" role for this tenant (if missing)
         tenant_uid = tenant_model.id
+        all_perms = await get_all_permissions(session)
+        perm_id_by_name = {p.name: p.id for p in all_perms}
         role = await get_role_by_name_for_tenant(session, tenant_uid, OWNER_ROLE_NAME)
         if not role:
             from app.identity.models import Role
@@ -284,9 +295,6 @@ async def create_tenant(
             session.add(role)
             await session.flush()
             # Assign all permissions to owner
-            from app.identity.repository import get_all_permissions, set_role_permissions
-
-            all_perms = await get_all_permissions(session)
             await set_role_permissions(session, role.id, [p.id for p in all_perms])
         await assign_role_to_user(session, user_model.id, role.id, assigned_by=user_model.id)
 
@@ -440,15 +448,12 @@ async def create_tenant(
             session.add(new_role)
             await session.flush()
             perm_names = ROLE_PERMISSIONS_MAP.get(role_name, [])
-            for perm_name in perm_names:
-                result_perms = await session.execute(
-                    select(Permission).where(Permission.name == perm_name)
-                )
-                perm = result_perms.scalar_one_or_none()
-                if perm:
-                    from app.identity.models import RolePermission
+            from app.identity.models import RolePermission
 
-                    session.add(RolePermission(role_id=new_role.id, permission_id=perm.id))
+            for perm_name in perm_names:
+                perm_id = perm_id_by_name.get(perm_name)
+                if perm_id is not None:
+                    session.add(RolePermission(role_id=new_role.id, permission_id=perm_id))
 
         for write in outbox:
             session.add(write.to_model())

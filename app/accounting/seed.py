@@ -23,10 +23,10 @@ Account Code Conventions:
 
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import ChartOfAccount
-from .repository import create_account, get_account_by_code
 from .schemas import ChartOfAccountCreateCommand
 
 
@@ -256,17 +256,24 @@ async def seed_chart_of_accounts(
     """
     created_accounts: list[dict[str, str]] = []
 
+    # One roundtrip for the idempotency check, then a single flush at the
+    # end; per-account SELECT/INSERT pairs dominate registration latency on
+    # high-RTT database links.
+    existing_codes = set(
+        (
+            await session.execute(
+                select(ChartOfAccount.code).where(ChartOfAccount.tenant_id == tenant_id)
+            )
+        ).scalars()
+    )
+
+    # Import here to avoid circular imports at module level
+    from .service import plan_create_account
+
     for account_def in DEFAULT_ACCOUNTS:
-        # Check if account already exists for this tenant (idempotent check)
-        existing = await get_account_by_code(
-            session=session,
-            tenant_id=tenant_id,
-            code=account_def["code"],
-        )
-        if existing:
+        if account_def["code"] in existing_codes:
             continue
 
-        # Create the account using the service layer planning function
         command = ChartOfAccountCreateCommand(
             tenant_id=tenant_id,
             code=account_def["code"],
@@ -274,11 +281,11 @@ async def seed_chart_of_accounts(
             account_type=account_def["account_type"],
         )
 
-        # Import here to avoid circular imports at module level
-        from .service import plan_create_account
-
-        result, account_model = plan_create_account(command)
-        await create_account(session=session, account=account_model)
+        _, account_model = plan_create_account(command)
+        session.add(account_model)
         created_accounts.append(account_def)
+
+    if created_accounts:
+        await session.flush()
 
     return created_accounts
