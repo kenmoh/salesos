@@ -34,7 +34,16 @@ class ApiSettings(BaseSettings):
 
     secret_key: str = Field(default="", alias="SECRET_KEY")
     allowed_origins: list[str] = Field(
-        default=["http://localhost:8080", "http://localhost:8000", "http://localhost:8001"],
+        default=[
+            "http://localhost:8080",
+            "http://localhost:8000",
+            "http://localhost:8001",
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://localhost:4319",
+            "http://localhost:4321",
+            "http://localhost:4322",
+        ],
         alias="ALLOWED_ORIGINS",
     )
 
