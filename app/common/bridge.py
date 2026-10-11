@@ -6942,6 +6942,13 @@ async def initiate_payment(
                 if p:
                     product_map[pid] = p
 
+            # Same assignment checkout_cart reads: the taxes each product
+            # carries, resolved server-side so the intent can be priced
+            # tax-inclusively.
+            product_taxes = await product_tax_map(
+                cat_session, tenant_uid, [UUID(pid) for pid in product_ids]
+            )
+
         store_product_map = {}
         if cart_store_id:
             from app.stores.repository import get_store_product
@@ -6982,7 +6989,27 @@ async def initiate_payment(
             else:
                 raise ValueError(f"invalid_coupon:{coupon_result.get('message', 'Unknown error')}")
 
-        final_total = max(Decimal("0"), total - discount_amount)
+        # Prices are tax-exclusive, so the customer owes the goods plus the
+        # product taxes. The intent has to carry that same figure the sale
+        # will be booked at (plan_sale_creation adds tax in checkout_cart) --
+        # recording the pre-tax amount here leaves every taxed cash sale a
+        # phantom "partial" whose balance is exactly the tax.
+        from app.taxes.calc import TaxLine, compute_taxes
+
+        tax_lines = [
+            TaxLine(
+                qty=float(snap["qty"]),
+                unit_price=float(snap["unit_price"]),
+                discount_pct=0.0,
+                taxes=list(product_taxes.get(str(item.product_id)) or []),
+            )
+            for item, snap in zip(raw_items, snapshot_items)
+        ]
+        calc = compute_taxes(tax_lines, cart_discount=float(discount_amount))
+        final_total = max(
+            Decimal("0"),
+            Decimal(str(calc.taxable)) + Decimal(str(calc.total_tax)),
+        )
 
     # Create intent
     tx_ref = f"SF-{method.upper()[:3]}-{uuid4().hex[:12].upper()}"
