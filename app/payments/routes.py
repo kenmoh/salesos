@@ -89,6 +89,7 @@ async def cash(payload: CashPayment, ctx: TenantDep):
             method="cash",
             amount=payload.amount,
             reference=None,
+            recorded_by=ctx.user.user_id,
         )
     )
 

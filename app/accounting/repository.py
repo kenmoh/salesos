@@ -810,8 +810,8 @@ async def get_balance_sheet(
     # created without the offsetting journal, or a payment lands on a row that
     # was never booked, these two drift apart and the difference is the size of
     # the hole in the books.
-    receivable_subledger = await _sum_ar_balances(session, tenant_id)
-    payable_subledger = await _sum_ap_balances(session, tenant_id)
+    receivable_subledger = await _sum_ar_balances(session, tenant_id, store_id)
+    payable_subledger = await _sum_ap_balances(session, tenant_id, store_id)
     receivable_control = await _control_account_balance(
         session, tenant_id, "1100", as_at_date, store_id
     )
@@ -841,23 +841,36 @@ async def get_balance_sheet(
     }
 
 
-async def _sum_ar_balances(session: AsyncSession, tenant_id: UUID) -> float:
-    """Total of every receivable's outstanding balance."""
-    total = await session.execute(
-        select(func.coalesce(func.sum(AccountReceivable.balance), 0)).where(
-            AccountReceivable.tenant_id == tenant_id
-        )
+async def _sum_ar_balances(
+    session: AsyncSession, tenant_id: UUID, store_id: UUID | None = None
+) -> float:
+    """Total of every receivable's outstanding balance.
+
+    ``store_id`` scopes the sum to one store so it compares like-for-like with
+    the store-filtered control account; without it the sum is tenant-wide
+    (NULL-store rows included), which makes store views report a phantom
+    difference against a control account that only counts that store's
+    journals.
+    """
+    stmt = select(func.coalesce(func.sum(AccountReceivable.balance), 0)).where(
+        AccountReceivable.tenant_id == tenant_id
     )
+    if store_id is not None:
+        stmt = stmt.where(AccountReceivable.store_id == store_id)
+    total = await session.execute(stmt)
     return round(float(total.scalar() or 0), 2)
 
 
-async def _sum_ap_balances(session: AsyncSession, tenant_id: UUID) -> float:
-    """Total of every payable's outstanding balance."""
-    total = await session.execute(
-        select(func.coalesce(func.sum(AccountPayable.balance), 0)).where(
-            AccountPayable.tenant_id == tenant_id
-        )
+async def _sum_ap_balances(
+    session: AsyncSession, tenant_id: UUID, store_id: UUID | None = None
+) -> float:
+    """Total of every payable's outstanding balance. Store-scoped like AR."""
+    stmt = select(func.coalesce(func.sum(AccountPayable.balance), 0)).where(
+        AccountPayable.tenant_id == tenant_id
     )
+    if store_id is not None:
+        stmt = stmt.where(AccountPayable.store_id == store_id)
+    total = await session.execute(stmt)
     return round(float(total.scalar() or 0), 2)
 
 

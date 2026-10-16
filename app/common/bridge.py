@@ -1138,6 +1138,35 @@ async def _post_sale_journal(
         await repo_post_journal(
             session, journal.id, UUID(cashier_id) if cashier_id else None
         )
+
+        if not settled and any(e.account_code == "1100" for e in entries):
+            # Create the AR subledger row for this unpaid sale so the customer
+            # list reflects the receivable that the GL just booked. Skipped
+            # when 1100 was missing from the chart and the debit fell back to
+            # cash -- there is no receivable to track in that case.
+            from app.accounting.models import AccountReceivable as AR
+            from app.sales.models import Sale
+
+            sale_obj = await session.get(Sale, UUID(sale_id))
+            customer_name = (sale_obj.customer_name if sale_obj else None) or "Walk-in"
+
+            now = datetime.now(UTC)
+            ar_row = AR(
+                tenant_id=tenant_uid,
+                invoice_id=UUID(sale_id),
+                customer_id=None,
+                customer_name=customer_name,
+                invoice_number=sale_number,
+                amount=total,
+                amount_paid=0,
+                balance=total,
+                due_date=now,
+                status="pending",
+                store_id=UUID(store_id) if store_id else None,
+            )
+            session.add(ar_row)
+            await session.flush()
+
         await session.commit()
 
 
@@ -6395,6 +6424,100 @@ async def get_receipt_by_sale(business_id: str, sale_id: str) -> dict | None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+async def _settle_sale_receivable(
+    session: AsyncSession,
+    *,
+    business_id: str,
+    sale,
+    amount: Decimal,
+    method: str,
+    recorded_by: str | None = None,
+) -> None:
+    """Credit 1100 and update the AR row created when the sale was booked unpaid.
+
+    Sales booked with ``settled=False`` debit 1100 and (since the fix) open a
+    subledger row; each payment recorded against such a sale must post the cash
+    leg (Dr cash/bank, Cr 1100) and draw the row down, or the ledger keeps
+    showing money the customer already paid. Sales booked settled (POS cash
+    checkout) have no AR row and are skipped here -- their cash was booked at
+    checkout.
+    """
+    from sqlalchemy import or_, select as sa_select
+
+    from app.accounting.models import AccountReceivable
+    from app.accounting.rpc import post_journal
+    from app.common.db.session import set_rls_context
+
+    tenant_uid = UUID(business_id)
+    await set_rls_context(session, recorded_by or "00000000-0000-0000-0000-000000000000", business_id, "owner")
+
+    ar_res = await session.execute(
+        sa_select(AccountReceivable).where(
+            AccountReceivable.tenant_id == tenant_uid,
+            or_(
+                AccountReceivable.invoice_id == sale.id,
+                AccountReceivable.invoice_number == sale.sale_number,
+            ),
+            AccountReceivable.status != "paid",
+        )
+    )
+    ar = ar_res.scalars().first()
+    if ar is None:
+        return
+
+    settle_amount = min(Decimal(str(amount)), Decimal(str(ar.balance)))
+    if settle_amount <= 0:
+        return
+
+    debit_code = "1010" if method in ("card", "transfer") else "1000"
+    debit_acct = await get_account_by_code(session, tenant_uid, debit_code)
+    if debit_acct is None and debit_code == "1010":
+        debit_code = "1000"
+        debit_acct = await get_account_by_code(session, tenant_uid, debit_code)
+    credit_acct = await get_account_by_code(session, tenant_uid, "1100")
+    if debit_acct is None or credit_acct is None:
+        # Chart cannot represent the settlement; leave the AR row for the
+        # reconciliation tooling rather than posting an unbalanced entry.
+        return
+
+    description = f"Payment for sale {sale.sale_number}"
+    await post_journal(
+        session,
+        business_id=business_id,
+        user_id=recorded_by or "00000000-0000-0000-0000-000000000000",
+        description=description,
+        entries=[
+            {
+                "account_id": str(debit_acct.id),
+                "account_code": debit_acct.code,
+                "debit": float(settle_amount),
+                "credit": 0,
+                "description": description,
+                "type": "debit",
+            },
+            {
+                "account_id": str(credit_acct.id),
+                "account_code": credit_acct.code,
+                "debit": 0,
+                "credit": float(settle_amount),
+                "description": description,
+                "type": "credit",
+            },
+        ],
+        ref_id=str(sale.id),
+        ref_type="sale_payment",
+        store_id=str(sale.store_id) if getattr(sale, "store_id", None) else None,
+    )
+
+    ar.amount_paid = float(ar.amount_paid) + float(settle_amount)
+    ar.balance = float(ar.balance) - float(settle_amount)
+    if ar.balance <= 0.009:
+        ar.balance = 0
+        ar.status = "paid"
+    else:
+        ar.status = "partial"
+
+
 async def record_payment(
     business_id: str,
     sale_id: str,
@@ -6402,6 +6525,7 @@ async def record_payment(
     amount: Decimal,
     reference: str | None = None,
     gateway_resp: dict | None = None,
+    recorded_by: str | None = None,
 ) -> dict:
     """Record a payment against a sale and update the sale status.
 
@@ -6409,6 +6533,8 @@ async def record_payment(
     sale's ``amount_paid`` and status. When the sale becomes fully paid,
     the platform fee is calculated and, for cash payments, a fee ledger
     entry is created. Outbox events are recorded for downstream processing.
+    If the sale was booked unpaid (receivable subledger row), the cash leg
+    is also posted to the ledger and the subledger row is drawn down.
 
     Args:
         business_id: Unique identifier of the tenant that owns the sale.
@@ -6509,6 +6635,18 @@ async def record_payment(
             )
             session.add(ledger)
 
+        if sale:
+            # Post the cash leg and draw down the receivable row, if the sale
+            # was booked unpaid. No-ops for settled POS sales.
+            await _settle_sale_receivable(
+                session,
+                business_id=business_id,
+                sale=sale,
+                amount=Decimal(str(amount)),
+                method=method,
+                recorded_by=recorded_by,
+            )
+
         await session.commit()
         return {
             "payment_id": str(payment_id),
@@ -6527,13 +6665,15 @@ async def record_split_payment(
     business_id: str,
     sale_id: str,
     payments: list[dict],
+    recorded_by: str | None = None,
 ) -> dict:
     """Record multiple payments against a single sale in a single batch.
 
     Creates payment records for each payment in the batch and updates the
     sale's ``amount_paid`` and status accordingly. When the sale becomes
     fully paid, the platform fee is calculated and fee ledger entries are
-    created for cash payments.
+    created for cash payments. If the sale was booked unpaid, the cash
+    leg is posted and the receivable subledger row is drawn down.
 
     Args:
         business_id: Unique identifier of the tenant that owns the sale.
@@ -6624,6 +6764,19 @@ async def record_split_payment(
                         status="deducted" if p["method"] in ("card", "transfer") else "pending",
                     )
                     session.add(ledger)
+
+        if sale:
+            # Post the cash leg and draw down the receivable row, if the sale
+            # was booked unpaid. No-ops for settled POS sales. The batch is
+            # settled once against the full amount paid, not per line.
+            await _settle_sale_receivable(
+                session,
+                business_id=business_id,
+                sale=sale,
+                amount=total_batch,
+                method=payments[0].get("method", "cash") if payments else "cash",
+                recorded_by=recorded_by,
+            )
 
         await session.commit()
         return {
