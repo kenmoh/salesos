@@ -6590,9 +6590,9 @@ async def record_payment(
                 sale.status = "partial"
 
             if sale.status == "completed":
-                from app.platform.fee_calculator import calculate_platform_fee
+                from app.platform.fee_calculator import calculate_platform_fee, sale_fee_base
 
-                fee_result = await calculate_platform_fee(session, float(sale.total))
+                fee_result = await calculate_platform_fee(session, sale_fee_base(sale))
                 pm["platform_fee"] = fee_result["platform_fee"]
                 pm["settlement_amount"] = fee_result["settlement_amount"]
                 pm["fee_rule_id"] = fee_result["rule_id"]
@@ -6738,9 +6738,9 @@ async def record_split_payment(
             sale.status = "partial"
 
         if sale.status == "completed":
-            from app.platform.fee_calculator import calculate_platform_fee
+            from app.platform.fee_calculator import calculate_platform_fee, sale_fee_base
 
-            fee_result = await calculate_platform_fee(session, float(sale.total))
+            fee_result = await calculate_platform_fee(session, sale_fee_base(sale))
             pm["platform_fee"] = fee_result["platform_fee"]
             pm["settlement_amount"] = fee_result["settlement_amount"]
             pm["fee_rule_id"] = fee_result["rule_id"]
@@ -6825,7 +6825,7 @@ async def suggest_even_split(sale_id: str) -> dict:
 
 
 async def _build_subaccounts_for_payment(
-    session, tenant_id: UUID, sale_total: float
+    session, tenant_id: UUID, paid_amount: float, fee_base: float | None = None
 ) -> list[dict] | None:
     """Build the subaccount split configuration for a payment gateway request.
 
@@ -6837,7 +6837,9 @@ async def _build_subaccounts_for_payment(
     Args:
         session: Active database session for the transaction.
         tenant_id: Unique identifier of the tenant.
-        sale_total: Total amount of the sale used for fee calculation.
+        paid_amount: Amount the customer actually pays (tax included).
+        fee_base: Commission base (pre-tax, post-discount sale value).
+            Defaults to ``paid_amount`` for tax-free sales.
 
     Returns:
         A list containing a single subaccount dictionary with ``id``
@@ -6852,16 +6854,26 @@ async def _build_subaccounts_for_payment(
     if not sub:
         return None
 
-    fee_result = await calculate_platform_fee(session, sale_total)
-    if fee_result["platform_fee"] <= 0:
+    if fee_base is None:
+        fee_base = paid_amount
+
+    fee_result = await calculate_platform_fee(session, fee_base)
+    fee = fee_result["platform_fee"]
+    if fee <= 0:
         return None
 
-    if fee_result["fee_type"] == "percentage":
-        transaction_charge_type = "percentage"
-        transaction_charge = fee_result["rate"] / 100
-    else:
+    if fee_result["fee_type"] == "flat":
+        # A flat naira fee is exact regardless of how much tax is in the
+        # paid amount.
         transaction_charge_type = "flat"
-        transaction_charge = fee_result["rate"]
+        transaction_charge = fee
+    else:
+        # The gateway applies the percentage against the tax-inclusive
+        # amount being paid, so the rate is rescaled so that the platform
+        # still collects exactly ``fee`` naira out of ``paid_amount``.
+        base = float(fee_result["sale_total"])
+        transaction_charge_type = "percentage"
+        transaction_charge = fee / paid_amount if paid_amount > 0 else 0
 
     return [
         {
@@ -6914,8 +6926,10 @@ async def initiate_card_payment(
 
         tx_ref = f"SF-{uuid4().hex[:16].upper()}"
 
+        from app.platform.fee_calculator import sale_fee_base
+
         subaccounts = await _build_subaccounts_for_payment(
-            session, UUID(business_id), float(sale.total)
+            session, UUID(business_id), float(sale.total), fee_base=sale_fee_base(sale)
         )
 
         card_result = await flutterwave_service.create_payment_link(
@@ -7208,7 +7222,7 @@ async def initiate_payment(
         subaccounts = None
         async with sdb_payments.session() as session:
             subaccounts = await _build_subaccounts_for_payment(
-                session, tenant_uid, float(final_total)
+                session, tenant_uid, float(final_total), fee_base=float(calc.taxable)
             )
 
         card_link_result = await flutterwave_service.create_payment_link(
@@ -7736,7 +7750,11 @@ async def process_split_payment(
             tx_ref = f"SF-{uuid4().hex[:16].upper()}"
             expires = datetime.now(UTC) + timedelta(minutes=30)
 
-            subaccounts = await _build_subaccounts_for_payment(session, UUID(business_id), total)
+            from app.platform.fee_calculator import sale_fee_base
+
+            subaccounts = await _build_subaccounts_for_payment(
+                session, UUID(business_id), total, fee_base=sale_fee_base(sale)
+            )
 
             card_result = await flutterwave_service.create_payment_link(
                 amount=card_amount,
@@ -7824,9 +7842,9 @@ async def process_split_payment(
             sale.status = "partial"
 
         if sale.status == "completed":
-            from app.platform.fee_calculator import calculate_platform_fee
+            from app.platform.fee_calculator import calculate_platform_fee, sale_fee_base
 
-            fee_result = await calculate_platform_fee(session, total)
+            fee_result = await calculate_platform_fee(session, sale_fee_base(sale))
             pm["platform_fee"] = fee_result["platform_fee"]
             pm["settlement_amount"] = fee_result["settlement_amount"]
             pm["fee_rule_id"] = fee_result["rule_id"]

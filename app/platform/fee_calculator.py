@@ -40,15 +40,37 @@ def _round(val: Decimal) -> float:
     return float(val.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
+def sale_fee_base(sale) -> float:
+    """Get the value the commission applies to: pre-tax, post-discount.
+
+    Tax belongs to the government, not the platform, so the commission is
+    never taken on the tax portion of a sale. Falls back to
+    ``total - tax`` for legacy rows that were saved without a subtotal.
+    """
+    try:
+        subtotal = float(sale.subtotal or 0)
+        discount = float(sale.discount or 0)
+        tax = float(sale.tax or 0)
+        total = float(sale.total or 0)
+    except (TypeError, ValueError):
+        return max(total, 0.0) if "total" in dir() else 0.0
+
+    base = subtotal - discount
+    if base <= 0 and total > 0:
+        base = total - tax
+    return max(base, 0.0)
+
+
 async def calculate_platform_fee(session: AsyncSession, sale_total: float) -> dict:
-    """Calculate platform commission fee for a sale.
+    """Apply a tiered commission rule to the given base amount.
 
     Applies tiered commission rules to determine the fee amount.
     Rules are matched by minimum threshold (highest first).
 
     Args:
         session: Database session for querying commission rules.
-        sale_total: Total sale amount in Nigerian Naira.
+        sale_total: Commission base in Nigerian Naira (pre-tax,
+            post-discount sale value).
 
     Returns:
         Dict containing:
