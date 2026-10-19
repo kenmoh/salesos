@@ -18,9 +18,9 @@ class DataMessageResponse(BaseModel, Generic[T]):
 class PaginatedResponse(BaseModel, Generic[T]):
     message: str = "ok"
     data: list[T]
-    total: int
-    page: int
-    page_size: int
+    total: int = 0
+    page: int = 1
+    page_size: int = 0
 
 
 def ok(data, *, message="ok"):

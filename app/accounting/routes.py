@@ -66,6 +66,22 @@ def _validated_store_id(store_id: str | None) -> str | None:
     return store_id
 
 
+def _paginate_list(items: list, page: int | None, page_size: int | None) -> dict:
+    """Wrap a full list in the paginated envelope.
+
+    Without page/page_size the whole list is returned with meta describing
+    it (page 1, page_size = list length), so callers that send no paging
+    params keep receiving every row while still getting the pagination
+    data. With them, the requested window is sliced.
+    """
+    total = len(items)
+    if page is None or page_size is None:
+        return paginated(items, total=total, page=1, page_size=max(total, 1))
+    start = (page - 1) * page_size
+    window = items[start : start + page_size]
+    return paginated(window, total=total, page=page, page_size=page_size)
+
+
 def _receivable_to_response(receivable) -> dict:
     """Serialise an Accounts Receivable row for the API."""
     return {
@@ -526,13 +542,15 @@ async def taxes_collected(
 
 @router.get(
     "/receivable",
-    response_model=DataResponse[list[ReceivableResponse]],
+    response_model=PaginatedResponse[ReceivableResponse],
     dependencies=[Depends(require_permission("accounting:read"))],
 )
 async def list_receivable(
     ctx: DbTenantDep,
     status: str | None = Query(None, description="Filter by status: pending, overdue, partial, paid"),
     store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
+    page: int | None = Query(None, ge=1, description="1-based page (omit to receive the full list)"),
+    page_size: int | None = Query(None, ge=1, le=200, description="Rows per page"),
 ):
     ar_list = await rpc.list_accounts_receivable(
         session=ctx.session,
@@ -540,7 +558,7 @@ async def list_receivable(
         status_filter=status,
         store_id=_validated_store_id(store_id),
     )
-    return ok(ar_list)
+    return _paginate_list(ar_list, page, page_size)
 
 
 @router.post(
@@ -695,13 +713,15 @@ async def move_receivable_to_store(
 
 @router.get(
     "/payable",
-    response_model=DataResponse[list[PayableResponse]],
+    response_model=PaginatedResponse[PayableResponse],
     dependencies=[Depends(require_permission("accounting:read"))],
 )
 async def list_payable(
     ctx: DbTenantDep,
     status: str | None = Query(None, description="Filter by status: pending, overdue, partial, paid"),
     store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
+    page: int | None = Query(None, ge=1, description="1-based page (omit to receive the full list)"),
+    page_size: int | None = Query(None, ge=1, le=200, description="Rows per page"),
 ):
     ap_list = await rpc.list_accounts_payable(
         session=ctx.session,
@@ -709,7 +729,7 @@ async def list_payable(
         status_filter=status,
         store_id=_validated_store_id(store_id),
     )
-    return ok(ap_list)
+    return _paginate_list(ap_list, page, page_size)
 
 
 @router.post(
@@ -858,7 +878,7 @@ async def move_payable_to_store(
 
 @router.get(
     "/expenses",
-    response_model=DataResponse[list[ExpenseResponse]],
+    response_model=PaginatedResponse[ExpenseResponse],
     dependencies=[Depends(require_permission("accounting:read"))],
 )
 async def list_expenses(
@@ -867,6 +887,8 @@ async def list_expenses(
     from_date: str | None = Query(None, description="Start date (YYYY-MM-DD)"),
     to_date: str | None = Query(None, description="End date (YYYY-MM-DD)"),
     store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
+    page: int | None = Query(None, ge=1, description="1-based page (omit to receive the full list)"),
+    page_size: int | None = Query(None, ge=1, le=200, description="Rows per page"),
 ):
     expenses = await rpc.list_expenses(
         session=ctx.session,
@@ -876,7 +898,7 @@ async def list_expenses(
         to_date=to_date,
         store_id=_validated_store_id(store_id),
     )
-    return ok(expenses)
+    return _paginate_list(expenses, page, page_size)
 
 
 @router.post(
