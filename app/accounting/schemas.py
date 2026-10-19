@@ -365,10 +365,24 @@ class TaxCollectedItem(BaseModel):
     sale_count: int = 0
 
 
+class TaxCollectedLine(BaseModel):
+    sale_id: str = ""
+    sale_number: str = ""
+    date: str | None = None
+    name: str = ""
+    rate: float = 0
+    amount: float = 0
+
+
 class TaxesCollectedResponse(BaseModel):
     taxes: list[TaxCollectedItem] = []
     total_collected: float = 0
     zero_tax_sales: int = 0
+    items: list[TaxCollectedLine] = []
+    page: int = 1
+    page_size: int = 20
+    total_items: int = 0
+    has_more: bool = False
 
 
 class ReceivableResponse(BaseModel):
