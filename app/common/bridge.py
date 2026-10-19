@@ -922,7 +922,7 @@ async def create_products(
                 store_id=store_id or "",
                 product_id=str(result.product_id),
             )
-            png_bytes = generate_qr_png(qr_url, box_size=6, border=3)
+            png_bytes = generate_qr_png(qr_url, box_size=5, border=2)
             upload_result = upload_qr_png(
                 tenant_id=tenant_id,
                 product_id=str(result.product_id),
@@ -2826,7 +2826,7 @@ async def create_product_for_store(
             store_id=store_id,
             product_id=str(product.id),
         )
-        png_bytes = generate_qr_png(qr_payload, box_size=6, border=3)
+        png_bytes = generate_qr_png(qr_payload, box_size=5, border=2)
         upload = upload_qr_png(
             tenant_id=tenant_id,
             product_id=str(product.id),
