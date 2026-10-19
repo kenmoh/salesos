@@ -358,6 +358,19 @@ class CashFlowResponse(BaseModel):
     net_cash_flow: float = 0
 
 
+class TaxCollectedItem(BaseModel):
+    name: str = ""
+    rate: float = 0
+    amount: float = 0
+    sale_count: int = 0
+
+
+class TaxesCollectedResponse(BaseModel):
+    taxes: list[TaxCollectedItem] = []
+    total_collected: float = 0
+    zero_tax_sales: int = 0
+
+
 class ReceivableResponse(BaseModel):
     id: str = ""
     tenant_id: str = ""

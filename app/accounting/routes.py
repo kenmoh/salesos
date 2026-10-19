@@ -40,6 +40,8 @@ from .schemas import (
     ProfitAndLossResponse,
     RecordPaymentRequest,
     ReceivableResponse,
+    TaxCollectedItem,
+    TaxesCollectedResponse,
     ToggleAccountStatusRequest,
     TrialBalanceItem,
     UpdateAccountRequest,
@@ -477,6 +479,43 @@ async def cash_flow(
         "inflows": inflows,
         "outflows": outflows,
         "net_cash_flow": result.get("net_cash_flow", 0),
+    })
+
+
+@router.get(
+    "/taxes-collected",
+    response_model=DataResponse[TaxesCollectedResponse],
+    dependencies=[Depends(require_permission("accounting:read"))],
+)
+async def taxes_collected(
+    ctx: DbTenantDep,
+    from_date: str | None = Query(None, description="Start date (default: 30 days ago)"),
+    to_date: str | None = Query(None, description="End date (default: today)"),
+    store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+):
+    from_dt = datetime.fromisoformat(from_date) if from_date else None
+    to_dt = datetime.fromisoformat(to_date) if to_date else None
+    if to_date and len(to_date) == 10 and to_dt is not None:
+        to_dt = to_dt + timedelta(days=1) - timedelta(microseconds=1)
+    from .repository import get_taxes_collected
+
+    result = await get_taxes_collected(
+        ctx.session, UUID(ctx.user.business_id), from_dt, to_dt,
+        store_id=UUID(_validated_store_id(store_id)) if store_id else None,
+        page=page,
+        page_size=page_size,
+    )
+    return ok({
+        "taxes": result["taxes"],
+        "total_collected": result["total_collected"],
+        "zero_tax_sales": result["zero_tax_sales"],
+        "items": result["items"],
+        "page": result["page"],
+        "page_size": result["page_size"],
+        "total_items": result["total_items"],
+        "has_more": result["has_more"],
     })
 
 

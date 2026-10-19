@@ -1044,6 +1044,146 @@ async def get_cash_flow(
     }
 
 
+async def get_taxes_collected(
+    session: AsyncSession,
+    tenant_id: UUID,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
+    store_id: UUID | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
+    """Report the tax collected per tax type over a period, plus a
+    paginated list of the taxed sales behind the sums.
+
+    The source of truth is the tax snapshot each sale carries in
+    ``sales.tax_breakdown`` (name, rate, amount, account_code), so the
+    report matches what was actually charged to customers even after a
+    tax is renamed or repriced. Voided sales are excluded.
+
+    Args:
+        session: The async SQLAlchemy database session to use.
+        tenant_id: The business tenant to calculate for.
+        from_date: The start of the period. If None, defaults to 30 days ago.
+        to_date: The end of the period. If None, defaults to now.
+        store_id: When given, only sales at this store are counted.
+        page: 1-based page of taxed sale lines.
+        page_size: Lines per page.
+
+    Returns:
+        A dictionary with "taxes" (list of name/rate/amount/sale_count),
+        "total_collected", "zero_tax_sales", and "items" (paginated sale
+        lines with "sale_id", "sale_number", "date", "name", "rate",
+        "amount"), plus "page", "page_size", "total_items", "has_more".
+    """
+    from app.sales.models import Sale
+
+    if from_date is None:
+        from_date = datetime.now(UTC) - timedelta(days=30)
+    if to_date is None:
+        to_date = datetime.now(UTC)
+
+    base_filters = [
+        Sale.tenant_id == tenant_id,
+        Sale.status != "voided",
+        Sale.created_at >= from_date,
+        Sale.created_at <= to_date,
+    ]
+    if store_id is not None:
+        base_filters.append(Sale.store_id == store_id)
+
+    summary = await session.execute(
+        select(Sale.id, Sale.tax_breakdown).where(*base_filters)
+    )
+    aggregate: dict[tuple[str, float], dict] = {}
+    total = 0.0
+    zero_tax_sales = 0
+
+    for row in summary.all():
+        breakdown = row.tax_breakdown if isinstance(row.tax_breakdown, list) else None
+        if not breakdown:
+            zero_tax_sales += 1
+            continue
+        for line in breakdown:
+            if not isinstance(line, dict):
+                continue
+            try:
+                amount = float(line.get("amount") or 0)
+                rate = float(line.get("rate") or 0)
+            except (TypeError, ValueError):
+                continue
+            name = str(line.get("name") or "Tax")
+            key = (name, rate)
+            entry = aggregate.get(key)
+            if entry is None:
+                entry = aggregate[key] = {
+                    "name": name,
+                    "rate": rate,
+                    "amount": 0.0,
+                    "sales": set(),
+                }
+            entry["amount"] += amount
+            entry["sales"].add(row.id)
+
+    taxes = []
+    for key, entry in sorted(aggregate.items()):
+        amount = round(entry["amount"], 2)
+        taxes.append({
+            "name": entry["name"],
+            "rate": entry["rate"],
+            "amount": amount,
+            "sale_count": len(entry["sales"]),
+        })
+        total += amount
+
+    lines_query = (
+        select(Sale.id, Sale.sale_number, Sale.created_at, Sale.tax_breakdown)
+        .where(*base_filters)
+        .order_by(desc(Sale.created_at))
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    lines = await session.execute(lines_query)
+    count_query = (
+        select(func.count())
+        .select_from(Sale)
+        .where(*base_filters, Sale.tax_breakdown.isnot(None))
+    )
+    total_rows = (await session.execute(count_query)).scalar() or 0
+    total_items = int(total_rows)
+    items = []
+    for row in lines.all():
+        breakdown = row.tax_breakdown if isinstance(row.tax_breakdown, list) else None
+        for line in breakdown or []:
+            if not isinstance(line, dict):
+                continue
+            try:
+                amount = float(line.get("amount") or 0)
+                rate = float(line.get("rate") or 0)
+            except (TypeError, ValueError):
+                continue
+            name = str(line.get("name") or "Tax")
+            items.append({
+                "sale_id": str(row.id),
+                "sale_number": row.sale_number,
+                "date": row.created_at.isoformat() if row.created_at else None,
+                "name": name,
+                "rate": rate,
+                "amount": round(amount, 2),
+            })
+
+    return {
+        "taxes": taxes,
+        "total_collected": round(total, 2),
+        "zero_tax_sales": zero_tax_sales,
+        "items": items,
+        "page": page,
+        "page_size": page_size,
+        "total_items": total_items,
+        "has_more": page * page_size < total_items,
+    }
+
+
 async def _get_cash_flows_by_type(
     session: AsyncSession,
     tenant_id: UUID,
