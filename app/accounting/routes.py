@@ -10,7 +10,7 @@ This module defines the FastAPI routes for all accounting operations including:
 - Financial dashboard
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -461,6 +461,10 @@ async def cash_flow(
 ):
     from_dt = datetime.fromisoformat(from_date) if from_date else None
     to_dt = datetime.fromisoformat(to_date) if to_date else None
+    # A bare date means "the whole of that day": journal legs posted during
+    # the to_date itself must counted, not silently dropped at midnight.
+    if to_date and len(to_date) == 10 and to_dt is not None:
+        to_dt = to_dt + timedelta(days=1) - timedelta(microseconds=1)
     from .repository import get_cash_flow
 
     result = await get_cash_flow(
