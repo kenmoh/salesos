@@ -81,6 +81,7 @@ class TestTenantScoping:
                 self.published.append((channel, message))
 
         broker._redis = _Client()
+        broker._pubsub_redis = _Client()
         broker._subscribers = {"tenant-a": {mine}, "tenant-b": {theirs}}
         pump = asyncio.create_task(broker._run_pump())
         await asyncio.sleep(0.05)

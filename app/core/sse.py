@@ -32,6 +32,8 @@ import logging
 from collections.abc import AsyncIterator
 from uuid import UUID
 
+import redis.asyncio as redis
+
 logger = logging.getLogger("storeflow.sse")
 
 # Frames a client missed are dropped rather than buffered. A client that was
@@ -79,6 +81,7 @@ class Broker:
         self._subscribers: dict[str, set[Subscriber]] = {}
         self._pump: asyncio.Task | None = None
         self._redis = None
+        self._pubsub_redis: redis.Redis | None = None
 
     # ── subscription lifecycle ────────────────────────────────────────────
 
@@ -159,10 +162,33 @@ class Broker:
             return
         self._pump = loop.create_task(self._run_pump())
 
+    async def _pubsub_client(self) -> redis.Redis | None:
+        """Dedicated Redis client for the pump.
+
+        Deliberately built without ``socket_timeout``: the shared cache client
+        caps every read at 2s, which fires on any 2s-quiet channel and restarts
+        the pump endlessly. The pump polls through ``get_message(timeout=1.0)``
+        and manages its own reconnects, so a blocking read is expected here.
+        """
+        if self._pubsub_redis is None:
+            from app.core.config import settings
+
+            self._pubsub_redis = redis.Redis.from_url(
+                settings.redis_cache_url,
+                decode_responses=True,
+                socket_connect_timeout=1,
+            )
+        return self._pubsub_redis
+
     async def _run_pump(self) -> None:
         """Listen on every channel with at least one local subscriber."""
         while self._subscribers:
-            client = await self._client()
+            try:
+                client = await self._pubsub_client()
+            except Exception as exc:
+                logger.warning("SSE pump error, restarting: %s", exc)
+                await asyncio.sleep(2)
+                continue
             if client is None:
                 await asyncio.sleep(5)
                 continue
