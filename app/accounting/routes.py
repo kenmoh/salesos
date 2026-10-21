@@ -876,6 +876,93 @@ async def move_payable_to_store(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+def _expense_to_response(expense) -> dict:
+    return {
+        "id": str(expense.id),
+        "tenant_id": str(expense.tenant_id),
+        "expense_number": expense.expense_number,
+        "category": expense.category,
+        "description": expense.description,
+        "amount": float(expense.amount),
+        "vendor": expense.vendor,
+        "receipt_url": expense.receipt_url,
+        "expense_date": expense.expense_date.isoformat() if expense.expense_date else "",
+        "account_id": str(expense.account_id) if expense.account_id else "",
+        "journal_id": str(expense.journal_id) if expense.journal_id else None,
+        "created_by": str(expense.created_by) if expense.created_by else "",
+        "store_id": str(expense.store_id) if expense.store_id else None,
+    }
+
+
+@router.patch(
+    "/expenses/{expense_id}/store",
+    response_model=DataResponse[ExpenseResponse],
+    dependencies=[Depends(require_permission("accounting:write"))],
+)
+async def move_expense_to_store(
+    expense_id: str,
+    payload: MoveToStoreRequest,
+    ctx: DbTenantDep,
+    request: Request,
+):
+    """Move an expense to another store, journals included.
+
+    Legacy expenses recorded before store tagging existed carry no store, so
+    they vanish from a store-filtered list. This mirrors the receivable and
+    payable endpoints: the expense is re-tagged together with its journal so
+    per-store cash flow counts the outflow again. Gated and audited the same
+    way.
+    """
+    from sqlalchemy import select, update
+
+    from app.accounting.models import Expense, Journal
+
+    tenant_id = UUID(ctx.user.business_id)
+    store_id = _validated_store_id(payload.store_id)
+    supervisor_id = await require_supervisor_approval(
+        ctx,
+        permission="accounting:write",
+        supervisor_pin=payload.supervisor_pin,
+        request=request,
+    )
+
+    result = await ctx.session.execute(
+        select(Expense).where(
+            Expense.id == UUID(expense_id),
+            Expense.tenant_id == tenant_id,
+        )
+    )
+    expense = result.scalar_one_or_none()
+    if expense is None:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    previous_store_id = str(expense.store_id) if expense.store_id else None
+    expense.store_id = UUID(store_id) if store_id else None
+    if expense.journal_id:
+        await ctx.session.execute(
+            update(Journal)
+            .where(
+                Journal.tenant_id == tenant_id,
+                Journal.id == expense.journal_id,
+            )
+            .values(store_id=UUID(store_id) if store_id else None)
+        )
+    await _record_store_correction(
+        ctx,
+        action="expense_store_corrected",
+        entity="expense",
+        entity_id=expense_id,
+        reference=expense.expense_number,
+        from_store_id=previous_store_id,
+        to_store_id=store_id,
+        supervisor_id=supervisor_id,
+        request=request,
+    )
+    await ctx.session.flush()
+
+    return ok(_expense_to_response(expense))
+
+
 @router.get(
     "/expenses",
     response_model=PaginatedResponse[ExpenseResponse],
