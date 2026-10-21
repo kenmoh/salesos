@@ -385,6 +385,48 @@ class TaxesCollectedResponse(BaseModel):
     has_more: bool = False
 
 
+class TaxOwedLine(BaseModel):
+    """One tax liability account and what is still un-remitted on it."""
+
+    account_code: str = ""
+    account_name: str = ""
+    collected: float = 0
+    remitted: float = 0
+    still_owed: float = 0
+    tax_names: list[str] = []
+
+
+class TaxRemitRequest(BaseModel):
+    account_code: str = Field(..., min_length=1)
+    amount: float = Field(..., gt=0)
+    payment_date: str
+    method: str = "cash"  # cash | bank
+    store_id: str | None = None
+    notes: str | None = None
+
+
+class TaxRemitResponse(BaseModel):
+    account_code: str = ""
+    account_name: str = ""
+    amount: float = 0
+    still_owed: float = 0
+    journal_number: str = ""
+
+
+class TaxRemittanceItem(BaseModel):
+    """One posted remittance, for the history lists."""
+
+    journal_id: str = ""
+    journal_number: str = ""
+    description: str = ""
+    payment_date: str | None = None
+    account_code: str = ""
+    account_name: str = ""
+    amount: float = 0
+    notes: str | None = None
+    store_id: str | None = None
+
+
 class ReceivableResponse(BaseModel):
     id: str = ""
     tenant_id: str = ""

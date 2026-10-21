@@ -14,11 +14,13 @@ from datetime import datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import select
 
 from app.core.approval import require_supervisor_approval
 from app.core.dependencies import DbTenantDep, require_permission
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
 from . import rpc
+from .models import Journal
 from .repository import get_account_by_code
 from .service import _determine_entry_type
 from .schemas import (
@@ -41,6 +43,10 @@ from .schemas import (
     RecordPaymentRequest,
     ReceivableResponse,
     TaxCollectedItem,
+    TaxOwedLine,
+    TaxRemitRequest,
+    TaxRemittanceItem,
+    TaxRemitResponse,
     TaxesCollectedResponse,
     ToggleAccountStatusRequest,
     TrialBalanceItem,
@@ -533,6 +539,186 @@ async def taxes_collected(
         "total_items": result["total_items"],
         "has_more": result["has_more"],
     })
+
+
+@router.get(
+    "/taxes-owed",
+    response_model=DataResponse[list[TaxOwedLine]],
+    dependencies=[Depends(require_permission("accounting:read"))],
+)
+async def taxes_owed(ctx: DbTenantDep):
+    """What each tax account has collected, had remitted, and still owes.
+
+    The three figures come straight off the ledger, so a remittance that
+    already posted cannot be remitted a second time -- what it debited is
+    subtracted from the balance the caller sees.
+    """
+    from .repository import get_taxes_owed
+
+    lines = await get_taxes_owed(ctx.session, UUID(ctx.user.business_id))
+    return ok(lines)
+
+
+@router.get(
+    "/taxes-remit",
+    response_model=PaginatedResponse[TaxRemittanceItem],
+    dependencies=[Depends(require_permission("accounting:read"))],
+)
+async def tax_remit_history(
+    ctx: DbTenantDep,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+):
+    """Past remittances (journals tagged ``tax_remittance``), newest first."""
+    from .repository import get_tax_remittances
+
+    result = await get_tax_remittances(
+        ctx.session, UUID(ctx.user.business_id), page=page, page_size=page_size
+    )
+    return paginated(
+        [TaxRemittanceItem(**r) for r in result["remittances"]],
+        total=result["total"],
+        page=result["page"],
+        page_size=result["page_size"],
+    )
+
+
+@router.post(
+    "/taxes-remit",
+    response_model=DataResponse[TaxRemitResponse],
+    dependencies=[Depends(require_permission("accounting:write"))],
+)
+async def remit_tax(payload: TaxRemitRequest, ctx: DbTenantDep, request: Request):
+    """Remit collected tax: Dr the tax liability, Cr cash/bank.
+
+    Refuses an amount above the balance still owed on the account, so a tax
+    that was already remitted cannot be re-paid: what is left after earlier
+    remittance journals is the ceiling. The posting is audited like the other
+    corrections.
+    """
+    from datetime import UTC
+
+    from .repository import _get_account_balance, get_taxes_owed
+
+    if payload.method not in ("cash", "bank"):
+        raise HTTPException(400, "method must be cash or bank")
+
+    tenant_id = UUID(ctx.user.business_id)
+    lines = await get_taxes_owed(ctx.session, tenant_id)
+    line = next((l for l in lines if l["account_code"] == payload.account_code), None)
+    if line is None:
+        raise HTTPException(
+            400,
+            f"No tax is owed on account {payload.account_code}; pick a tax "
+            "liability account",
+        )
+    owed = line["still_owed"]
+    if payload.amount > owed + 0.009:
+        raise HTTPException(
+            400,
+            f"Cannot remit more than still owed: {owed} remains on "
+            f"{line['account_name']} ({payload.account_code}); earlier "
+            "remittances are already subtracted",
+        )
+
+    credit_code = "1010" if payload.method == "bank" else "1000"
+    credit_acct = await get_account_by_code(ctx.session, tenant_id, credit_code)
+    if credit_acct is None and credit_code == "1010":
+        credit_code = "1000"
+        credit_acct = await get_account_by_code(ctx.session, tenant_id, credit_code)
+    if credit_acct is None:
+        raise HTTPException(400, "Chart of accounts has no cash or bank account")
+    debit_acct = await get_account_by_code(ctx.session, tenant_id, payload.account_code)
+    if debit_acct is None:
+        raise HTTPException(400, f"Unknown account {payload.account_code}")
+
+    description = f"Tax remittance: {line['account_name']} ({line['account_code']})"
+    if payload.notes:
+        description += f" — {payload.notes}"
+
+    journal_id = await rpc.post_journal(
+        session=ctx.session,
+        business_id=ctx.user.business_id,
+        user_id=ctx.user.user_id,
+        description=description,
+        entries=[
+            {
+                "account_id": str(debit_acct.id),
+                "account_code": debit_acct.code,
+                "debit": payload.amount,
+                "credit": 0,
+                "description": f"Tax remitted: {line['account_name']}",
+                "type": _determine_entry_type(debit_acct.code),
+            },
+            {
+                "account_id": str(credit_acct.id),
+                "account_code": credit_acct.code,
+                "debit": 0,
+                "credit": payload.amount,
+                "description": (
+                    "Cash paid out" if payload.method == "cash" else "Bank transfer"
+                ),
+                "type": _determine_entry_type(credit_acct.code),
+            },
+        ],
+        ref_type="tax_remittance",
+        ref_id=None,
+        store_id=_validated_store_id(payload.store_id),
+    )
+
+    import json
+
+    from app.identity.models import AuthAuditLog
+
+    ctx.session.add(
+        AuthAuditLog(
+            user_id=UUID(ctx.user.user_id),
+            tenant_id=tenant_id,
+            action="tax_remittance",
+            ip_address=request.client.host if request.client else None,
+            user_agent=(request.headers.get("user-agent") or "")[:500] or None,
+            details=json.dumps(
+                {
+                    "account_code": payload.account_code,
+                    "amount": payload.amount,
+                    "method": payload.method,
+                    "payment_date": payload.payment_date,
+                    "actor_role": ctx.user.role,
+                }
+            ),
+        )
+    )
+
+    try:
+        journal = (
+            await ctx.session.execute(
+                select(Journal.journal_number).where(Journal.id == UUID(journal_id))
+            )
+        ).scalar_one()
+    except Exception:
+        journal = None
+    journal_number = journal or journal_id
+
+    remaining = owed
+    if debit_acct is not None:
+        # The posting above ran in this transaction, so reading the ledger
+        # now reports the balance the app will show on refresh.
+        remaining = await _get_account_balance(
+            ctx.session,
+            debit_acct.id,
+            debit_acct.account_type,
+            datetime.now(UTC),
+        )
+
+    return ok(
+        TaxRemitResponse(
+            account_code=payload.account_code,
+            account_name=line["account_name"],
+            amount=payload.amount,
+            still_owed=round(remaining, 2),
+            journal_number=journal_number,
+        )
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -1045,6 +1045,158 @@ async def get_cash_flow(
     }
 
 
+async def get_taxes_owed(
+    session: AsyncSession, tenant_id: UUID
+) -> list[dict]:
+    """Per tax liability account: collected, remitted and still owed.
+
+    Sales credit the account each time a tax is charged, and every remittance
+    journal (reference_type ``tax_remittance``) debits it back. So both sums
+    come from the ledger itself and can never disagree with what a later
+    posting would refund: ``still_owed`` is exactly what remains, and the
+    remittance route refuses an amount past it -- a second remittance of tax
+    that already left the books is refused, not silently re-paid.
+    """
+    from app.taxes.calc import DEFAULT_TAX_ACCOUNT
+    from app.taxes.models import Tax
+
+    rows = (
+        await session.execute(
+            select(Tax).where(Tax.tenant_id == tenant_id, Tax.is_active == True)  # noqa: E712
+        )
+    ).scalars().all()
+
+    codes: dict[str, set[str]] = {}
+    for tax in rows:
+        code = tax.account_code or DEFAULT_TAX_ACCOUNT
+        codes.setdefault(code, set()).add(tax.name)
+    if not codes:
+        return []
+
+    now = datetime.now(UTC)
+    lines: list[dict] = []
+    for code, names in codes.items():
+        account = await get_account_by_code(session, tenant_id, code)
+        if account is None:
+            continue
+        base = select(
+            func.coalesce(func.sum(JournalEntry.credit), 0).label("credits"),
+            func.coalesce(func.sum(JournalEntry.debit), 0).label("debits_all"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            JournalEntry.journal_id.in_(
+                                select(Journal.id).where(
+                                    Journal.reference_type == "tax_remittance"
+                                )
+                            ),
+                            JournalEntry.debit,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("debits_remittance"),
+        ).where(
+            JournalEntry.account_id == account.id,
+            JournalEntry.tenant_id == tenant_id,
+            JournalEntry.status == "posted",
+        )
+        totals = (await session.execute(base)).one()
+        collected = float(totals.credits)
+        remitted = float(totals.debits_remittance)
+        still_owed = collected - float(totals.debits_all)
+        lines.append(
+            {
+                "account_code": code,
+                "account_name": account.name,
+                "collected": round(collected, 2),
+                "remitted": round(remitted, 2),
+                "still_owed": round(still_owed, 2),
+                "tax_names": sorted(names),
+            }
+        )
+    lines.sort(key=lambda item: item["account_code"])
+    return lines
+
+
+async def get_tax_remittances(
+    session: AsyncSession,
+    tenant_id: UUID,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
+    """Paginated remittance journals, newest first.
+
+    Amount lands on the debit leg against the tax account, so the account
+    itself tells any other part of the reporting what left the business.
+    """
+    base = (
+        select(Journal, JournalEntry)
+        .join(
+            JournalEntry,
+            (JournalEntry.journal_id == Journal.id)
+            & (JournalEntry.debit > 0)
+            & (JournalEntry.status == "posted"),
+        )
+        .where(
+            Journal.tenant_id == tenant_id,
+            Journal.reference_type == "tax_remittance",
+            Journal.status == "posted",
+        )
+    )
+    total_count = (
+        await session.execute(
+            select(func.count()).select_from(base.subquery())
+        )
+    ).scalar() or 0
+
+    rows = (
+        await session.execute(
+            base.order_by(Journal.posted_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+
+    remittances = []
+    codes = {entry.account_code for _, entry in rows}
+    account_names: dict[str, str] = {}
+    if codes:
+        acct_rows = (
+            await session.execute(
+                select(ChartOfAccount).where(
+                    ChartOfAccount.tenant_id == tenant_id,
+                    ChartOfAccount.code.in_(codes),
+                )
+            )
+        ).scalars().all()
+        account_names = {a.code: a.name for a in acct_rows}
+    for journal, entry in rows:
+        remittances.append(
+            {
+                "journal_id": str(journal.id),
+                "journal_number": journal.journal_number,
+                "description": journal.description,
+                "payment_date": (
+                    journal.posted_at.isoformat() if journal.posted_at else None
+                ),
+                "account_code": entry.account_code,
+                "account_name": account_names.get(entry.account_code, ""),
+                "amount": float(entry.debit),
+                "notes": entry.description,
+                "store_id": str(journal.store_id) if journal.store_id else None,
+            }
+        )
+    return {
+        "remittances": remittances,
+        "total": total_count,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
 async def get_taxes_collected(
     session: AsyncSession,
     tenant_id: UUID,
