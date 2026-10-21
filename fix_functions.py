@@ -188,3 +188,141 @@ async def main():
 
 
 asyncio.run(main())
+
+
+
+# TRANSACTION RESPONSE
+"""
+{
+  "status": "success",
+  "message": "Transaction fetched successfully",
+  "data": {
+    "id": 288200108,
+    "tx_ref": "LiveCardTest",
+    "flw_ref": "YemiDesola/FLW275407301",
+    "device_fingerprint": "N/A",
+    "amount": 100,
+    "currency": "NGN",
+    "charged_amount": 100,
+    "app_fee": 1.4,
+    "merchant_fee": 0,
+    "processor_response": "Approved by Financial Institution",
+    "auth_model": "PIN",
+    "ip": "::ffff:10.5.179.3",
+    "narration": "CARD Transaction ",
+    "status": "successful",
+    "payment_type": "card",
+    "created_at": "2020-07-15T14:31:16.000Z",
+    "account_id": 17321,
+    "card": {
+      "first_6digits": "232343",
+      "last_4digits": "4567",
+      "issuer": "FIRST CITY MONUMENT BANK PLC",
+      "country": "NIGERIA NG",
+      "type": "VERVE",
+      "token": "flw-t1nf-4676a40c7ddf5f12scr432aa12d471973-k3n",
+      "expiry": "02/23"
+    },
+    "meta": null,
+    "amount_settled": 98.6,
+    "customer": {
+      "id": 216519823,
+      "name": "Yemi Desola",
+      "phone_number": "N/A",
+      "email": "user@gmail.com",
+      "created_at": "2020-07-15T14:31:15.000Z"
+    }
+  }
+}
+"""
+
+# PAYMENT
+"""
+curl --request POST \
+     --url https://api.flutterwave.com/v3/payments \
+     --header 'Authorization: Bearer FLWSECK_TEST-SANDBOXDEMOKEY-X' \
+     --header 'Content-Type: application/json' \
+     --header 'accept: application/json' \
+     --data '
+{
+  "amount": 1000,
+  "tx_ref": "YOUR_PAYMENT_REFERENCE",
+  "currency": "NGN",
+  "redirect_url": "https://www.flutterwave.com/ng",
+  "customer": {
+    "email": "user@example.com",
+    "phone_number": "08012345612",
+    "name": "Mike John"
+  },
+  "customizations": {
+    "title": "Web Demo Payment",
+    "logo": "http://www.piedpiper.com/app/themes/joystick-v27/images/logo.png"
+  },
+  "configuration": {
+    "session_duration": 30,
+    "max_retry_attempt": 5
+  },
+  "payment_plan": 3807,
+  "payment_options": "card, ussd, mobilemoneyghana",
+  "link_expiration": "2024-02-14T12:20:00",
+  "meta": {
+    "meta_1": "meta_value",
+    "meta_2": "meta_value"
+  }
+}
+'
+"""
+
+# PAYMENT RESPONSE
+
+"""
+{
+  "status": "success",
+  "message": "Hosted Link",
+  "data": {
+    "link": "https://checkout.flutterwave.com/v3/hosted/pay/flwlnk-01j4dc4maegqf82pfqg4chw46b"
+  }
+}
+"""
+
+"""
+TRANSFER
+curl --request POST \
+     --url 'https://api.flutterwave.com/v3/charges?type=bank_transfer' \
+     --header 'Authorization: Bearer FLWSECK_TEST-SANDBOXDEMOKEY-X' \
+     --header 'Content-Type: application/json' \
+     --header 'accept: application/json' \
+     --data '
+{
+  "amount": 100,
+  "email": "user@flw.com",
+  "currency": "NGN",
+  "tx_ref": "MC-MC-1585230ew9v5050e8",
+  "fullname": "Yemi Desola",
+  "phone_number": "07033002245",
+  "client_ip": "154.123.220.1",
+  "device_fingerprint": "62wd23423rq324323qew1",
+  "is_permanent": false,
+  "bank_code": "090567"
+}
+'
+"""
+
+# TRANSFER RESPONSE
+"""
+{
+  "status": "success",
+  "message": "Charge initiated",
+  "meta": {
+    "authorization": {
+      "transfer_reference": "ZZSS4548178111081675127069",
+      "transfer_account": "9755152912",
+      "transfer_bank": "Flutterwave MFB",
+      "account_expiration": "2020-03-27 09:53:39",
+      "transfer_note": "Please make a bank transfer to Yemi Desola",
+      "transfer_amount": 1500,
+      "mode": "banktransfer"
+    }
+  }
+}
+"""

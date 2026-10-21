@@ -168,6 +168,26 @@ async def client(app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
         yield ac
 
 
+async def test_flutterwave_webhook_is_available_at_configured_api_path():
+    from app.payments.routes import webhook_router
+
+    application = FastAPI()
+    application.include_router(webhook_router, prefix="/api/v1")
+
+    async with AsyncClient(
+        transport=ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        with patch(
+            "app.payments.routes.flutterwave_service.verify_webhook_signature",
+            return_value=False,
+        ):
+            response = await client.post(
+                "/api/v1/webhook/flutterwave", content=b"{}"
+            )
+
+    assert response.status_code == 401
+
+
 def _bridge_kwargs():
     return dict(
         create_tenant=AsyncMock(return_value={"id": str(uuid4()), "slug": "test"}),

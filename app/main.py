@@ -156,6 +156,7 @@ def create_app() -> FastAPI:
     from app.stores.routes import router as stores_router
     from app.sales.routes import router as sales_router
     from app.payments.routes import router as payments_router
+    from app.payments.routes import webhook_router as flutterwave_webhook_router
     from app.accounting.routes import router as accounting_router
     from app.documents.routes import router as documents_router
     from app.reporting.routes import router as reports_router
@@ -185,6 +186,8 @@ def create_app() -> FastAPI:
         taxes_router,
     ):
         app.include_router(router, prefix=prefix)
+
+    app.include_router(flutterwave_webhook_router, prefix=prefix)
 
     from app.events.routes import router as events_router
     from app.catalog.routes import scan_router as scan_products_router

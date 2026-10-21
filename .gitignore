@@ -14,3 +14,6 @@ alembic/__pycache__/
 store_flow_legacy/
 
 .env
+
+uvicorn.log
+uvicorn2.log

@@ -74,6 +74,7 @@ class AccountResolve(BaseModel):
 
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
+webhook_router = APIRouter(tags=["Payments"])
 
 
 @router.post(
@@ -559,6 +560,7 @@ async def payment_status(sale_id: str, ctx: TenantDep):
         )
 
 
+@webhook_router.post("/webhook/flutterwave", include_in_schema=False)
 @router.post("/webhook/flutterwave", include_in_schema=False)
 async def flutterwave_webhook(request: Request, verif_hash: str = Header(default="")):
     body = await request.body()
