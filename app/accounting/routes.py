@@ -574,9 +574,16 @@ async def tax_remit_history(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     store_id: str | None = Query(None),
+    from_date: str | None = Query(None, description="Start date (YYYY-MM-DD)"),
+    to_date: str | None = Query(None, description="End date (YYYY-MM-DD)"),
 ):
     """Past remittances (journals tagged ``tax_remittance``), newest first."""
     from .repository import get_tax_remittances
+
+    from_dt = datetime.fromisoformat(from_date) if from_date else None
+    to_dt = datetime.fromisoformat(to_date) if to_date else None
+    if to_date and len(to_date) == 10 and to_dt is not None:
+        to_dt = to_dt + timedelta(days=1) - timedelta(microseconds=1)
 
     result = await get_tax_remittances(
         ctx.session,
@@ -584,6 +591,8 @@ async def tax_remit_history(
         page=page,
         page_size=page_size,
         store_id=_validated_store_id(store_id),
+        from_date=from_dt,
+        to_date=to_dt,
     )
     return paginated(
         [TaxRemittanceItem(**r) for r in result["remittances"]],

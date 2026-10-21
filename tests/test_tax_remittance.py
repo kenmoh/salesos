@@ -7,7 +7,7 @@
   the history is every journal bearing that tag and their debit leg.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -302,6 +302,26 @@ class TestRemittanceTracking:
                     session, tenant, page=1, page_size=10, store_id=store_a
                 )
                 assert history_a["total"] == 0
+
+                # Date bounds cut on record time, inclusive of the last day.
+                today = datetime.now(UTC)
+                recently = await get_tax_remittances(
+                    session,
+                    tenant,
+                    page=1,
+                    page_size=10,
+                    from_date=today - timedelta(days=3),
+                    to_date=today,
+                )
+                assert recently["total"] == 1
+                old_only = await get_tax_remittances(
+                    session,
+                    tenant,
+                    page=1,
+                    page_size=10,
+                    to_date=today - timedelta(days=3),
+                )
+                assert old_only["total"] == 0
         finally:
             async with engine.begin() as chart:
                 await chart.execute(

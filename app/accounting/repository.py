@@ -1141,12 +1141,16 @@ async def get_tax_remittances(
     page: int = 1,
     page_size: int = 20,
     store_id: UUID | None = None,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
 ) -> dict:
     """Paginated remittance journals, newest first.
 
     Amount lands on the debit leg against the tax account, so the account
     itself tells any other part of the reporting what left the business.
-    ``store_id`` limits the history to remittances tagged with that store.
+    ``store_id`` limits the history to remittances tagged with that store;
+    ``from_date``/``to_date`` bound the record time (posted_at) inclusive of
+    ``to_date``'s day.
     """
     base = (
         select(Journal, JournalEntry)
@@ -1160,10 +1164,15 @@ async def get_tax_remittances(
             Journal.tenant_id == tenant_id,
             Journal.reference_type == "tax_remittance",
             Journal.status == "posted",
+            Journal.posted_at.isnot(None),
         )
     )
     if store_id is not None:
         base = base.where(Journal.store_id == store_id)
+    if from_date is not None:
+        base = base.where(Journal.posted_at >= from_date)
+    if to_date is not None:
+        base = base.where(Journal.posted_at <= to_date)
     total_count = (
         await session.execute(
             select(func.count()).select_from(base.subquery())
