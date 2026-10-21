@@ -794,6 +794,7 @@ async def get_balance_sheet(
             continue
         totals[account.account_type] += balance
         details[account.account_type].append({
+            "account_id": str(account.id),
             "code": account.code,
             "name": account.name,
             "balance": round(balance, 2),

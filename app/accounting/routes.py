@@ -442,9 +442,9 @@ async def balance_sheet(
         ctx.session, UUID(ctx.user.business_id), as_at_date,
         store_id=UUID(_validated_store_id(store_id)) if store_id else None,
     )
-    asset_accounts = [{"account_id": "", "account_code": a["code"], "account_name": a["name"], "amount": a["balance"]} for a in result.get("asset_accounts", [])]
-    liability_accounts = [{"account_id": "", "account_code": a["code"], "account_name": a["name"], "amount": a["balance"]} for a in result.get("liability_accounts", [])]
-    equity_accounts = [{"account_id": "", "account_code": a["code"], "account_name": a["name"], "amount": a["balance"]} for a in result.get("equity_accounts", [])]
+    asset_accounts = [{"account_id": a.get("account_id", ""), "account_code": a["code"], "account_name": a["name"], "amount": a["balance"]} for a in result.get("asset_accounts", [])]
+    liability_accounts = [{"account_id": a.get("account_id", ""), "account_code": a["code"], "account_name": a["name"], "amount": a["balance"]} for a in result.get("liability_accounts", [])]
+    equity_accounts = [{"account_id": a.get("account_id", ""), "account_code": a["code"], "account_name": a["name"], "amount": a["balance"]} for a in result.get("equity_accounts", [])]
     return ok({
         "assets": asset_accounts,
         "liabilities": liability_accounts,
