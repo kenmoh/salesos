@@ -546,16 +546,21 @@ async def taxes_collected(
     response_model=DataResponse[list[TaxOwedLine]],
     dependencies=[Depends(require_permission("accounting:read"))],
 )
-async def taxes_owed(ctx: DbTenantDep):
+async def taxes_owed(ctx: DbTenantDep, store_id: str | None = Query(None)):
     """What each tax account has collected, had remitted, and still owes.
 
     The three figures come straight off the ledger, so a remittance that
     already posted cannot be remitted a second time -- what it debited is
-    subtracted from the balance the caller sees.
+    subtracted from the balance the caller sees. ``store_id`` scopes the
+    ledger sums to journals tagged with that store.
     """
     from .repository import get_taxes_owed
 
-    lines = await get_taxes_owed(ctx.session, UUID(ctx.user.business_id))
+    lines = await get_taxes_owed(
+        ctx.session,
+        UUID(ctx.user.business_id),
+        store_id=_validated_store_id(store_id),
+    )
     return ok(lines)
 
 
@@ -568,12 +573,17 @@ async def tax_remit_history(
     ctx: DbTenantDep,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    store_id: str | None = Query(None),
 ):
     """Past remittances (journals tagged ``tax_remittance``), newest first."""
     from .repository import get_tax_remittances
 
     result = await get_tax_remittances(
-        ctx.session, UUID(ctx.user.business_id), page=page, page_size=page_size
+        ctx.session,
+        UUID(ctx.user.business_id),
+        page=page,
+        page_size=page_size,
+        store_id=_validated_store_id(store_id),
     )
     return paginated(
         [TaxRemittanceItem(**r) for r in result["remittances"]],

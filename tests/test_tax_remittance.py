@@ -34,7 +34,7 @@ def _journal_number() -> str:
     return f"JRN-T-{uuid4().hex[:12].upper()}"
 
 
-async def _seed(chart, tenant, jid, reference_type, entries):
+async def _seed(chart, tenant, jid, reference_type, entries, store_id=None):
     await chart.execute(
         insert(Journal).values(
             id=jid,
@@ -44,6 +44,7 @@ async def _seed(chart, tenant, jid, reference_type, entries):
             reference_type=reference_type,
             status="posted",
             posted_at=NOW,
+            store_id=store_id,
         )
     )
     await chart.execute(
@@ -178,6 +179,139 @@ class TestRemittanceTracking:
                 )
                 await chart.execute(
                     delete(Journal).where(Journal.tenant_id == tenant)
+                )
+                await chart.execute(
+                    delete(Tax).where(Tax.tenant_id == tenant)
+                )
+                await chart.execute(
+                    delete(ChartOfAccount).where(ChartOfAccount.tenant_id == tenant)
+                )
+
+    async def test_store_filter_scopes_the_sums_and_the_history(
+        self, engine: AsyncEngine
+    ):
+        from app.accounting.repository import get_tax_remittances, get_taxes_owed
+        from app.stores.models import Store
+
+        tenant = uuid4()
+        tax_id = uuid4()
+        sale_jid = uuid4()
+        remit_jid = uuid4()
+        vat_account_id = uuid4()
+        cash_account_id = uuid4()
+        store_a, store_b = uuid4(), uuid4()
+        try:
+            async with engine.begin() as chart:
+                await chart.execute(
+                    insert(ChartOfAccount).values(
+                        id=vat_account_id,
+                        tenant_id=tenant,
+                        code="2300",
+                        name="VAT Payable",
+                        account_type="liability",
+                        status="active",
+                    )
+                )
+                await chart.execute(
+                    insert(ChartOfAccount).values(
+                        id=cash_account_id,
+                        tenant_id=tenant,
+                        code="1000",
+                        name="Cash",
+                        account_type="asset",
+                        status="active",
+                    )
+                )
+                await chart.execute(
+                    insert(Tax).values(
+                        id=tax_id,
+                        tenant_id=tenant,
+                        name="VAT",
+                        rate=7.5,
+                        account_code="2300",
+                        is_active=True,
+                    )
+                )
+                # Stores referenced only through journal tags; the switcher
+                # filter joins live on journals.store_id, not this table.
+                await chart.execute(
+                    insert(Store).values(
+                        id=store_a,
+                        tenant_id=tenant,
+                        name="Store A",
+                    )
+                )
+                await chart.execute(
+                    insert(Store).values(
+                        id=store_b,
+                        tenant_id=tenant,
+                        name="Store B",
+                    )
+                )
+                # Store A collected 1,000; store B remitted 400 of it.
+                await _seed(
+                    chart,
+                    tenant,
+                    sale_jid,
+                    "sale",
+                    [(vat_account_id, "2300", 0, 1000, "liability", -1000)],
+                    store_id=store_a,
+                )
+                await _seed(
+                    chart,
+                    tenant,
+                    remit_jid,
+                    "tax_remittance",
+                    [
+                        (vat_account_id, "2300", 400, 0, "liability", 400),
+                        (cash_account_id, "1000", 0, 400, "asset", -400),
+                    ],
+                    store_id=store_b,
+                )
+
+            make_session = async_sessionmaker(engine, expire_on_commit=False)
+
+            async with make_session() as session:
+                await set_rls_context(
+                    session, str(uuid4()), str(tenant), "owner"
+                )
+
+                all_lines = await get_taxes_owed(session, tenant)
+                va = next(l for l in all_lines if l["account_code"] == "2300")
+                assert va["collected"] == 1000
+                assert va["remitted"] == 400
+                assert va["still_owed"] == 600
+
+                lines_a = await get_taxes_owed(session, tenant, store_id=store_a)
+                va_a = next(l for l in lines_a if l["account_code"] == "2300")
+                assert va_a["collected"] == 1000
+                assert va_a["remitted"] == 0
+                assert va_a["still_owed"] == 1000
+
+                lines_b = await get_taxes_owed(session, tenant, store_id=store_b)
+                va_b = next(l for l in lines_b if l["account_code"] == "2300")
+                assert va_b["collected"] == 0
+                assert va_b["remitted"] == 400
+                assert va_b["still_owed"] == -400
+
+                history_b = await get_tax_remittances(
+                    session, tenant, page=1, page_size=10, store_id=store_b
+                )
+                assert history_b["total"] == 1
+                history_a = await get_tax_remittances(
+                    session, tenant, page=1, page_size=10, store_id=store_a
+                )
+                assert history_a["total"] == 0
+        finally:
+            async with engine.begin() as chart:
+                await chart.execute(
+                    delete(JournalEntry).where(JournalEntry.tenant_id == tenant)
+                )
+                await chart.execute(
+                    delete(Journal).where(Journal.tenant_id == tenant)
+                )
+                await chart.execute(
+                    delete(Store).where(Store.tenant_id == tenant)
                 )
                 await chart.execute(
                     delete(Tax).where(Tax.tenant_id == tenant)

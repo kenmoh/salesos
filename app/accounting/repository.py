@@ -1046,7 +1046,7 @@ async def get_cash_flow(
 
 
 async def get_taxes_owed(
-    session: AsyncSession, tenant_id: UUID
+    session: AsyncSession, tenant_id: UUID, store_id: UUID | None = None
 ) -> list[dict]:
     """Per tax liability account: collected, remitted and still owed.
 
@@ -1056,6 +1056,10 @@ async def get_taxes_owed(
     posting would refund: ``still_owed`` is exactly what remains, and the
     remittance route refuses an amount past it -- a second remittance of tax
     that already left the books is refused, not silently re-paid.
+
+    With ``store_id``, only journals tagged with that store count: liabilities
+    with no store are invisible to it, which is the store-switcher contract
+    elsewhere in accounting.
     """
     from app.taxes.calc import DEFAULT_TAX_ACCOUNT
     from app.taxes.models import Tax
@@ -1079,30 +1083,40 @@ async def get_taxes_owed(
         account = await get_account_by_code(session, tenant_id, code)
         if account is None:
             continue
-        base = select(
-            func.coalesce(func.sum(JournalEntry.credit), 0).label("credits"),
-            func.coalesce(func.sum(JournalEntry.debit), 0).label("debits_all"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (
-                            JournalEntry.journal_id.in_(
-                                select(Journal.id).where(
-                                    Journal.reference_type == "tax_remittance"
-                                )
+
+        remittance_filter = [Journal.reference_type == "tax_remittance"]
+        if store_id is not None:
+            remittance_filter.append(Journal.store_id == store_id)
+
+        base = (
+            select(
+                func.coalesce(func.sum(JournalEntry.credit), 0).label("credits"),
+                func.coalesce(func.sum(JournalEntry.debit), 0).label("debits_all"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                JournalEntry.journal_id.in_(
+                                    select(Journal.id).where(*remittance_filter)
+                                ),
+                                JournalEntry.debit,
                             ),
-                            JournalEntry.debit,
-                        ),
-                        else_=0,
-                    )
-                ),
-                0,
-            ).label("debits_remittance"),
-        ).where(
-            JournalEntry.account_id == account.id,
-            JournalEntry.tenant_id == tenant_id,
-            JournalEntry.status == "posted",
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("debits_remittance"),
+            )
+            .select_from(JournalEntry)
+            .join(Journal, JournalEntry.journal_id == Journal.id)
+            .where(
+                JournalEntry.account_id == account.id,
+                JournalEntry.tenant_id == tenant_id,
+                JournalEntry.status == "posted",
+            )
         )
+        if store_id is not None:
+            base = base.where(Journal.store_id == store_id)
         totals = (await session.execute(base)).one()
         collected = float(totals.credits)
         remitted = float(totals.debits_remittance)
@@ -1126,11 +1140,13 @@ async def get_tax_remittances(
     tenant_id: UUID,
     page: int = 1,
     page_size: int = 20,
+    store_id: UUID | None = None,
 ) -> dict:
     """Paginated remittance journals, newest first.
 
     Amount lands on the debit leg against the tax account, so the account
     itself tells any other part of the reporting what left the business.
+    ``store_id`` limits the history to remittances tagged with that store.
     """
     base = (
         select(Journal, JournalEntry)
@@ -1146,6 +1162,8 @@ async def get_tax_remittances(
             Journal.status == "posted",
         )
     )
+    if store_id is not None:
+        base = base.where(Journal.store_id == store_id)
     total_count = (
         await session.execute(
             select(func.count()).select_from(base.subquery())
