@@ -75,7 +75,7 @@ async def sales_summary(
         scope=SALES,
         fields={"summary": 1, "store": store_id or ""},
         ttl=30,
-        fetch=lambda: services.sales_summary(
+        fetch=lambda: services.sales_status_summary(
             session=ctx.session,
             business_id=ctx.user.business_id,
             store_id=store_id,

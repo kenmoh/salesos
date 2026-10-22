@@ -349,6 +349,72 @@ async def list_sales(
     }
 
 
+async def sales_status_summary(
+    *,
+    session: AsyncSession,
+    business_id: str,
+    store_id=None,
+    from_date=None,
+    to_date=None,
+) -> dict:
+    """Status tallies and revenue for the sales screen header cards.
+
+    One grouped SQL over the sales table: total revenue (completed sales
+    only), plus how many are done, pending (partial included, the customer
+    still owes) and none (voided or returned). The same store/date filters
+    as ``list_sales`` so the cards agree with the list they sit above.
+    """
+    from uuid import UUID
+
+    from sqlalchemy import func, select
+
+    from app.sales.models import Sale
+
+    tid = UUID(business_id)
+
+    query = (
+        select(
+            Sale.status,
+            func.count().label("count"),
+            func.coalesce(func.sum(Sale.total), 0).label("amount"),
+        )
+        .where(Sale.tenant_id == tid)
+        .group_by(Sale.status)
+    )
+    if store_id:
+        query = query.where(Sale.store_id == UUID(store_id))
+    if from_date:
+        query = query.where(Sale.created_at >= from_date)
+    if to_date:
+        query = query.where(Sale.created_at <= to_date)
+
+    rows = (await session.execute(query)).all()
+    by_status: dict[str, dict] = {}
+    for r in rows:
+        status = r.status or "pending"
+        by_status[status] = {"count": int(r.count), "amount": float(r.amount)}
+
+    def tally(statuses):
+        return (
+            sum(by_status[s]["count"] for s in statuses),
+            sum(by_status[s]["amount"] for s in statuses),
+        )
+
+    served = {"pending", "partial"}
+    done_count, done_amount = tally(["completed"])
+    due_count, due_amount = tally(served)  # partial means the payer still owes
+    dead_count, dead_amount = tally(["voided", "returned"])
+    all_count = sum(v["count"] for v in by_status.values())
+    return {
+        "total_revenue": round(done_amount, 2),
+        "completed": done_count,
+        "pending": due_count,
+        "pending_amount": round(due_amount, 2),
+        "voided": dead_count,
+        "all": all_count,
+    }
+
+
 async def void_sale(
     *, session: AsyncSession, business_id: str, user_id: str, sale_id: str, reason: str
 ) -> bool:
