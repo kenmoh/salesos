@@ -79,6 +79,27 @@ def _acct_read(ctx, fetch, fields: dict, store_id: str | None = None, ttl: int =
     )
 
 
+async def _log_account_action(ctx, action: str, details: dict, request: Request | None = None):
+    """A curated tenant-visible audit row for the Activity Logs screen."""
+    import json
+
+    from app.identity.models import AuthAuditLog
+
+    ctx.session.add(
+        AuthAuditLog(
+            user_id=UUID(ctx.user.user_id),
+            tenant_id=UUID(ctx.user.business_id),
+            action=action,
+            ip_address=request.client.host if request and request.client else None,
+            user_agent=(request.headers.get("user-agent") or "")[:500]
+            or None
+            if request
+            else None,
+            details=json.dumps(details),
+        )
+    )
+
+
 def _validated_store_id(store_id: str | None) -> str | None:
     """Validate an optional store_id (query param or payload field).
 
@@ -420,6 +441,16 @@ async def create_journal(payload: CreateJournalRequest, ctx: DbTenantDep):
         ref_id=payload.reference_id,
         ref_type=payload.ref_type,
         store_id=_required_store_id(payload.store_id, "journal"),
+    )
+    await _log_account_action(
+        ctx,
+        "journal_created",
+        {
+            "journal_id": str(journal_id),
+            "description": payload.description,
+            "total": float(sum(e.credit for e in payload.entries)),
+            "entry_count": len(payload.entries),
+        },
     )
     await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
     return ok({"journal_id": journal_id})
@@ -908,6 +939,16 @@ async def create_receivable(payload: CreateReceivableRequest, ctx: DbTenantDep):
         store_id=_required_store_id(payload.store_id, "receivable"),
         created_by=ctx.user.user_id,
     )
+    await _log_account_action(
+        ctx,
+        "receivable_created",
+        {
+            "invoice_number": payload.invoice_number,
+            "customer_name": payload.customer_name,
+            "amount": float(payload.amount),
+            "due_date": payload.due_date,
+        },
+    )
     await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
     return ok(result)
 
@@ -944,6 +985,15 @@ async def record_ar_payment(
         ref_id=ar_id,
         ref_type="ar_payment",
         store_id=result.get("store_id"),
+    )
+    await _log_account_action(
+        ctx,
+        "ar_payment_received",
+        {
+            "invoice_number": result.get("invoice_number"),
+            "amount": float(payload.amount),
+            "payment_date": payload.payment_date,
+        },
     )
     await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
     return ok(result)
@@ -1088,6 +1138,16 @@ async def create_payable(payload: CreatePayableRequest, ctx: DbTenantDep):
         created_by=ctx.user.user_id,
         vendor_id=payload.vendor_id,
     )
+    await _log_account_action(
+        ctx,
+        "payable_created",
+        {
+            "bill_number": payload.bill_number,
+            "vendor_name": payload.vendor_name,
+            "amount": float(payload.amount),
+            "due_date": payload.due_date,
+        },
+    )
     await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
     return ok(result)
 
@@ -1122,6 +1182,15 @@ async def record_ap_payment(
         ref_id=ap_id,
         ref_type="ap_payment",
         store_id=result.get("store_id"),
+    )
+    await _log_account_action(
+        ctx,
+        "ap_payment_recorded",
+        {
+            "bill_number": result.get("bill_number"),
+            "amount": float(payload.amount),
+            "payment_date": payload.payment_date,
+        },
     )
     await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
     return ok(result)
@@ -1351,6 +1420,17 @@ async def create_expense(payload: CreateExpenseRequest, ctx: DbTenantDep):
         vendor=payload.vendor,
         receipt_url=payload.receipt_url,
         store_id=_required_store_id(payload.store_id, "expense"),
+    )
+    await _log_account_action(
+        ctx,
+        "expense_created",
+        {
+            "amount": float(payload.amount),
+            "category": payload.category,
+            "description": payload.description,
+            "vendor": payload.vendor,
+            "store_id": result.get("store_id"),
+        },
     )
     await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
     return ok(result)

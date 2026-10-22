@@ -485,7 +485,26 @@ async def void_sale(
         total=float(sale.total),
     )
     session.add(OutboxWrite(event=event, aggregate_type="sale", aggregate_id=str(sale.id)).to_model())
+
+    from app.identity.models import AuthAuditLog
+    from app.common.scope_cache import CATALOG, scope_bump
+
+    session.add(
+        AuthAuditLog(
+            user_id=UUID(user_id),
+            tenant_id=tenant_id,
+            action="sale_voided",
+            details=json.dumps({
+                "sale_number": sale.sale_number,
+                "total": float(sale.total),
+                "reason": reason,
+                "store_id": str(sale.store_id) if sale.store_id else None,
+            }),
+        )
+    )
     await session.flush()
+    if sale.store_id:
+        await scope_bump(business_id, str(sale.store_id), (CATALOG,))
     return True
 
 
@@ -633,7 +652,27 @@ async def return_sale(
         total=float(sale.total),
     )
     session.add(OutboxWrite(event=event, aggregate_type="sale", aggregate_id=str(sale.id)).to_model())
+
+    from app.identity.models import AuthAuditLog
+    from app.common.scope_cache import CATALOG, scope_bump
+
+    session.add(
+        AuthAuditLog(
+            user_id=UUID(user_id),
+            tenant_id=tenant_id,
+            action="sale_returned",
+            details=json.dumps({
+                "sale_number": sale.sale_number,
+                "total": float(sale.total),
+                "refund_amount": float(sale.amount_paid),
+                "reason": reason,
+                "store_id": str(sale.store_id) if sale.store_id else None,
+            }),
+        )
+    )
     await session.flush()
+    if sale.store_id:
+        await scope_bump(business_id, str(sale.store_id), (CATALOG,))
     return {
         "sale_id": sale_id,
         "status": "returned",
