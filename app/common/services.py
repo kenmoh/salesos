@@ -396,8 +396,8 @@ async def sales_status_summary(
 
     def tally(statuses):
         return (
-            sum(by_status[s]["count"] for s in statuses),
-            sum(by_status[s]["amount"] for s in statuses),
+            sum(by_status.get(s, {"count": 0})["count"] for s in statuses),
+            sum(by_status.get(s, {"amount": 0})["amount"] for s in statuses),
         )
 
     served = {"pending", "partial"}
