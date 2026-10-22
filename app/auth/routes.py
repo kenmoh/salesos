@@ -678,7 +678,12 @@ async def employee_roles(user_id: str, ctx: TenantDep):
     dependencies=[Depends(require_permission("employees:assign_roles"))],
 )
 async def assign_employee_role(user_id: str, payload: UpdateRoleRequest, ctx: TenantDep):
-    await assign_role(ctx.user.business_id, user_id, payload.new_role, actor_id=ctx.user.user_id)
+    try:
+        await assign_role(ctx.user.business_id, user_id, payload.new_role, actor_id=ctx.user.user_id)
+    except ValueError as exc:
+        # Not found / already assigned: the caller picking a role the user
+        # already holds is a client state slip, not a server fault.
+        raise HTTPException(status_code=409, detail=str(exc))
     return ok(None, message="Role assigned")
 
 

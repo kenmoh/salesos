@@ -1833,6 +1833,23 @@ class TestAuth:
         assert resp.status_code == 201
         assert resp.json() == {"data": None, "message": "Role assigned"}
 
+    async def test_assign_employee_role_already_held_is_a_409(self, client):
+        from app.auth import routes as auth_routes
+
+        with patch.object(
+            auth_routes, "assign_role", AsyncMock(side_effect=ValueError("role_already_assigned"))
+        ):
+            resp = await client.post(
+                f"{self.ROUTE}/employees/x/roles",
+                json={
+                    "user_id": "00000000-0000-0000-0000-000000000001",
+                    "new_role": "cashier",
+                },
+            )
+
+        assert resp.status_code == 409, resp.text
+        assert "already" in resp.json()["detail"]
+
     async def test_remove_employee_role(self, client):
         resp = await client.delete(f"{self.ROUTE}/employees/x/roles/cashier")
         assert resp.status_code == 200
