@@ -2,7 +2,7 @@ import json
 from decimal import Decimal
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from app.core.dependencies import TenantDep, DbTenantDep, require_permission
@@ -599,6 +599,22 @@ async def flutterwave_webhook(request: Request, verif_hash: str = Header(default
         sale_id = meta.get("sale_id")
         intent_id = meta.get("intent_id")
 
+        # Settlement flow: a link standing for the tenant's whole pending
+        # fee balance. The frozen ledger rows must be swept before the
+        # checkout confirmation path sees the same intent and misreads it
+        # as a cart payment.
+        if business_id and intent_id:
+            try:
+                await bridge.confirm_settlement_payment(
+                    business_id=business_id,
+                    intent_id=intent_id,
+                    gateway_data=data,
+                )
+                return ok({"received": True, "confirmed": True, "kind": "settlement"})
+            except ValueError as e:
+                if str(e) != "not_settlement":
+                    pass
+
         # Intent-first flow: confirm the intent which creates the sale
         if business_id and intent_id:
             try:
@@ -715,6 +731,30 @@ async def flutterwave_webhook(request: Request, verif_hash: str = Header(default
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+@router.post(
+    "/settlement/link",
+    dependencies=[Depends(require_permission("payments:create"))],
+)
+async def create_settlement_link(ctx: DbTenantDep):
+    """A Flutterwave link for the tenant's whole outstanding fee balance.
+
+    Pressing it again while a link is still unpaid re-issues the same link
+    instead of stacking a second one. Confirmation arrives by webhook, which
+    flips the pending ledger rows that were summed into the link.
+    """
+    from app.common.bridge import create_settlement_payment
+
+    try:
+        result = await create_settlement_payment(
+            business_id=ctx.user.business_id,
+            actor_id=ctx.user.user_id,
+        )
+    except ValueError as e:
+        code = 400 if str(e) == "nothing_pending" else 409
+        raise HTTPException(status_code=code, detail=str(e))
+    return ok(result)
+
+
 @router.get(
     "/settlement",
     dependencies=[Depends(require_permission("payments:read"))],
@@ -793,4 +833,25 @@ async def settlement_balance(ctx: DbTenantDep):
             "max_pending_balance": max_pending,
             "is_blocked": pending >= max_pending,
         }
+    )
+
+@webhook_router.get(
+    "/payment/callback",
+    include_in_schema=False,
+)
+async def payment_callback():
+    """Browser landing page after a hosted payment completes.
+
+    The webhook, not this page, confirms the payment — this only needs to
+    tell the person at the screen what happened and that they can leave.
+    """
+    return HTMLResponse(
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<style>body{font-family:-apple-system,sans-serif;display:flex;"
+        "align-items:center;justify-content:center;height:100vh;margin:0;"
+        "color:#0f172a}main{text-align:center;padding:24px}</style></head>"
+        "<body><main><h1>Payment received</h1>"
+        "<p>The app will update automatically.<br>You can close this window.</p>"
+        "</main></body></html>"
     )

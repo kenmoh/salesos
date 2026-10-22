@@ -26,7 +26,7 @@
     }
     }
 
-** Card Payment **: https://api.flutterwave.com/v3/payments
+** Hosted checkout **: https://api.flutterwave.com/v3/payments
 1. Required body params:
     {
         "amount": 100,

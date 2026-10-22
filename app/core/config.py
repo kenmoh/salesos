@@ -107,6 +107,11 @@ class ApiSettings(BaseSettings):
     flutterwave_base_url: str = Field(
         default="https://api.flutterwave.com/v3", alias="FLUTTERWAVE_BASE_URL"
     )
+    # Where the browser lands after a hosted payment completes; the webhook
+    # carries the real confirmation, so this page only needs to say so.
+    app_callback_url: str = Field(
+        default="https://salesos.fastapicloud.dev/payment/callback"
+    )
 
     google_client_id: str = Field(default="", alias="GOOGLE_CLIENT_ID")
     google_client_secret: str = Field(default="", alias="GOOGLE_CLIENT_SECRET")

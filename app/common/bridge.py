@@ -8071,6 +8071,169 @@ async def confirm_split_transfer_payment(
     return result
 
 
+async def create_settlement_payment(*, business_id: str, actor_id: str) -> dict:
+    """One Flutterwave link that settles every pending platform fee.
+
+    The link amount is the tenant's outstanding pending balance. Which ledger
+    rows belong to that money is decided here — the pending rows alive when
+    the link is created are frozen onto the intent — and the webhook flips
+    exactly those rows, so fees that accrue while the link waits for payment
+    stay out of it and keep their original pending status.
+
+    A settlement link that is still unpaid is reused rather than stacked:
+    pressing Payment twice must not mint two live links for the same debt.
+    """
+    from app.payments.models import PaymentIntent
+    from app.payments.repository import create_intent
+    from app.platform.models import PlatformFeeLedger
+
+    tenant_uid = UUID(business_id)
+    sdb = _get_sdb("payments")
+
+    async with sdb.session() as session:
+        open_intent = (
+            await session.execute(
+                select(PaymentIntent)
+                .where(
+                    PaymentIntent.tenant_id == tenant_uid,
+                    PaymentIntent.status == "pending",
+                    PaymentIntent.gateway_reference.like("SF-SETTLE-%"),
+                )
+                .order_by(PaymentIntent.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if open_intent and open_intent.authorization_url:
+            return {
+                "link": open_intent.authorization_url,
+                "amount": float(open_intent.amount),
+                "intent_id": str(open_intent.id),
+                "tx_ref": open_intent.gateway_reference,
+                "reused": True,
+            }
+
+        pending_rows = (
+            await session.execute(
+                select(PlatformFeeLedger).where(
+                    PlatformFeeLedger.tenant_id == tenant_uid,
+                    PlatformFeeLedger.status == "pending",
+                ).order_by(PlatformFeeLedger.created_at)
+            )
+        ).scalars().all()
+
+    if not pending_rows:
+        raise ValueError("nothing_pending")
+
+    total = sum(Decimal(str(r.amount)) for r in pending_rows)
+    if total <= 0:
+        raise ValueError("nothing_pending")
+
+    from app.identity.repository import get_user_by_id as _get_user
+    owner_email = None
+    async with _get_sdb("identity").session() as session:
+        actor_user = await _get_user(session, UUID(actor_id))
+        owner_email = actor_user.email if actor_user else None
+
+    tx_ref = f"SF-SETTLE-{uuid4().hex[:10].upper()}"
+    intent = PaymentIntent(
+        id=uuid4(),
+        tenant_id=tenant_uid,
+        sale_id=None,
+        cart_id=None,
+        method="card",
+        amount=float(total),
+        currency="NGN",
+        status="pending",
+        gateway_reference=tx_ref,
+        intent_metadata=json.dumps({
+            "type": "settlement",
+            "ledger_ids": [str(r.id) for r in pending_rows],
+            "created_by": actor_id,
+        }),
+    )
+
+    async with sdb.session() as session:
+        await create_intent(session, intent)
+        await session.commit()
+
+    link_result = await flutterwave_service.create_payment_link(
+        amount=total,
+        tx_ref=tx_ref,
+        customer_email=owner_email or "settlements@storeflow.ng",
+        title="Clear Outstanding",
+        meta={"business_id": business_id, "intent_id": str(intent.id)},
+    )
+
+    async with sdb.session() as session:
+        row = (
+            await session.execute(
+                select(PaymentIntent).where(PaymentIntent.id == intent.id)
+            )
+        ).scalar_one()
+        row.authorization_url = link_result["link"]
+        await session.commit()
+
+    return {
+        "link": link_result["link"],
+        "amount": float(total),
+        "intent_id": str(intent.id),
+        "tx_ref": tx_ref,
+        "reused": False,
+    }
+
+
+async def confirm_settlement_payment(
+    *, business_id: str, intent_id: str, gateway_data: dict
+) -> dict:
+    """Webhook confirm for a settlement link: flip its frozen ledger rows.
+
+    Raises ``ValueError("not_settlement")`` when the intent is an ordinary
+    checkout intent, so the webhook can fall through to the checkout
+    confirmation path unchanged.
+    """
+    from app.payments.models import PaymentIntent
+    from app.payments.repository import get_intent_by_id, update_intent_status
+    from app.platform.models import PlatformFeeLedger
+
+    sdb = _get_sdb("payments")
+    async with sdb.session() as session:
+        intent = await get_intent_by_id(session, UUID(intent_id))
+        if not intent:
+            raise ValueError("intent_not_found")
+
+        metadata = {}
+        try:
+            metadata = json.loads(intent.intent_metadata or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        if metadata.get("type") != "settlement":
+            raise ValueError("not_settlement")
+
+        ledger_ids = {
+            UUID(sid)
+            for sid in (metadata.get("ledger_ids") or [])
+        }
+        await update_intent_status(session, intent.id, "completed", gateway_data)
+
+        cleared = 0
+        if ledger_ids:
+            ledger_result = await session.execute(
+                select(PlatformFeeLedger).where(
+                    PlatformFeeLedger.tenant_id == UUID(business_id),
+                    PlatformFeeLedger.id.in_(ledger_ids),
+                    PlatformFeeLedger.status == "pending",
+                )
+            )
+            for ledger in ledger_result.scalars().all():
+                ledger.status = "deducted"
+                ledger.settled_at = datetime.now(UTC)
+                cleared += 1
+
+        await session.commit()
+
+    return {"cleared": cleared}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DOCUMENT MANAGEMENT
 # ═══════════════════════════════════════════════════════════════════════════════

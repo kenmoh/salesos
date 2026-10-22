@@ -121,7 +121,7 @@ async def create_payment_link(
         "tx_ref": tx_ref,
         "amount": _flw_amount(amount),
         "currency": "NGN",
-        "redirect_url": callback_url or "https://app.storeflow.ng/payment/callback",
+        "redirect_url": callback_url or settings.app_callback_url,
         "customer": {
             "email": customer_email,
             **({"name": customer_name} if customer_name else {}),
