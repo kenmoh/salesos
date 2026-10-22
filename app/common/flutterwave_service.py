@@ -694,21 +694,14 @@ async def resolve_account(*, account_number: str, bank_code: str) -> dict:
 
 
 def verify_webhook_signature(body: bytes, signature: str) -> bool:
-    """Verify the authenticity of a Flutterwave webhook signature.
+    """Verify a Flutterwave webhook by its verif-hash header.
 
-    Uses HMAC-SHA256 to verify that the webhook was sent by Flutterwave
-    and not tampered with in transit.
-
-    Args:
-        body: Raw request body bytes from the webhook.
-        signature: The signature hash from the request headers.
-
-    Returns:
-        True if signature is valid, False otherwise.
+    Flutterwave v3 does not sign the body: it sends the secret hash you
+    configured in the dashboard verbatim in the ``verif-hash`` header, so
+    the only sound check is equality against our configured value (still
+    done timing-safely). An empty configured hash fails closed.
     """
-    expected = hmac.new(
-        settings.flutterwave_secret_hash.encode("utf-8"),
-        body,
-        hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(expected, signature)
+    configured = (settings.flutterwave_secret_hash or "").strip()
+    if not configured or not signature:
+        return False
+    return hmac.compare_digest(configured, (signature or "").strip())
