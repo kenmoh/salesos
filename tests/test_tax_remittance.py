@@ -423,6 +423,28 @@ class TestRemitTaxRoute:
             id=uuid4(), code=code, name=name, account_type="asset"
         )
 
+    async def test_remitting_without_a_store_is_refused(self, client):
+        """Tax is remitted per store: All Stores only views."""
+        vat = self._vat()
+        lines = self._taxes_owed(1000)
+        responders = self._patched_responders(
+            lines=lines, accounts=[vat, vat], balance=600.0
+        )
+
+        with responders[0], responders[1], responders[2], responders[3]:
+            resp = await client.post(
+                "/accounting/taxes-remit",
+                json={
+                    "account_code": "2300",
+                    "amount": 100,
+                    "method": "cash",
+                    "payment_date": "2026-10-21",
+                },
+            )
+
+        assert resp.status_code == 400
+        assert "All Stores" in resp.json()["detail"]
+
     async def test_method_must_be_cash_or_bank(self, client):
         vat = self._vat()
         lines = self._taxes_owed(1000)
@@ -438,6 +460,7 @@ class TestRemitTaxRoute:
                     "amount": 100,
                     "method": "card",
                     "payment_date": "2026-10-21",
+                    "store_id": "68c14de2-9e6d-4a68-b6ef-2b9a19e79f2a",
                 },
             )
 
@@ -462,6 +485,7 @@ class TestRemitTaxRoute:
                     "amount": 500,
                     "method": "cash",
                     "payment_date": "2026-10-21",
+                    "store_id": "68c14de2-9e6d-4a68-b6ef-2b9a19e79f2a",
                 },
             )
 
@@ -481,6 +505,7 @@ class TestRemitTaxRoute:
                     "amount": 5,
                     "method": "cash",
                     "payment_date": "2026-10-21",
+                    "store_id": "68c14de2-9e6d-4a68-b6ef-2b9a19e79f2a",
                 },
             )
 
@@ -509,6 +534,7 @@ class TestRemitTaxRoute:
                     "method": "cash",
                     "notes": "VAT transfer",
                     "payment_date": "2026-10-21",
+                    "store_id": "68c14de2-9e6d-4a68-b6ef-2b9a19e79f2a",
                 },
             )
 
@@ -547,6 +573,7 @@ class TestRemitTaxRoute:
                     "amount": 500,
                     "method": "bank",
                     "payment_date": "2026-10-21",
+                    "store_id": "68c14de2-9e6d-4a68-b6ef-2b9a19e79f2a",
                 },
             )
             assert resp.status_code == 200, resp.text

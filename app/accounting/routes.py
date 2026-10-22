@@ -72,6 +72,27 @@ def _validated_store_id(store_id: str | None) -> str | None:
     return store_id
 
 
+def _required_store_id(store_id: str | None, context: str) -> str:
+    """Creation postings must belong to one concrete store.
+
+    An untagged row is invisible to store-filtered views -- every store
+    screen filters on store_id, so a liability created across all stores
+    never stops showing as owed in each store even after what the merchant
+    already paid. All Stores is for viewing; anything that posts money
+    against a store names that store.
+    """
+    value = _validated_store_id(store_id)
+    if value is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Pass the store this {context} belongs to; tax and books "
+                "post per store, All Stores is view-only"
+            ),
+        )
+    return value
+
+
 def _paginate_list(items: list, page: int | None, page_size: int | None) -> dict:
     """Wrap a full list in the paginated envelope.
 
@@ -358,7 +379,7 @@ async def create_journal(payload: CreateJournalRequest, ctx: DbTenantDep):
         entries=[e.model_dump() for e in payload.entries],
         ref_id=payload.reference_id,
         ref_type=payload.ref_type,
-        store_id=_validated_store_id(payload.store_id),
+        store_id=_required_store_id(payload.store_id, "journal"),
     )
     return ok({"journal_id": journal_id})
 
@@ -622,8 +643,22 @@ async def remit_tax(payload: TaxRemitRequest, ctx: DbTenantDep, request: Request
     if payload.method not in ("cash", "bank"):
         raise HTTPException(400, "method must be cash or bank")
 
+    # Taxing operates per store: every remittance must name the store it
+    # left from. An untagged remittance is invisible to store-scoped owed
+    # balances (this sums journal.store_id), so stores would keep showing
+    # tax as owed that the business already paid -- make it impossible
+    # rather than letting the aggregate lie.
+    store_uuid = _validated_store_id(payload.store_id)
+    if store_uuid is None:
+        raise HTTPException(
+            400,
+            "Pass the store the tax was remitted from; tax is remitted "
+            "per store, so All Stores only views",
+        )
+
     tenant_id = UUID(ctx.user.business_id)
-    lines = await get_taxes_owed(ctx.session, tenant_id)
+    store_id = UUID(store_uuid)
+    lines = await get_taxes_owed(ctx.session, tenant_id, store_id=store_id)
     line = next((l for l in lines if l["account_code"] == payload.account_code), None)
     if line is None:
         raise HTTPException(
@@ -682,7 +717,7 @@ async def remit_tax(payload: TaxRemitRequest, ctx: DbTenantDep, request: Request
         ],
         ref_type="tax_remittance",
         ref_id=None,
-        store_id=_validated_store_id(payload.store_id),
+        store_id=store_uuid,
     )
 
     import json
@@ -702,6 +737,7 @@ async def remit_tax(payload: TaxRemitRequest, ctx: DbTenantDep, request: Request
                     "amount": payload.amount,
                     "method": payload.method,
                     "payment_date": payload.payment_date,
+                    "store_id": store_uuid,
                     "actor_role": ctx.user.role,
                 }
             ),
@@ -782,7 +818,7 @@ async def create_receivable(payload: CreateReceivableRequest, ctx: DbTenantDep):
         amount=payload.amount,
         due_date=payload.due_date,
         invoice_id=payload.invoice_id,
-        store_id=_validated_store_id(payload.store_id),
+        store_id=_required_store_id(payload.store_id, "receivable"),
         created_by=ctx.user.user_id,
     )
     return ok(result)
@@ -952,7 +988,7 @@ async def create_payable(payload: CreatePayableRequest, ctx: DbTenantDep):
         amount=payload.amount,
         due_date=payload.due_date,
         description=payload.description,
-        store_id=_validated_store_id(payload.store_id),
+        store_id=_required_store_id(payload.store_id, "payable"),
         expense_category=payload.expense_category,
         created_by=ctx.user.user_id,
         vendor_id=payload.vendor_id,
@@ -1210,7 +1246,7 @@ async def create_expense(payload: CreateExpenseRequest, ctx: DbTenantDep):
         created_by=ctx.user.user_id,
         vendor=payload.vendor,
         receipt_url=payload.receipt_url,
-        store_id=_validated_store_id(payload.store_id),
+        store_id=_required_store_id(payload.store_id, "expense"),
     )
     return ok(result)
 

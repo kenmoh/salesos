@@ -889,10 +889,26 @@ class TestAccounting:
                     {"account_id": "00000000-0000-0000-0000-000000000001", "account_code": "100", "debit": 100, "credit": 0},
                     {"account_id": "00000000-0000-0000-0000-000000000002", "account_code": "200", "debit": 0, "credit": 100},
                 ],
+                "store_id": STORE_ID,
             },
         )
         assert resp.status_code == 201
         assert "data" in resp.json()
+
+    async def test_create_journal_refuses_all_stores(self, client):
+        """A journal belongs to a store; All Stores only views."""
+        resp = await client.post(
+            f"{self.ROUTE}/journals",
+            json={
+                "description": "test",
+                "entries": [
+                    {"account_id": "00000000-0000-0000-0000-000000000001", "account_code": "100", "debit": 100, "credit": 0},
+                    {"account_id": "00000000-0000-0000-0000-000000000002", "account_code": "200", "debit": 0, "credit": 100},
+                ],
+            },
+        )
+        assert resp.status_code == 400
+        assert "All Stores" in resp.json()["detail"]
 
     async def test_list_journals(self, client):
         resp = await client.get(f"{self.ROUTE}/journals")
