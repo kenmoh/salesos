@@ -216,6 +216,44 @@ async def cache_del_pattern(pattern: str) -> None:
         pass
 
 
+KEEPALIVE_INTERVAL_SECONDS = 300
+
+
+async def redis_keepalive_loop(*, logger: Any, interval: int = KEEPALIVE_INTERVAL_SECONDS) -> None:
+    """Connect, PING and disconnect on a timer so provider Redis never idles
+    into hibernation (Layerbase free tier sleeps after 15 quiet minutes).
+
+    A fresh one-shot client per cycle: short-lived so it never counts against
+    the connection cap, and independent of the breaker-wrapped shared clients
+    so a slow wake (1-5 s) never trips the breaker or doubles errors into the
+    app's log stream.
+    """
+    # A cold wake takes 1-5 s, so the probe gets its own generous budgets
+    # rather than the 1 s the traffic path assumes of a warm Redis.
+    import redis.asyncio as aredis
+
+    while True:
+        try:
+            probe = aredis.from_url(
+                settings.redis_session_url,
+                decode_responses=True,
+                socket_connect_timeout=8,
+                socket_timeout=8,
+            )
+            try:
+                await probe.ping()
+            finally:
+                try:
+                    await probe.aclose()
+                except Exception:
+                    pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("Redis keepalive skipped: %s", exc)
+        await asyncio.sleep(interval)
+
+
 async def close_redis() -> None:
     global _cache, _session
     for client in (_cache, _session):
