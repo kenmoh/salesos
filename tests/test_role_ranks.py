@@ -182,6 +182,81 @@ class TestRouteSurfacesTheCeilingAsBadRequest:
         assert resp.status_code == 400, resp.text
         assert "must not exceed" in resp.json()["detail"]
 
+
+class TestBuiltinRolesCannotBeChanged:
+    """The seeded roles describe the shape of the business, so the merchant
+    composes a custom role out of the permission set instead of editing these;
+    editing a built-in would silently change what the seeded permissions mean
+    for every role that shares them."""
+
+    @staticmethod
+    def _builtin_session(name: str):
+        tenant_id = uuid4()
+        role = MagicMock()
+        role.name = name
+        role.tenant_id = tenant_id
+
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        session.commit = AsyncMock()
+        session.execute = AsyncMock(
+            return_value=MagicMock(
+                scalar_one_or_none=MagicMock(return_value=role)
+            )
+        )
+        return session, tenant_id
+
+    async def test_update_refuses_a_builtin(self):
+        from app.common import bridge
+
+        session, tenant_id = self._builtin_session("manager")
+        with patch.object(bridge, "_get_sdb") as sdb:
+            sdb.return_value.session.return_value = session
+            with pytest.raises(ValueError, match="built-in role"):
+                await bridge.update_role_for_tenant(
+                    tenant_id=str(tenant_id),
+                    role_id=str(uuid4()),
+                    rank=55,
+                )
+
+        session.commit.assert_not_called()
+
+    async def test_delete_refuses_a_builtin(self):
+        from app.common import bridge
+
+        session, tenant_id = self._builtin_session("cashier")
+        with patch.object(bridge, "_get_sdb") as sdb:
+            sdb.return_value.session.return_value = session
+            with pytest.raises(ValueError, match="built-in role"):
+                await bridge.delete_role_for_tenant(
+                    tenant_id=str(tenant_id), role_id=str(uuid4())
+                )
+
+        session.commit.assert_not_called()
+
+    async def test_permissions_refuse_a_builtin(self):
+        from app.common import bridge
+
+        session, tenant_id = self._builtin_session("viewer")
+        with patch.object(bridge, "_get_sdb") as sdb:
+            sdb.return_value.session.return_value = session
+            with pytest.raises(ValueError, match="built-in role"):
+                await bridge.set_role_permissions_for_tenant(
+                    tenant_id=str(tenant_id),
+                    role_id=str(uuid4()),
+                    permission_ids=[str(uuid4())],
+                )
+
+        session.commit.assert_not_called()
+
+    async def test_assignment_of_a_builtin_still_works(self):
+        """Protected from edits, not from being given to people."""
+        from app.identity.constants import BUILTIN_ROLE_NAMES
+
+        assert "manager" in BUILTIN_ROLE_NAMES
+        assert "owner" in BUILTIN_ROLE_NAMES
+
     async def test_update_role_returns_400(self, client):
         from app.auth import routes as auth_routes
 

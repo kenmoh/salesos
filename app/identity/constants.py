@@ -17,6 +17,11 @@ Two rules follow from keeping the numbers here:
 
 OWNER_ROLE_NAME = "owner"
 
+# Roles the onboarding seeds for every tenant. They describe the shape of the
+# business (sell, stock, watch), so they are read-only: a merchant composes a
+# custom role out of the permission set instead of editing these.
+BUILTIN_ROLE_NAMES = frozenset({"owner", "manager", "cashier", "inventory", "viewer"})
+
 ROLE_RANKS: dict[str, int] = {
     "super_admin": 100,
     "developer": 90,

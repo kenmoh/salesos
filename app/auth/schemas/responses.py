@@ -368,6 +368,10 @@ class RoleCreated(_Base):
 class RoleDetail(_Base):
     id: str = ""
     name: str = ""
+    rank: int = 0
+    # True for the roles every tenant is seeded with; clients render them
+    # read-only and merchants compose custom roles instead.
+    builtin: bool = False
     description: str | None = None
     permissions: list[str] = []
 

@@ -22,7 +22,7 @@ from app.core.config import settings
 from app.common.db.engine import ServiceDatabase, create_database
 from app.common.settings import get_common_settings
 from app.common.utils import generate_random_timestamp_string
-from app.identity.constants import OWNER_RANK, OWNER_ROLE_NAME
+from app.identity.constants import BUILTIN_ROLE_NAMES, OWNER_RANK, OWNER_ROLE_NAME
 from app.taxes.resolve import product_tax_map, taxes_for_ids
 
 
@@ -566,6 +566,9 @@ async def list_assignable_roles(tenant_id: str | None = None) -> list[dict]:
                     "name": r.name,
                     "rank": r.rank,
                     "description": r.description,
+                    # Built-ins are read-only: clients render them without
+                    # edit and delete controls.
+                    "builtin": r.name in BUILTIN_ROLE_NAMES,
                     "permissions": [p.name for p in perms],
                 }
             )
@@ -603,6 +606,7 @@ async def list_all_roles(tenant_id: str | None = None) -> list[dict]:
                     "name": r.name,
                     "rank": r.rank,
                     "description": r.description,
+                    "builtin": r.name in BUILTIN_ROLE_NAMES,
                     "permissions": [p.name for p in perms],
                 }
             )
@@ -652,7 +656,13 @@ async def get_user_roles(tenant_id: str, user_id: str) -> list[dict] | None:
             return None
         roles = await get_user_roles(session, UUID(user_id))
         return [
-            {"id": str(r.id), "name": r.name, "rank": r.rank, "description": r.description}
+            {
+                "id": str(r.id),
+                "name": r.name,
+                "rank": r.rank,
+                "description": r.description,
+                "builtin": r.name in BUILTIN_ROLE_NAMES,
+            }
             for r in roles
         ]
 
@@ -8568,6 +8578,7 @@ async def create_role_for_tenant(
             "name": role.name,
             "rank": role.rank,
             "description": role.description,
+            "builtin": False,
             "tenant_id": str(role.tenant_id),
         }
 
@@ -8610,6 +8621,11 @@ Returns:
         role = await get_role_by_id(session, role_uid)
         if not role or str(role.tenant_id) != tenant_id:
             return None
+        if role.name in BUILTIN_ROLE_NAMES:
+            raise ValueError(
+                f"'{role.name}' is a built-in role and cannot be edited; "
+                "create a role with the permissions you need instead"
+            )
 
         updated = await repo_update_role(
             session, role_uid, name=name, rank=rank, description=description
@@ -8629,6 +8645,7 @@ Returns:
             "name": updated.name,
             "rank": updated.rank,
             "description": updated.description,
+            "builtin": False,
             "permissions": [p.name for p in perms],
         }
 
@@ -8655,6 +8672,11 @@ async def delete_role_for_tenant(tenant_id: str, role_id: str) -> bool:
         role = await get_role_by_id(session, role_uid)
         if not role or str(role.tenant_id) != tenant_id:
             return False
+        if role.name in BUILTIN_ROLE_NAMES:
+            raise ValueError(
+                f"'{role.name}' is a built-in role and cannot be deleted; "
+                "create a role with the permissions you need instead"
+            )
 
         result = await repo_delete_role(session, role_uid)
         await session.commit()
@@ -8745,6 +8767,11 @@ async def set_role_permissions_for_tenant(
         role = await get_role_by_id(session, role_uid)
         if not role or str(role.tenant_id) != tenant_id:
             return None
+        if role.name in BUILTIN_ROLE_NAMES:
+            raise ValueError(
+                f"'{role.name}' is a built-in role and its permissions cannot be "
+                "edited; create a role with the permissions you need instead"
+            )
 
         before = [p.name for p in await get_permissions_for_role(session, role_uid)]
         holders = await _role_holders(session, role_uid)
@@ -8779,6 +8806,7 @@ async def set_role_permissions_for_tenant(
             "name": role.name,
             "rank": role.rank,
             "description": role.description,
+            "builtin": False,
             "permissions": after,
         }
 

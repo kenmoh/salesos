@@ -300,7 +300,7 @@ class TestAuditAndCacheInvalidation:
         role = SimpleNamespace(
             id=role_id,
             tenant_id=tenant_id,
-            name="manager",
+            name="shift_lead",
             rank=60,
             description="Day-to-day operations",
         )
@@ -345,7 +345,7 @@ class TestAuditAndCacheInvalidation:
         role = SimpleNamespace(
             id=role_id,
             tenant_id=tenant_id,
-            name="cashier",
+            name="counter",
             rank=40,
             description="Process sales at registers",
         )
