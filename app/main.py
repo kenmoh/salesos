@@ -242,6 +242,18 @@ def create_app() -> FastAPI:
         except Exception as e:
             health_status["status"] = "degraded"
             health_status["dependencies"]["redis"] = f"error: {str(e)[:50]}"
+        finally:
+            # Point the host out without the credentials so a wrong dashboard
+            # value can be told apart from a network block.
+            try:
+                from urllib.parse import urlsplit
+
+                parts = urlsplit(settings.redis_session_url)
+                health_status["dependencies"]["redis_host"] = (
+                    f"{parts.scheme}://{parts.hostname}:{parts.port}"
+                )
+            except Exception:
+                pass
 
         return health_status
 
