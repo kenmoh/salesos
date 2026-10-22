@@ -51,6 +51,42 @@ async def create_sale(payload: SaleCreate, ctx: DbTenantDep):
 
 
 @router.get(
+    "/summary",
+    response_model=DataResponse[dict],
+    dependencies=[Depends(require_permission("sales:read"))],
+)
+async def sales_summary(
+    ctx: DbTenantDep,
+    store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
+    from_date: str | None = None,
+    to_date: str | None = None,
+):
+    """Status tallies for the sales screen header cards: revenue from
+    completed sales plus done/pending/voided counts, independent of the
+    list's pagination."""
+    if store_id:
+        try:
+            UUID(store_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="store_id must be a valid UUID")
+    result = await scope_read(
+        tenant_id=ctx.user.business_id,
+        store_id=store_id or TENANT_SCOPE,
+        scope=SALES,
+        fields={"summary": 1, "store": store_id or ""},
+        ttl=30,
+        fetch=lambda: services.sales_summary(
+            session=ctx.session,
+            business_id=ctx.user.business_id,
+            store_id=store_id,
+            from_date=from_date,
+            to_date=to_date,
+        ),
+    )
+    return ok(result)
+
+
+@router.get(
     "",
     response_model=PaginatedResponse[SaleListItem],
     dependencies=[Depends(require_permission("sales:read"))],
