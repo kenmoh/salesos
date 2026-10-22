@@ -12,9 +12,11 @@ from app.core.security import (
     create_access_token,
     decode_access_token,
     generate_session_id,
+    get_session,
     hash_token,
     revoke_all_sessions,
     revoke_session,
+    single_sign_on_device,
     store_refresh_session,
     verify_password,
     verify_session_hash,
@@ -56,11 +58,12 @@ async def platform_login(*, session: AsyncSession, email: str, password: str, re
     from app.core.security import create_refresh_token
 
     refresh_token, _ = create_refresh_token(str(admin.id), "platform", sid)
+    await single_sign_on_device(str(admin.id), sid)
     await store_refresh_session(
         str(admin.id),
         sid,
         hash_token(refresh_token),
-        {},
+        {"device_name": None, "user_agent": req.headers.get("user-agent", ""), "ip_address": None},
         settings.refresh_token_expire_days * 86400,
     )
 
@@ -86,7 +89,8 @@ async def platform_refresh(*, session: AsyncSession, raw_token: str) -> dict:
     except JWTError:
         raise PlatformAuthError("Invalid refresh token")
 
-    if not await verify_session_hash(payload["sid"], raw_token):
+    old = await get_session(payload["sub"], payload["sid"])
+    if not await verify_session_hash(payload["sid"], raw_token, payload["sub"]):
         await revoke_all_sessions(payload["sub"])
         raise PlatformAuthError("Token reuse detected")
 
@@ -94,13 +98,19 @@ async def platform_refresh(*, session: AsyncSession, raw_token: str) -> dict:
 
     new_sid = generate_session_id()
     new_refresh, _ = create_refresh_token(payload["sub"], "platform", new_sid)
-    await revoke_session(payload["sid"])
+    await revoke_session(payload["sid"], payload["sub"])
     await store_refresh_session(
         payload["sub"],
         new_sid,
         hash_token(new_refresh),
-        {},
+        {
+            "device_name": (old or {}).get("device_name"),
+            "user_agent": (old or {}).get("user_agent"),
+            "ip_address": (old or {}).get("ip_address"),
+        },
         settings.refresh_token_expire_days * 86400,
+        created_at=(old or {}).get("created_at"),
+        last_active_at=datetime.now(UTC).isoformat(),
     )
 
     admin = await session.execute(

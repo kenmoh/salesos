@@ -20,10 +20,12 @@ from app.core.security import (
     generate_totp_secret,
     get_totp_uri,
     hash_password,
+    get_session,
     hash_token,
     revoke_all_sessions,
     revoke_session,
     seconds_until,
+    single_sign_on_device,
     store_refresh_session,
     verify_password,
     verify_session_hash,
@@ -42,6 +44,22 @@ class AuthError(Exception):
 
 class TotpRequired(Exception):
     pass
+
+
+def _device_from_ua(req: Request) -> str | None:
+    """A short human label (iPhone, iPad, Android, …) from the user agent."""
+    ua = (req.headers.get("user-agent") or "").lower()
+    if "iphone" in ua:
+        return "iPhone"
+    if "ipad" in ua:
+        return "iPad"
+    if "android" in ua:
+        return "Android"
+    if "windows" in ua:
+        return "Windows PC"
+    if "mac" in ua:
+        return "Mac"
+    return None
 
 
 def _ip(req: Request) -> str:
@@ -169,11 +187,16 @@ async def login(*, session, email, password, totp_code, req, device_name=None):
     )
     sid = generate_session_id()
     refresh, _ = create_refresh_token(user["user_id"], user["business_id"], sid)
+    await single_sign_on_device(user["user_id"], sid)
     await store_refresh_session(
         user["user_id"],
         sid,
         hash_token(refresh),
-        {},
+        {
+            "device_name": device_name or _device_from_ua(req),
+            "user_agent": req.headers.get("user-agent", ""),
+            "ip_address": _ip(req),
+        },
         settings.refresh_token_expire_days * 86400,
     )
     # Update last_login_at
@@ -221,18 +244,25 @@ async def refresh_tokens(*, session, raw_token, req):
         raise AuthError("Refresh token expired", "token_expired")
     except JWTError:
         raise AuthError("Invalid refresh token", "invalid_token")
-    if not await verify_session_hash(payload["sid"], raw_token):
+    old = await get_session(payload["sub"], payload["sid"])
+    if not await verify_session_hash(payload["sid"], raw_token, payload["sub"]):
         await revoke_all_sessions(payload["sub"])
         raise AuthError("Token reuse detected. All sessions revoked.", "token_reuse")
     new_sid = generate_session_id()
     new_refresh, _ = create_refresh_token(payload["sub"], payload["bid"], new_sid)
-    await revoke_session(payload["sid"])
+    await revoke_session(payload["sid"], payload["sub"])
     await store_refresh_session(
         payload["sub"],
         new_sid,
         hash_token(new_refresh),
-        {},
+        {
+            "device_name": (old or {}).get("device_name"),
+            "user_agent": (old or {}).get("user_agent"),
+            "ip_address": (old or {}).get("ip_address"),
+        },
         settings.refresh_token_expire_days * 86400,
+        created_at=(old or {}).get("created_at"),
+        last_active_at=datetime.now(UTC).isoformat(),
     )
     from app.common.db.session import set_rls_context
 
@@ -486,6 +516,24 @@ async def set_employee_status(*, session, business_id: str, user_id: str, status
     await session.flush()
     return {
         "user_id": str(user.id),
+        "status": user.status,
+    }
+
+
+async def get_employee(*, session, business_id: str, user_id: str):
+    """Fetch one tenant employee, or None when the id is not in this tenant."""
+    from app.identity.models import User as IdUser
+
+    result = await session.execute(
+        select(IdUser).where(IdUser.id == UUID(user_id), IdUser.tenant_id == UUID(business_id))
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        return None
+    return {
+        "user_id": str(user.id),
+        "email": user.email,
+        "full_name": user.full_name,
         "status": user.status,
     }
 

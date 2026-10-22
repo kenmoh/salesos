@@ -286,11 +286,51 @@ async def change_password(
     response_model=DataResponse[list[SessionInfo]],
     dependencies=[Depends(require_permission("auth:manage_sessions"))],
 )
-async def sessions(ctx: TenantDep):
-    from app.core.security import list_user_sessions
+async def sessions(ctx: DbTenantDep):
+    """Every active session in this tenant: who, on what device, last active.
 
-    sessions_list = await list_user_sessions(user_id=ctx.user.user_id)
-    return ok(sessions_list)
+    Owners hold auth:manage_sessions, so this is an owner-side screen: a user
+    is signed in on one device at a time and anything stale here is a session
+    an owner can revoke.
+    """
+    from sqlalchemy import text
+
+    from app.core.security import list_all_sessions
+
+    result = await ctx.session.execute(
+        text("""
+            SELECT u.id, u.email, u.full_name, u.status
+            FROM users u
+            WHERE u.tenant_id = :bid
+        """),
+        {"bid": ctx.user.business_id},
+    )
+    users = {
+        str(r["id"]): {
+            "email": r["email"],
+            "full_name": r["full_name"],
+            "status": r["status"],
+        }
+        for r in result.mappings().all()
+    }
+    sessions_list = await list_all_sessions(user_ids=list(users))
+    return ok(
+        [
+            {
+                "id": s["session_id"],
+                "user_id": s["user_id"],
+                "employee_name": users[s["user_id"]].get("full_name"),
+                "email": users[s["user_id"]].get("email"),
+                "status": users[s["user_id"]].get("status"),
+                "device_name": s.get("device_name"),
+                "user_agent": s.get("user_agent"),
+                "ip_address": s.get("ip_address"),
+                "created_at": s.get("created_at"),
+                "last_active_at": s.get("last_active_at"),
+            }
+            for s in sessions_list
+        ]
+    )
 
 
 @router.delete(
@@ -540,6 +580,42 @@ async def set_employee_status(user_id: str, payload: EmployeeStatusRequest, ctx:
         status=payload.status,
     )
     return ok(result, message=f"Employee {payload.status}")
+
+
+@router.post(
+    "/employees/{user_id}/force-signout",
+    response_model=DataMessageResponse[SuccessResponse],
+    dependencies=[Depends(require_permission("auth:manage_sessions"))],
+)
+async def force_signout(user_id: str, ctx: DbTenantDep):
+    """Revoke every session an employee holds.
+
+    Owners use this to sign someone out across the board — after a role
+    change, a device that went missing, or a bad leave — without waiting for
+    that device's refresh token to be next used.
+    """
+    result = await auth_service.get_employee(
+        session=ctx.session,
+        business_id=ctx.user.business_id,
+        user_id=user_id,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    from app.core.security import revoke_all_sessions
+    from app.identity.models import AuthAuditLog
+    from app.identity.repository import log_auth_event
+
+    await revoke_all_sessions(user_id)
+    await log_auth_event(
+        ctx.session,
+        AuthAuditLog(
+            user_id=user_id,
+            tenant_id=ctx.user.business_id,
+            action="sessions_revoked",
+            details=json.dumps({"by": ctx.user.user_id}),
+        ),
+    )
+    return ok(result, message="Employee signed out")
 
 
 @router.get(

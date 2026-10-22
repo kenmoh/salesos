@@ -122,39 +122,138 @@ def verify_totp(secret: str | None, code: str) -> bool:
     return bool(secret and pyotp.TOTP(secret).verify(code, valid_window=1))
 
 
+def _session_key(user_id: str, sid: str) -> str:
+    return f"sf:session:{user_id}:{sid}"
+
+
 async def store_refresh_session(
-    user_id: str, sid: str, token_hash: str, device: dict, ttl: int
+    user_id: str,
+    sid: str,
+    token_hash: str,
+    device: dict,
+    ttl: int,
+    *,
+    created_at: str | None = None,
+    last_active_at: str | None = None,
 ) -> None:
+    """Record one refresh session keyed as ``sf:session:{user_id}:{sid}``.
+
+    ``device`` should carry ``device_name``, ``user_agent`` and ``ip_address``;
+    the created/active stamps are kept as ISO strings so the sessions screen
+    can say where and when a device signed in without a second lookup.
+    """
     client = await get_session_redis()
     if client is None:
         return
     try:
-        session_data = json.dumps({"token_hash": token_hash, "device": device, "user_id": user_id})
-        await client.set(f"sf:session:{user_id}:{sid}", session_data, ex=ttl)
+        session_data = json.dumps(
+            {
+                "token_hash": token_hash,
+                "user_id": user_id,
+                "device_name": device.get("device_name"),
+                "user_agent": device.get("user_agent"),
+                "ip_address": device.get("ip_address"),
+                "created_at": created_at or datetime.now(UTC).isoformat(),
+                "last_active_at": last_active_at or datetime.now(UTC).isoformat(),
+            }
+        )
+        await client.set(_session_key(user_id, sid), session_data, ex=ttl)
     except Exception:
         pass
 
 
-async def verify_session_hash(sid: str, raw_token: str) -> bool:
+async def get_session(user_id: str, sid: str) -> dict | None:
+    """Read one stored session record, or None when it is gone."""
     client = await get_session_redis()
     if client is None:
-        return True
+        return None
     try:
-        stored = await client.get(f"sf:session:{sid}")
-        if stored is None:
-            return False
-        data = json.loads(stored)
-        return data.get("token_hash") == hash_token(raw_token)
+        raw = await client.get(_session_key(user_id, sid))
+        return json.loads(raw) if raw else None
     except Exception:
-        return True
+        return None
 
 
-async def revoke_session(sid: str) -> None:
+async def touch_session(user_id: str, sid: str, token_hash: str, ttl: int) -> None:
+    """Refresh the activity stamp on a session without rotating it."""
     client = await get_session_redis()
     if client is None:
         return
     try:
-        await client.delete(f"sf:session:{sid}")
+        raw = await client.get(_session_key(user_id, sid))
+        if raw is None:
+            return
+        data = json.loads(raw)
+        if data.get("token_hash") != token_hash:
+            return
+        data["last_active_at"] = datetime.now(UTC).isoformat()
+        await client.set(_session_key(user_id, sid), json.dumps(data), ex=ttl)
+    except Exception:
+        pass
+
+
+async def single_sign_on_device(user_id: str, sid: str) -> None:
+    """Drop every session of this user except the one just issued.
+
+    A user is signed in on one device at a time: logging in somewhere else
+    signs the previous device out, so a shared device never stays trusted
+    and a device that is signed out must be deliberately signed back in.
+    """
+    client = await get_session_redis()
+    if client is None:
+        return
+    try:
+        async for key in client.scan_iter(f"sf:session:{user_id}:*"):
+            if not str(key).endswith(f":{sid}"):
+                await client.delete(key)
+    except Exception:
+        pass
+
+
+def _sid_of(key: str) -> str:
+    # ``sf:session:{user_id}:{sid}`` — the sid does not contain a colon.
+    return key.split(":")[-1]
+
+async def verify_session_hash(sid: str, raw_token: str, user_id: str | None = None) -> bool:
+    """Compare a raw refresh token against its stored hash.
+
+    The session key carries the user id, so callers knowing it skip the scan;
+    without it the sid is located by pattern (admin revocation walks the same
+    way).
+    """
+    client = await get_session_redis()
+    if client is None:
+        return True
+    try:
+        if user_id:
+            stored = await client.get(_session_key(user_id, sid))
+        else:
+            stored = None
+            async for key in client.scan_iter(f"sf:session:*:{sid}"):
+                stored = await client.get(key)
+                break
+        if stored is None:
+            return False
+        return json.loads(stored).get("token_hash") == hash_token(raw_token)
+    except Exception:
+        return True
+
+
+async def revoke_session(sid: str, user_id: str | None = None) -> None:
+    """Revoke one session wherever it lives.
+
+    Callers that know the user id save a scan; the sessions screen hands a bare
+    sid over, so the scan is the default path.
+    """
+    client = await get_session_redis()
+    if client is None:
+        return
+    try:
+        if user_id:
+            await client.delete(_session_key(user_id, sid))
+            return
+        async for key in client.scan_iter(f"sf:session:*:{sid}"):
+            await client.delete(key)
     except Exception:
         pass
 
@@ -171,25 +270,46 @@ async def revoke_all_sessions(user_id: str) -> None:
 
 
 async def list_user_sessions(user_id: str) -> list[dict]:
-    """List all active sessions for a user."""
+    """List one user's sessions."""
+    sessions = await list_all_sessions(user_ids=[user_id])
+    return [s for s in sessions if s.get("user_id") == user_id]
+
+
+async def list_all_sessions(user_ids: list[str] | None = None) -> list[dict]:
+    """List stored sessions, optionally limited to a set of user ids.
+
+    Returns the fields the sessions screen shows: which device, from which
+    address, when it signed in and when it was last used.
+    """
     client = await get_session_redis()
     if client is None:
         return []
+    wanted = set(user_ids) if user_ids else None
+    sessions: list[dict] = []
     try:
-        sessions = []
-        async for key in client.scan_iter(f"sf:session:{user_id}:*"):
+        async for key in client.scan_iter("sf:session:*"):
             raw = await client.get(key)
-            if raw:
-                data = json.loads(raw)
-                sid = key.decode().split(":")[-1]
-                sessions.append({
-                    "session_id": sid,
-                    "user_id": data.get("user_id", user_id),
-                    "device": data.get("device", {}),
-                })
-        return sessions
+            if not raw:
+                continue
+            data = json.loads(raw)
+            parts = str(key).split(":")
+            user_id = data.get("user_id") or (parts[-2] if len(parts) >= 2 else "")
+            if wanted and user_id not in wanted:
+                continue
+            sessions.append(
+                {
+                    "session_id": _sid_of(str(key)),
+                    "user_id": user_id,
+                    "device_name": data.get("device_name"),
+                    "user_agent": data.get("user_agent"),
+                    "ip_address": data.get("ip_address"),
+                    "created_at": data.get("created_at"),
+                    "last_active_at": data.get("last_active_at"),
+                }
+            )
     except Exception:
         return []
+    return sessions
 
 
 async def blacklist_token(jti: str, ttl: int) -> None:

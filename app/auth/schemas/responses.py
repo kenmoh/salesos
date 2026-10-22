@@ -325,11 +325,16 @@ class RegistrationResponse(_Base):
 
 
 class SessionInfo(_Base):
-    sid: str = ""
+    id: str = ""
+    user_id: str = ""
+    employee_name: str | None = None
+    email: str | None = None
+    status: str | None = None
+    device_name: str | None = None
     user_agent: str | None = None
-    ip: str | None = None
-    device: str | None = None
-    last_active: str | None = None
+    ip_address: str | None = None
+    created_at: str | None = None
+    last_active_at: str | None = None
 
 
 class TOTPSetupResponse(_Base):
