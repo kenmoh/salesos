@@ -6,6 +6,7 @@ for critical secrets required in production.
 """
 
 import logging
+import re
 import sys
 from functools import lru_cache
 from typing import Literal
@@ -128,22 +129,30 @@ class ApiSettings(BaseSettings):
 
     supervisor_pin_expire_days: int = 7
 
+    def _redis_db_url(self, db: int) -> str:
+        """The Redis URL pointed at a logical db.
+
+        URLs usually end with a db number (``…:6379/0``); swap it. A provider
+        URL without one (``rediss://…@host``) gets the db appended.
+        """
+        url = self.redis_url.rstrip("/")
+        if re.search(r"/\d+$", url):
+            return re.sub(r"/\d+$", f"/{db}", url)
+        return f"{url}/{db}"
+
     @property
     def redis_cache_url(self) -> str:
-        base = self.redis_url.rsplit("/", 1)[0]
-        return f"{base}/{self.redis_cache_db}"
+        return self._redis_db_url(self.redis_cache_db)
 
     @property
     def redis_session_url(self) -> str:
-        base = self.redis_url.rsplit("/", 1)[0]
-        return f"{base}/{self.redis_session_db}"
+        return self._redis_db_url(self.redis_session_db)
 
     @property
     def celery_result_backend_url(self) -> str:
         if self.celery_result_backend:
             return self.celery_result_backend
-        base = self.redis_url.rsplit("/", 1)[0]
-        return f"{base}/3"
+        return self._redis_db_url(3)
 
     @property
     def is_production(self) -> bool:
