@@ -12,8 +12,10 @@ from uuid import UUID, uuid4
 
 from app.common.cache import cache, cached
 from app.common.scope_cache import (
+    ACCOUNTING,
     CATALOG,
     REPORTS,
+    SALES,
     STORES,
     CUSTOMERS,
     TENANT_SCOPE,
@@ -1303,6 +1305,7 @@ async def create_sale_via_service(
         store_id=store_id,
         settled=False,
     )
+    await scope_bump(tenant_id, "-", (SALES, ACCOUNTING, REPORTS))
 
     return result.model_dump(mode="json")
 
@@ -6235,7 +6238,7 @@ async def checkout_cart(
                 await cache.delete_pattern(
                     f"sf:cache:store_products:list:{tenant_id}:{deduct_store_id}*"
                 )
-                await scope_bump(tenant_id, "-", (REPORTS,))
+                await scope_bump(tenant_id, "-", (REPORTS, SALES, ACCOUNTING))
 
             result_dict = result.model_dump(mode="json")
             result_dict["sale_id"] = str(result.id)

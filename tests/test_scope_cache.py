@@ -124,3 +124,36 @@ class TestScopeCache:
 
         with patch.object(scope_cache, "get_cache_redis", new=_none):
             await scope_bump("t1", "s1", (scope_cache.REPORTS,))
+
+    async def test_accounting_scopes_cache_and_bump(self, redis_client):
+        calls = []
+
+        async def fetch():
+            calls.append(1)
+            return {"journals": len(calls)}
+
+        first = await scope_read("t1", "-", scope_cache.ACCOUNTING, {"journals": 1}, 45, fetch)
+        second = await scope_read("t1", "-", scope_cache.ACCOUNTING, {"journals": 1}, 45, fetch)
+        await scope_bump("t1", "-", (scope_cache.ACCOUNTING, scope_cache.SALES, scope_cache.DOCUMENTS))
+        fresh = await scope_read("t1", "-", scope_cache.ACCOUNTING, {"journals": 1}, 45, fetch)
+
+        assert first == second == {"journals": 1}
+        assert fresh == {"journals": 2}
+        assert len(calls) == 2
+
+    async def test_sales_scope_isolated_from_accounting(self, redis_client):
+        calls = []
+
+        async def fetch():
+            calls.append(1)
+            return len(calls)
+
+        sales = await scope_read("t1", "-", scope_cache.SALES, {"list": 1}, 30, fetch)
+        await scope_bump("t1", "-", (scope_cache.ACCOUNTING,))
+        still_cached = await scope_read("t1", "-", scope_cache.SALES, {"list": 1}, 30, fetch)
+        await scope_bump("t1", "-", (scope_cache.SALES,))
+        fresh = await scope_read("t1", "-", scope_cache.SALES, {"list": 1}, 30, fetch)
+
+        assert sales == still_cached == 1
+        assert fresh == 2
+        assert len(calls) == 2

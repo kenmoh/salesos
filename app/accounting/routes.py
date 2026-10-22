@@ -19,6 +19,15 @@ from sqlalchemy import select
 from app.core.approval import require_supervisor_approval
 from app.core.dependencies import DbTenantDep, require_permission
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
+from app.common.scope_cache import (
+    ACCOUNTING,
+    DOCUMENTS,
+    REPORTS,
+    SALES,
+    TENANT_SCOPE,
+    scope_bump,
+    scope_read,
+)
 from . import rpc
 from .models import Journal
 from .repository import get_account_by_code
@@ -54,6 +63,20 @@ from .schemas import (
 )
 
 router = APIRouter(prefix="/accounting", tags=["Accounting"])
+
+
+# The ledger screens re-run date-range sums on the whole journal table, so
+# they ride the versioned cache; every posting here and at checkout bumps
+# the scope, and the 45-60 s TTL bounds anything the bumps can miss.
+def _acct_read(ctx, fetch, fields: dict, store_id: str | None = None, ttl: int = 45):
+    return scope_read(
+        tenant_id=ctx.user.business_id,
+        store_id=store_id or TENANT_SCOPE,
+        scope=ACCOUNTING,
+        fields=fields,
+        ttl=ttl,
+        fetch=fetch,
+    )
 
 
 def _validated_store_id(store_id: str | None) -> str | None:
@@ -258,9 +281,14 @@ async def _post_payment_journal(
     dependencies=[Depends(require_permission("accounting:read"))],
 )
 async def list_accounts(ctx: DbTenantDep):
-    accounts = await rpc.list_accounts(
-        session=ctx.session,
-        business_id=ctx.user.business_id,
+    accounts = await _acct_read(
+        ctx,
+        fetch=lambda: rpc.list_accounts(
+            session=ctx.session,
+            business_id=ctx.user.business_id,
+        ),
+        fields={"accounts": 1},
+        ttl=300,
     )
     return ok(accounts)
 
@@ -280,6 +308,7 @@ async def create_account(payload: CreateAccountRequest, ctx: DbTenantDep):
         account_type=payload.account_type,
         parent_id=payload.parent_id,
     )
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING,))
     return ok(result)
 
 
@@ -301,6 +330,7 @@ async def update_account(account_id: str, payload: UpdateAccountRequest, ctx: Db
     if not account:
         from fastapi.responses import JSONResponse
         return JSONResponse(status_code=404, content={"detail": "Account not found"})
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING,))
     return ok({
         "id": str(account.id),
         "tenant_id": str(account.tenant_id),
@@ -337,6 +367,15 @@ async def toggle_account_status(account_id: str, payload: ToggleAccountStatusReq
         "account_type": account.account_type,
         "status": account.status,
     })
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING,))
+    return ok({
+        "id": str(account.id),
+        "tenant_id": str(account.tenant_id),
+        "code": account.code,
+        "name": account.name,
+        "account_type": account.account_type,
+        "status": account.status,
+    })
 
 
 @router.delete(
@@ -356,6 +395,7 @@ async def delete_account(account_id: str, ctx: DbTenantDep):
     if not deleted:
         from fastapi.responses import JSONResponse
         return JSONResponse(status_code=400, content={"detail": error})
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING,))
     return None
 
 
@@ -381,6 +421,7 @@ async def create_journal(payload: CreateJournalRequest, ctx: DbTenantDep):
         ref_type=payload.ref_type,
         store_id=_required_store_id(payload.store_id, "journal"),
     )
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
     return ok({"journal_id": journal_id})
 
 
@@ -395,12 +436,17 @@ async def list_journals(
     page_size: int = Query(50, ge=1, le=500, description="Items per page"),
     store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
 ):
-    result = await rpc.list_journals(
-        session=ctx.session,
-        business_id=ctx.user.business_id,
-        page=page,
-        page_size=page_size,
-        store_id=_validated_store_id(store_id),
+    result = await _acct_read(
+        ctx,
+        fetch=lambda: rpc.list_journals(
+            session=ctx.session,
+            business_id=ctx.user.business_id,
+            page=page,
+            page_size=page_size,
+            store_id=_validated_store_id(store_id),
+        ),
+        fields={"journals": 1, "page": page, "page_size": page_size, "store": store_id or ""},
+        store_id=store_id,
     )
     return paginated(
         result["items"], total=result["total"], page=result["page"], page_size=result["page_size"]
@@ -422,11 +468,16 @@ async def trial_balance(
     as_at: str | None = Query(None, description="Date in YYYY-MM-DD format"),
     store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
 ):
-    result = await rpc.trial_balance(
-        session=ctx.session,
-        business_id=ctx.user.business_id,
-        as_at=as_at,
-        store_id=_validated_store_id(store_id),
+    result = await _acct_read(
+        ctx,
+        fetch=lambda: rpc.trial_balance(
+            session=ctx.session,
+            business_id=ctx.user.business_id,
+            as_at=as_at,
+            store_id=_validated_store_id(store_id),
+        ),
+        fields={"trial_balance": 1, "as_at": as_at or "", "store": store_id or ""},
+        store_id=store_id,
     )
     return ok(result)
 
@@ -442,12 +493,17 @@ async def profit_and_loss(
     to_date: str = Query(..., description="End date in YYYY-MM-DD format"),
     store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
 ):
-    result = await rpc.profit_and_loss(
-        session=ctx.session,
-        business_id=ctx.user.business_id,
-        from_date=from_date,
-        to_date=to_date,
-        store_id=_validated_store_id(store_id),
+    result = await _acct_read(
+        ctx,
+        fetch=lambda: rpc.profit_and_loss(
+            session=ctx.session,
+            business_id=ctx.user.business_id,
+            from_date=from_date,
+            to_date=to_date,
+            store_id=_validated_store_id(store_id),
+        ),
+        fields={"pnl": 1, "from": from_date, "to": to_date, "store": store_id or ""},
+        store_id=store_id,
     )
     return ok(result)
 
@@ -465,9 +521,14 @@ async def balance_sheet(
     as_at_date = datetime.fromisoformat(as_at) if as_at else None
     from .repository import get_balance_sheet
 
-    result = await get_balance_sheet(
-        ctx.session, UUID(ctx.user.business_id), as_at_date,
-        store_id=UUID(_validated_store_id(store_id)) if store_id else None,
+    result = await _acct_read(
+        ctx,
+        fetch=lambda: get_balance_sheet(
+            ctx.session, UUID(ctx.user.business_id), as_at_date,
+            store_id=UUID(_validated_store_id(store_id)) if store_id else None,
+        ),
+        fields={"balance_sheet": 1, "as_at": as_at or "", "store": store_id or ""},
+        store_id=store_id,
     )
     asset_accounts = [{"account_id": a.get("account_id", ""), "account_code": a["code"], "account_name": a["name"], "amount": a["balance"]} for a in result.get("asset_accounts", [])]
     liability_accounts = [{"account_id": a.get("account_id", ""), "account_code": a["code"], "account_name": a["name"], "amount": a["balance"]} for a in result.get("liability_accounts", [])]
@@ -512,9 +573,14 @@ async def cash_flow(
         to_dt = to_dt + timedelta(days=1) - timedelta(microseconds=1)
     from .repository import get_cash_flow
 
-    result = await get_cash_flow(
-        ctx.session, UUID(ctx.user.business_id), from_dt, to_dt,
-        store_id=UUID(_validated_store_id(store_id)) if store_id else None,
+    result = await _acct_read(
+        ctx,
+        fetch=lambda: get_cash_flow(
+            ctx.session, UUID(ctx.user.business_id), from_dt, to_dt,
+            store_id=UUID(_validated_store_id(store_id)) if store_id else None,
+        ),
+        fields={"cash_flow": 1, "from": from_date or "", "to": to_date or "", "store": store_id or ""},
+        store_id=store_id,
     )
     inflows = [{"account_id": i.get("journal_number", ""), "account_code": i.get("journal_number", ""), "account_name": i.get("description", ""), "amount": float(i.get("amount", 0))} for i in result.get("operating", {}).get("inflows", [])]
     outflows = [{"account_id": o.get("journal_number", ""), "account_code": o.get("journal_number", ""), "account_name": o.get("description", ""), "amount": float(o.get("amount", 0))} for o in result.get("operating", {}).get("outflows", [])]
@@ -544,11 +610,16 @@ async def taxes_collected(
         to_dt = to_dt + timedelta(days=1) - timedelta(microseconds=1)
     from .repository import get_taxes_collected
 
-    result = await get_taxes_collected(
-        ctx.session, UUID(ctx.user.business_id), from_dt, to_dt,
-        store_id=UUID(_validated_store_id(store_id)) if store_id else None,
-        page=page,
-        page_size=page_size,
+    result = await _acct_read(
+        ctx,
+        fetch=lambda: get_taxes_collected(
+            ctx.session, UUID(ctx.user.business_id), from_dt, to_dt,
+            store_id=UUID(_validated_store_id(store_id)) if store_id else None,
+            page=page,
+            page_size=page_size,
+        ),
+        fields={"taxes_collected": 1, "from": from_date or "", "to": to_date or "", "store": store_id or "", "page": page, "page_size": page_size},
+        store_id=store_id,
     )
     return ok({
         "taxes": result["taxes"],
@@ -577,10 +648,15 @@ async def taxes_owed(ctx: DbTenantDep, store_id: str | None = Query(None)):
     """
     from .repository import get_taxes_owed
 
-    lines = await get_taxes_owed(
-        ctx.session,
-        UUID(ctx.user.business_id),
-        store_id=_validated_store_id(store_id),
+    lines = await _acct_read(
+        ctx,
+        fetch=lambda: get_taxes_owed(
+            ctx.session,
+            UUID(ctx.user.business_id),
+            store_id=_validated_store_id(store_id),
+        ),
+        fields={"taxes_owed": 1, "store": store_id or ""},
+        store_id=store_id,
     )
     return ok(lines)
 
@@ -606,14 +682,19 @@ async def tax_remit_history(
     if to_date and len(to_date) == 10 and to_dt is not None:
         to_dt = to_dt + timedelta(days=1) - timedelta(microseconds=1)
 
-    result = await get_tax_remittances(
-        ctx.session,
-        UUID(ctx.user.business_id),
-        page=page,
-        page_size=page_size,
-        store_id=_validated_store_id(store_id),
-        from_date=from_dt,
-        to_date=to_dt,
+    result = await _acct_read(
+        ctx,
+        fetch=lambda: get_tax_remittances(
+            ctx.session,
+            UUID(ctx.user.business_id),
+            page=page,
+            page_size=page_size,
+            store_id=_validated_store_id(store_id),
+            from_date=from_dt,
+            to_date=to_dt,
+        ),
+        fields={"tax_remits": 1, "page": page, "page_size": page_size, "store": store_id or "", "from": from_date or "", "to": to_date or ""},
+        store_id=store_id,
     )
     return paginated(
         [TaxRemittanceItem(**r) for r in result["remittances"]],
@@ -764,6 +845,7 @@ async def remit_tax(payload: TaxRemitRequest, ctx: DbTenantDep, request: Request
             debit_acct.account_type,
             datetime.now(UTC),
         )
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
 
     return ok(
         TaxRemitResponse(
@@ -793,11 +875,16 @@ async def list_receivable(
     page: int | None = Query(None, ge=1, description="1-based page (omit to receive the full list)"),
     page_size: int | None = Query(None, ge=1, le=200, description="Rows per page"),
 ):
-    ar_list = await rpc.list_accounts_receivable(
-        session=ctx.session,
-        business_id=ctx.user.business_id,
-        status_filter=status,
-        store_id=_validated_store_id(store_id),
+    ar_list = await _acct_read(
+        ctx,
+        fetch=lambda: rpc.list_accounts_receivable(
+            session=ctx.session,
+            business_id=ctx.user.business_id,
+            status_filter=status,
+            store_id=_validated_store_id(store_id),
+        ),
+        fields={"receivable": 1, "status": status or "", "store": store_id or ""},
+        store_id=store_id,
     )
     return _paginate_list(ar_list, page, page_size)
 
@@ -821,6 +908,7 @@ async def create_receivable(payload: CreateReceivableRequest, ctx: DbTenantDep):
         store_id=_required_store_id(payload.store_id, "receivable"),
         created_by=ctx.user.user_id,
     )
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
     return ok(result)
 
 
@@ -857,6 +945,7 @@ async def record_ar_payment(
         ref_type="ar_payment",
         store_id=result.get("store_id"),
     )
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
     return ok(result)
 
 
@@ -944,6 +1033,7 @@ async def move_receivable_to_store(
     )
     await ctx.session.flush()
 
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
     return ok(_receivable_to_response(receivable))
 
 
@@ -964,11 +1054,16 @@ async def list_payable(
     page: int | None = Query(None, ge=1, description="1-based page (omit to receive the full list)"),
     page_size: int | None = Query(None, ge=1, le=200, description="Rows per page"),
 ):
-    ap_list = await rpc.list_accounts_payable(
-        session=ctx.session,
-        business_id=ctx.user.business_id,
-        status_filter=status,
-        store_id=_validated_store_id(store_id),
+    ap_list = await _acct_read(
+        ctx,
+        fetch=lambda: rpc.list_accounts_payable(
+            session=ctx.session,
+            business_id=ctx.user.business_id,
+            status_filter=status,
+            store_id=_validated_store_id(store_id),
+        ),
+        fields={"payable": 1, "status": status or "", "store": store_id or ""},
+        store_id=store_id,
     )
     return _paginate_list(ap_list, page, page_size)
 
@@ -993,6 +1088,7 @@ async def create_payable(payload: CreatePayableRequest, ctx: DbTenantDep):
         created_by=ctx.user.user_id,
         vendor_id=payload.vendor_id,
     )
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
     return ok(result)
 
 
@@ -1027,6 +1123,7 @@ async def record_ap_payment(
         ref_type="ap_payment",
         store_id=result.get("store_id"),
     )
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
     return ok(result)
 
 
@@ -1109,6 +1206,7 @@ async def move_payable_to_store(
     )
     await ctx.session.flush()
 
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
     return ok(_payable_to_response(payable))
 
 
@@ -1201,6 +1299,7 @@ async def move_expense_to_store(
     )
     await ctx.session.flush()
 
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
     return ok(_expense_to_response(expense))
 
 
@@ -1218,13 +1317,18 @@ async def list_expenses(
     page: int | None = Query(None, ge=1, description="1-based page (omit to receive the full list)"),
     page_size: int | None = Query(None, ge=1, le=200, description="Rows per page"),
 ):
-    expenses = await rpc.list_expenses(
-        session=ctx.session,
-        business_id=ctx.user.business_id,
-        category=category,
-        from_date=from_date,
-        to_date=to_date,
-        store_id=_validated_store_id(store_id),
+    expenses = await _acct_read(
+        ctx,
+        fetch=lambda: rpc.list_expenses(
+            session=ctx.session,
+            business_id=ctx.user.business_id,
+            category=category,
+            from_date=from_date,
+            to_date=to_date,
+            store_id=_validated_store_id(store_id),
+        ),
+        fields={"expenses": 1, "category": category or "", "from": from_date or "", "to": to_date or "", "store": store_id or ""},
+        store_id=store_id,
     )
     return _paginate_list(expenses, page, page_size)
 
@@ -1248,6 +1352,7 @@ async def create_expense(payload: CreateExpenseRequest, ctx: DbTenantDep):
         receipt_url=payload.receipt_url,
         store_id=_required_store_id(payload.store_id, "expense"),
     )
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
     return ok(result)
 
 
@@ -1286,10 +1391,15 @@ async def financial_dashboard(
     ctx: DbTenantDep,
     store_id: str | None = Query(None, description="Filter to one store (omit for all stores)"),
 ):
-    dashboard = await rpc.financial_dashboard(
-        session=ctx.session,
-        business_id=ctx.user.business_id,
-        store_id=_validated_store_id(store_id),
+    dashboard = await _acct_read(
+        ctx,
+        fetch=lambda: rpc.financial_dashboard(
+            session=ctx.session,
+            business_id=ctx.user.business_id,
+            store_id=_validated_store_id(store_id),
+        ),
+        fields={"dashboard": 1, "store": store_id or ""},
+        store_id=store_id,
     )
     return ok(dashboard)
 

@@ -24,6 +24,7 @@ from uuid import UUID, uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.events.envelope import EventEnvelope
+from app.common.scope_cache import ACCOUNTING, REPORTS, SALES, scope_bump
 
 
 async def handle_sale_confirmed(envelope: EventEnvelope, session: AsyncSession) -> None:
@@ -139,6 +140,7 @@ async def handle_sale_confirmed(envelope: EventEnvelope, session: AsyncSession) 
     session.add(debit_entry)
     session.add(credit_entry)
     await session.flush()
+    await scope_bump(tenant_id, "-", (SALES, ACCOUNTING, REPORTS))
 
 
 async def handle_payment_succeeded(envelope: EventEnvelope, session: AsyncSession) -> None:
@@ -292,6 +294,7 @@ async def handle_payment_succeeded(envelope: EventEnvelope, session: AsyncSessio
         session.add(debit_entry)
         session.add(credit_entry)
         await session.flush()
+        await scope_bump(tenant_id, "-", (SALES, ACCOUNTING, REPORTS))
         return
 
     debit_entry = JournalEntry(
@@ -329,3 +332,4 @@ async def handle_payment_succeeded(envelope: EventEnvelope, session: AsyncSessio
     session.add(debit_entry)
     session.add(credit_entry)
     await session.flush()
+    await scope_bump(tenant_id, "-", (SALES, ACCOUNTING, REPORTS))

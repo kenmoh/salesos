@@ -14,6 +14,14 @@ from app.auth.schemas.responses import (
 )
 import app.common.bridge as bridge
 from app.common import services
+from app.common.scope_cache import (
+    ACCOUNTING,
+    REPORTS,
+    SALES,
+    TENANT_SCOPE,
+    scope_bump,
+    scope_read,
+)
 
 router = APIRouter(prefix="/sales", tags=["Sales"])
 
@@ -62,16 +70,27 @@ async def list_sales(
             UUID(store_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="store_id must be a valid UUID")
-    result = await services.list_sales(
-        session=ctx.session,
-        business_id=ctx.user.business_id,
-        status=status,
-        from_date=from_date,
-        to_date=to_date,
-        cashier_id=cashier_id,
-        store_id=store_id,
-        page=page,
-        page_size=page_size,
+    result = await scope_read(
+        tenant_id=ctx.user.business_id,
+        store_id=store_id or TENANT_SCOPE,
+        scope=SALES,
+        fields={
+            "list": 1, "status": status or "", "from": from_date or "",
+            "to": to_date or "", "cashier": cashier_id or "",
+            "page": page, "page_size": page_size,
+        },
+        ttl=30,
+        fetch=lambda: services.list_sales(
+            session=ctx.session,
+            business_id=ctx.user.business_id,
+            status=status,
+            from_date=from_date,
+            to_date=to_date,
+            cashier_id=cashier_id,
+            store_id=store_id,
+            page=page,
+            page_size=page_size,
+        ),
     )
     return paginated(
         result["items"], total=result["total"], page=result["page"], page_size=result["page_size"]
@@ -108,6 +127,7 @@ async def void_sale(sale_id: str, payload: VoidSale, ctx: DbTenantDep):
     except ValueError as e:
         code = 404 if str(e) == "sale_not_found" else 400
         raise HTTPException(status_code=code, detail=str(e))
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (SALES, ACCOUNTING, REPORTS))
     return ok({"success": success})
 
 
@@ -128,4 +148,5 @@ async def return_sale(sale_id: str, payload: VoidSale, ctx: DbTenantDep):
     except ValueError as e:
         code = 404 if str(e) == "sale_not_found" else 400
         raise HTTPException(status_code=code, detail=str(e))
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (SALES, ACCOUNTING, REPORTS))
     return ok(result)

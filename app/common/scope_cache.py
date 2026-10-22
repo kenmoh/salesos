@@ -18,6 +18,9 @@ CATALOG = "catalog"
 STORES = "stores"
 REPORTS = "reports"
 CUSTOMERS = "customers"
+ACCOUNTING = "accounting"
+DOCUMENTS = "documents"
+SALES = "sales"
 
 # Catalog ties to a single store as its prices and stock are per store;
 # stores/customers/reports are all-tenant scopes and pass "-" as store.

@@ -13,6 +13,15 @@ from app.auth.schemas.responses import (
     DocumentPdf,
     DocumentStatusUpdated,
 )
+from app.common.scope_cache import (
+    ACCOUNTING,
+    DOCUMENTS,
+    REPORTS,
+    SALES,
+    TENANT_SCOPE,
+    scope_bump,
+    scope_read,
+)
 from app.common.bridge import (
     create_document,
     convert_document_to_sale,
@@ -66,7 +75,7 @@ async def _resolve_document_store(ctx, requested: UUID | None) -> str | None:
 async def create_document_endpoint(payload: DocumentCreate, ctx: DbTenantDep):
     store_id = await _resolve_document_store(ctx, payload.store_id)
     try:
-        return await _create_document(payload, ctx, store_id)
+        result = await _create_document(payload, ctx, store_id)
     except ValueError as exc:
         if str(exc) == "fee_balance_exceeded":
             # The tenant's unpaid platform fees have reached the limit. Same
@@ -80,6 +89,8 @@ async def create_document_endpoint(payload: DocumentCreate, ctx: DbTenantDep):
                 ),
             )
         raise
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (DOCUMENTS, ACCOUNTING, REPORTS))
+    return result
 
 
 async def _create_document(payload: DocumentCreate, ctx, store_id: str | None):
@@ -132,13 +143,20 @@ async def list_documents_endpoint(
             UUID(customer_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="customer_id must be a valid UUID")
-    result = await list_documents(
+    result = await scope_read(
         tenant_id=ctx.user.business_id,
-        doc_type=doc_type,
-        status=status,
-        customer_id=customer_id,
-        page=page,
-        page_size=page_size,
+        store_id=TENANT_SCOPE,
+        scope=DOCUMENTS,
+        fields={"list": 1, "type": doc_type or "", "status": status or "", "customer": customer_id or "", "page": page, "page_size": page_size},
+        ttl=45,
+        fetch=lambda: list_documents(
+            tenant_id=ctx.user.business_id,
+            doc_type=doc_type,
+            status=status,
+            customer_id=customer_id,
+            page=page,
+            page_size=page_size,
+        ),
     )
     return paginated(
         result["items"], total=result["total"], page=result["page"], page_size=result["page_size"]
@@ -166,7 +184,7 @@ async def update_document_status_endpoint(
     doc_id: str, payload: DocumentStatusUpdate, ctx: TenantDep
 ):
     try:
-        return ok(
+        result = ok(
             await update_document_status(
                 tenant_id=ctx.user.business_id,
                 document_id=doc_id,
@@ -181,6 +199,8 @@ async def update_document_status_endpoint(
         # An invalid transition is the caller's mistake. It used to surface as a
         # 500, which told the user nothing and looked like a server fault.
         raise HTTPException(status_code=400, detail=message)
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (DOCUMENTS, ACCOUNTING, REPORTS))
+    return result
 
 
 @router.post(
@@ -191,7 +211,7 @@ async def update_document_status_endpoint(
 )
 async def convert_to_sale_endpoint(doc_id: str, ctx: TenantDep):
     try:
-        return ok(
+        result = ok(
             await convert_document_to_sale(
                 tenant_id=ctx.user.business_id,
                 document_id=doc_id,
@@ -206,6 +226,8 @@ async def convert_to_sale_endpoint(doc_id: str, ctx: TenantDep):
         # A rejected conversion is the caller's situation to resolve, not a
         # server fault, so it answers 400 and says what was wrong.
         raise HTTPException(status_code=400, detail=message)
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (SALES, DOCUMENTS, ACCOUNTING, REPORTS))
+    return result
 
 
 def _ensure_pdf_bytes(data) -> bytes:
