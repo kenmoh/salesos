@@ -109,8 +109,10 @@ class ApiSettings(BaseSettings):
     )
     # Where the browser lands after a hosted payment completes; the webhook
     # carries the real confirmation, so this page only needs to say so.
+    # NOTE: must include the /api/v1 prefix — the callback route lives on
+    # the API, so `…/payment/callback` without it answers 404 JSON.
     app_callback_url: str = Field(
-        default="https://salesos.fastapicloud.dev/payment/callback"
+        default="https://salesos.fastapicloud.dev/api/v1/payment/callback"
     )
 
     google_client_id: str = Field(default="", alias="GOOGLE_CLIENT_ID")

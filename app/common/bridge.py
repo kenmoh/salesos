@@ -8080,9 +8080,15 @@ async def create_settlement_payment(*, business_id: str, actor_id: str) -> dict:
     exactly those rows, so fees that accrue while the link waits for payment
     stay out of it and keep their original pending status.
 
-    A settlement link that is still unpaid is reused rather than stacked:
-    pressing Payment twice must not mint two live links for the same debt.
+    A settlement link that is still unpaid is regenerated rather than
+    stacked: pressing Clear Outstanding again mints a fresh hosted link for
+    the same intent (hosted links expire, so a stale one must never come
+    back), re-freezes the current pending rows onto it — fees that accrued
+    since the first link ride along — and bumps the reference so the fresh
+    link is unique to Flutterwave.
     """
+    import re
+
     from app.payments.models import PaymentIntent
     from app.payments.repository import create_intent
     from app.platform.models import PlatformFeeLedger
@@ -8103,15 +8109,6 @@ async def create_settlement_payment(*, business_id: str, actor_id: str) -> dict:
                 .limit(1)
             )
         ).scalar_one_or_none()
-        if open_intent and open_intent.authorization_url:
-            return {
-                "link": open_intent.authorization_url,
-                "amount": float(open_intent.amount),
-                "intent_id": str(open_intent.id),
-                "tx_ref": open_intent.gateway_reference,
-                "reused": True,
-            }
-
         pending_rows = (
             await session.execute(
                 select(PlatformFeeLedger).where(
@@ -8134,26 +8131,49 @@ async def create_settlement_payment(*, business_id: str, actor_id: str) -> dict:
         actor_user = await _get_user(session, UUID(actor_id))
         owner_email = actor_user.email if actor_user else None
 
-    tx_ref = f"SF-SETTLE-{uuid4().hex[:10].upper()}"
-    intent = PaymentIntent(
-        id=uuid4(),
-        tenant_id=tenant_uid,
-        sale_id=None,
-        cart_id=None,
-        method="card",
-        amount=float(total),
-        currency="NGN",
-        status="pending",
-        gateway_reference=tx_ref,
-        intent_metadata=json.dumps({
-            "type": "settlement",
-            "ledger_ids": [str(r.id) for r in pending_rows],
-            "created_by": actor_id,
-        }),
-    )
+    regenerated = False
+    if open_intent:
+        # Same intent, fresh link: expire the old reference, re-freeze the
+        # current pending snapshot onto it.
+        base_ref = re.sub(r"-R\d+$", "", open_intent.gateway_reference)
+        attempt = re.search(r"-R(\d+)$", open_intent.gateway_reference)
+        n = int(attempt.group(1)) + 1 if attempt else 1
+        tx_ref = f"{base_ref}-R{n}"
+        regenerated = True
+        try:
+            metadata = json.loads(open_intent.intent_metadata or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        metadata["type"] = "settlement"
+        metadata["ledger_ids"] = [str(r.id) for r in pending_rows]
+        open_intent.amount = float(total)
+        open_intent.gateway_reference = tx_ref
+        open_intent.intent_metadata = json.dumps(metadata)
+        intent = open_intent
+    else:
+        tx_ref = f"SF-SETTLE-{uuid4().hex[:10].upper()}"
+        intent = PaymentIntent(
+            id=uuid4(),
+            tenant_id=tenant_uid,
+            sale_id=None,
+            cart_id=None,
+            method="card",
+            amount=float(total),
+            currency="NGN",
+            status="pending",
+            gateway_reference=tx_ref,
+            intent_metadata=json.dumps({
+                "type": "settlement",
+                "ledger_ids": [str(r.id) for r in pending_rows],
+                "created_by": actor_id,
+            }),
+        )
 
     async with sdb.session() as session:
-        await create_intent(session, intent)
+        if regenerated:
+            intent = await session.merge(intent)
+        else:
+            await create_intent(session, intent)
         await session.commit()
 
     link_result = await flutterwave_service.create_payment_link(
@@ -8178,7 +8198,7 @@ async def create_settlement_payment(*, business_id: str, actor_id: str) -> dict:
         "amount": float(total),
         "intent_id": str(intent.id),
         "tx_ref": tx_ref,
-        "reused": False,
+        "regenerated": regenerated,
     }
 
 

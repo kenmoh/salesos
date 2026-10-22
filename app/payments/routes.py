@@ -839,19 +839,145 @@ async def settlement_balance(ctx: DbTenantDep):
     "/payment/callback",
     include_in_schema=False,
 )
-async def payment_callback():
+async def payment_callback(
+    status: str = "",
+    tx_ref: str = "",
+    transaction_id: str = "",
+):
     """Browser landing page after a hosted payment completes.
 
-    The webhook, not this page, confirms the payment — this only needs to
-    tell the person at the screen what happened and that they can leave.
+    The webhook, not this page, confirms the payment — Flutterwave appends
+    `status`/`tx_ref`/`transaction_id` to the redirect, and those say what
+    happened. The intent behind the tx_ref supplies the amount and what the
+    payment was standing for, so the page can show a real receipt rather
+    than a bare "thanks".
     """
-    return HTMLResponse(
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-        "<style>body{font-family:-apple-system,sans-serif;display:flex;"
-        "align-items:center;justify-content:center;height:100vh;margin:0;"
-        "color:#0f172a}main{text-align:center;padding:24px}</style></head>"
-        "<body><main><h1>Payment received</h1>"
-        "<p>The app will update automatically.<br>You can close this window.</p>"
-        "</main></body></html>"
+    from sqlalchemy import select
+
+    from app.common.bridge import _get_sdb
+    from app.payments.models import PaymentIntent
+
+    display_status = (status or "").lower() or "unknown"
+    paid_amount = None
+    paid_for = None
+
+    if tx_ref:
+        try:
+            async with _get_sdb("payments").session() as session:
+                row = (
+                    await session.execute(
+                        select(PaymentIntent).where(
+                            PaymentIntent.gateway_reference == tx_ref
+                        )
+                    )
+                ).scalar_one_or_none()
+            if row:
+                paid_amount = float(row.amount)
+                try:
+                    metadata = json.loads(row.intent_metadata or "{}")
+                    if metadata.get("type") == "settlement":
+                        paid_for = "Clear outstanding settlement"
+                    else:
+                        paid_for = "Purchase"
+                except (TypeError, ValueError):
+                    pass
+        except Exception:
+            pass  # the page degrades to "amount unknown" without the intent
+
+    if display_status in ("successful", "completed"):
+        badge, color, headline, sub = (
+            "✓",
+            "#059669",
+            "Payment received",
+            "The app will refresh on its own." + (" Amount is being confirmed by the webhook now." if paid_amount else ""),
+        )
+    elif display_status == "cancelled":
+        badge, color, headline, sub = (
+            "!",
+            "#D97706",
+            "Payment cancelled",
+            "You were not charged. You can try again in the app.",
+        )
+    elif display_status in ("failed", "declined"):
+        badge, color, headline, sub = (
+            "✕",
+            "#DC2626",
+            "Payment failed",
+            "Nothing was charged. Try another method in the app.",
+        )
+    else:
+        badge, color, headline, sub = (
+            "?",
+            "#6B7280",
+            "Status unknown",
+            "If you completed the payment, the app will reflect it shortly.",
+        )
+
+    deep_link = f"sellmoh://payment/callback?tx_ref={tx_ref}&status={status}"
+    amount_html = (
+        f"<div class='amount'>₦{paid_amount:,.2f}</div>"
+        if paid_amount is not None
+        else ""
     )
+    purpose_html = (
+        f"<div class='purpose'>{paid_for}</div>" if paid_for else ""
+    )
+    ref_html = (
+        f"<div class='ref'>Ref · {tx_ref or transaction_id or '—'}</div>"
+        if (tx_ref or transaction_id)
+        else ""
+    )
+
+    html = f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StoreFlow — {headline}</title>
+<style>
+  * {{ box-sizing: border-box; }}
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 0; min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(160deg, #f8fafc 0%, #eef2f7 100%);
+    color: #0f172a; padding: 24px;
+  }}
+  .card {{
+    background: #fff; border-radius: 20px; box-shadow: 0 10px 40px rgba(15,23,42,.10);
+    max-width: 420px; width: 100%; padding: 40px 28px; text-align: center;
+  }}
+  .badge {{
+    width: 64px; height: 64px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 18px; font-size: 30px; font-weight: 700;
+    color: #fff; background: {color};
+  }}
+  h1 {{ font-size: 22px; margin: 0 0 6px; }}
+  .sub {{ color: #64748b; font-size: 14px; margin: 0 0 4px; }}
+  .purpose {{ color: #334155; font-size: 13px; font-weight: 600; margin: 10px 0 0; }}
+  .amount {{ font-size: 34px; font-weight: 800; margin: 14px 0 2px; letter-spacing: -0.5px; }}
+  .ref {{ color: #94a3b8; font-size: 11px; margin-top: 12px; word-break: break-all; }}
+  .divider {{ height: 1px; background: #e2e8f0; margin: 20px 0; }}
+  a.btn {{
+    display: block; text-decoration: none; background: #1D4ED8; color: #fff;
+    font-weight: 700; font-size: 15px; padding: 14px; border-radius: 12px;
+  }}
+  .footnote {{ font-size: 11px; color: #94a3b8; margin-top: 14px; }}
+</style>
+</head>
+<body>
+  <main class="card">
+    <div class="badge">{badge}</div>
+    <h1>{headline}</h1>
+    <p class="sub">{sub}</p>
+    {purpose_html}
+    {amount_html}
+    {ref_html}
+    <div class="divider"></div>
+    <a class="btn" href="{deep_link}">Return to StoreFlow</a>
+    <p class="footnote">Opens the StoreFlow app — if nothing happens, just reopen the app.</p>
+  </main>
+</body>
+</html>"""
+    return HTMLResponse(html)
