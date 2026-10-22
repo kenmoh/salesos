@@ -26,8 +26,24 @@ from app.common.analytics import (
     sales_summary,
     top_products,
 )
+from app.common.scope_cache import REPORTS, TENANT_SCOPE, scope_read
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
+
+
+# Reports are the shoulder every screen leans on and each one re-runs whole
+# date-range aggregations in Postgres, so they ride the versioned scope cache;
+# sales/expense writes bump the scope and the short TTL bounds any path we
+# did not think to bump.
+async def _report_read(ctx, fetch, fields: dict, store_id: str | None = None, ttl: int = 60):
+    return await scope_read(
+        tenant_id=ctx.user.business_id,
+        store_id=store_id or TENANT_SCOPE,
+        scope=REPORTS,
+        fields=fields,
+        ttl=ttl,
+        fetch=fetch,
+    )
 
 
 @router.get(
@@ -41,10 +57,15 @@ async def dashboard(
     store_id: str | None = Query(None, description="Scope to one store"),
 ):
     return ok(
-        await dashboard_summary(
-            session=ctx.session,
-            tenant_id=ctx.user.business_id,
-            days=days,
+        await _report_read(
+            ctx,
+            fetch=lambda: dashboard_summary(
+                session=ctx.session,
+                tenant_id=ctx.user.business_id,
+                days=days,
+                store_id=store_id,
+            ),
+            fields={"dashboard_summary": 1, "days": days, "store": store_id or ""},
             store_id=store_id,
         )
     )
@@ -63,12 +84,17 @@ async def sales_summary_endpoint(
     store_id: str | None = Query(None, description="Scope to one store"),
 ):
     return ok(
-        await sales_summary(
-            session=ctx.session,
-            tenant_id=ctx.user.business_id,
-            from_date=from_date,
-            to_date=to_date,
-            group_by=group_by,
+        await _report_read(
+            ctx,
+            fetch=lambda: sales_summary(
+                session=ctx.session,
+                tenant_id=ctx.user.business_id,
+                from_date=from_date,
+                to_date=to_date,
+                group_by=group_by,
+                store_id=store_id,
+            ),
+            fields={"sales_summary": 1, "from": from_date, "to": to_date, "group": group_by, "store": store_id or ""},
             store_id=store_id,
         )
     )
@@ -111,12 +137,17 @@ async def top_products_endpoint(
     store_id: str | None = Query(None, description="Scope to one store"),
 ):
     return ok(
-        await top_products(
-            session=ctx.session,
-            tenant_id=ctx.user.business_id,
-            from_date=from_date,
-            to_date=to_date,
-            limit=limit,
+        await _report_read(
+            ctx,
+            fetch=lambda: top_products(
+                session=ctx.session,
+                tenant_id=ctx.user.business_id,
+                from_date=from_date,
+                to_date=to_date,
+                limit=limit,
+                store_id=store_id,
+            ),
+            fields={"top_products": 1, "from": from_date, "to": to_date, "limit": limit, "store": store_id or ""},
             store_id=store_id,
         )
     )
@@ -134,11 +165,16 @@ async def payment_methods_endpoint(
     store_id: str | None = Query(None, description="Scope to one store"),
 ):
     return ok(
-        await payment_breakdown(
-            session=ctx.session,
-            tenant_id=ctx.user.business_id,
-            from_date=from_date,
-            to_date=to_date,
+        await _report_read(
+            ctx,
+            fetch=lambda: payment_breakdown(
+                session=ctx.session,
+                tenant_id=ctx.user.business_id,
+                from_date=from_date,
+                to_date=to_date,
+                store_id=store_id,
+            ),
+            fields={"payment_methods": 1, "from": from_date, "to": to_date, "store": store_id or ""},
             store_id=store_id,
         )
     )
@@ -201,12 +237,17 @@ async def profit_loss_endpoint(
     store_id: str | None = Query(None, description="Scope to one store"),
 ):
     return ok(
-        await profit_loss(
-            session=ctx.session,
-            tenant_id=ctx.user.business_id,
-            from_date=from_date,
-            to_date=to_date,
-            group_by=group_by,
+        await _report_read(
+            ctx,
+            fetch=lambda: profit_loss(
+                session=ctx.session,
+                tenant_id=ctx.user.business_id,
+                from_date=from_date,
+                to_date=to_date,
+                group_by=group_by,
+                store_id=store_id,
+            ),
+            fields={"profit_loss": 1, "from": from_date, "to": to_date, "group": group_by, "store": store_id or ""},
             store_id=store_id,
         )
     )

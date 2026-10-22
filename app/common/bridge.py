@@ -11,6 +11,14 @@ from decimal import Decimal
 from uuid import UUID, uuid4
 
 from app.common.cache import cache, cached
+from app.common.scope_cache import (
+    CATALOG,
+    REPORTS,
+    STORES,
+    CUSTOMERS,
+    TENANT_SCOPE,
+    scope_bump,
+)
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -147,6 +155,7 @@ async def _deduct_stock_for_sale(
         await session.commit()
 
     await cache.delete_pattern(f"sf:cache:store_products:list:{business_id}:{store_id}*")
+    await scope_bump(business_id, store_id, (CATALOG,))
 
 
 async def _record_movement(
@@ -1941,6 +1950,7 @@ async def create_expense(
 
         await session.commit()
 
+    await scope_bump(tenant_id, "-", (REPORTS,))
     return result.model_dump(mode="json")
 
 
@@ -2142,6 +2152,8 @@ async def adjust_stock(
         await session.commit()
 
     await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{store_id}*")
+    await scope_bump(tenant_id, store_id, (CATALOG,))
+    await scope_bump(tenant_id, "-", (REPORTS,))
 
     return {"adjustment_id": str(adjustment.id), "new_balance": balance.qty}
 
@@ -2210,6 +2222,7 @@ async def create_store(
         await session.commit()
 
     await cache.delete_pattern(f"sf:cache:stores:list:{tenant_id}*")
+    await scope_bump(tenant_id, "-", (STORES,))
     return result.model_dump(mode="json")
 
 
@@ -2715,6 +2728,7 @@ async def add_product_to_store(
         inv_session.add(balance)
         await inv_session.commit()
 
+    await scope_bump(tenant_id, store_id, (CATALOG,))
     return {"product_id": product_id, "store_id": store_id, "qty": qty}
 
 
@@ -2861,6 +2875,7 @@ async def create_product_for_store(
         logger.exception("QR generation failed for product %s", product.id)
 
     await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{store_id}*")
+    await scope_bump(tenant_id, store_id, (CATALOG,))
     return {
         "product_id": str(product.id),
         "store_id": store_id,
@@ -2923,6 +2938,7 @@ async def update_store(
 
         await session.commit()
         await cache.delete_pattern(f"sf:cache:stores:list:{tenant_id}*")
+        await scope_bump(tenant_id, "-", (STORES,))
         return {
             "id": str(store.id),
             "name": store.name,
@@ -2934,6 +2950,8 @@ async def update_store(
 
 async def delete_store(tenant_id: str, store_id: str) -> dict | None:
     """Soft-delete a store by marking its status as deleted.
+
+
 
     Sets the store status to "deleted" and clears the warehouse flag. The
     store record is not physically removed from the database.
@@ -2957,6 +2975,7 @@ async def delete_store(tenant_id: str, store_id: str) -> dict | None:
         store.is_warehouse = False
         await session.commit()
         await cache.delete_pattern(f"sf:cache:stores:list:{tenant_id}*")
+        await scope_bump(tenant_id, "-", (STORES,))
         return {"ok": True}
 
 
@@ -3045,6 +3064,7 @@ async def create_store_product(
         result = await repo_create(session, store_product)
         await session.commit()
 
+    await scope_bump(tenant_id, store_id, (CATALOG,))
     return {
         "id": str(result.id),
         "store_id": str(result.store_id),
@@ -3119,6 +3139,7 @@ async def update_store_product(
         result = await repo_update(session, existing.id, **kwargs)
         await session.commit()
         await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{store_id}*")
+        await scope_bump(tenant_id, store_id, (CATALOG,))
 
     if tax_ids is not None:
         sdb_catalog = _get_sdb("catalog")
@@ -3286,6 +3307,7 @@ async def delete_store_product(
             await session.commit()
 
     await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{store_id}*")
+    await scope_bump(tenant_id, store_id, (CATALOG,))
     return True
 
 
@@ -3517,6 +3539,7 @@ async def sync_store_products(
 
         await session.commit()
 
+    await scope_bump(tenant_id, target_store_id, (CATALOG,))
     return {"synced": synced, "skipped": skipped, "errors": errors}
 
 
@@ -3650,7 +3673,9 @@ async def transfer_stock(
         await session.commit()
 
     await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{from_store_id}*")
+    await scope_bump(tenant_id, from_store_id, (CATALOG,))
     await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{to_store_id}*")
+    await scope_bump(tenant_id, to_store_id, (CATALOG,))
 
     return {
         "from_adjustment_id": str(from_adj.id),
@@ -3982,7 +4007,9 @@ async def fulfill_transfer_request(
     supplying_store_id = str(request.supplying_store_id)
     requesting_store_id = str(request.requesting_store_id)
     await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{supplying_store_id}*")
+    await scope_bump(tenant_id, supplying_store_id, (CATALOG,))
     await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{requesting_store_id}*")
+    await scope_bump(tenant_id, requesting_store_id, (CATALOG,))
 
     return {
         "request_id": str(updated_request.id),
@@ -5032,6 +5059,7 @@ async def create_category(
         await repo_create_category(session, category_model)
         await session.commit()
 
+    await scope_bump(store_id, "-", (CATALOG,))
     return result.model_dump(mode="json")
 
 
@@ -5130,6 +5158,7 @@ async def update_category(store_id: str, category_id: str, **kwargs) -> None:
         if str(existing.store_id) != store_id:
             raise ValueError("category_not_found")
         await session.commit()
+        await scope_bump(store_id, "-", (CATALOG,))
 
 
 async def delete_category(store_id: str, category_id: str) -> None:
@@ -5160,6 +5189,8 @@ async def delete_category(store_id: str, category_id: str) -> None:
             raise ValueError("category_has_products")
         await repo_delete_category(session, UUID(category_id))
         await session.commit()
+
+    await scope_bump(store_id, "-", (CATALOG,))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -6204,6 +6235,7 @@ async def checkout_cart(
                 await cache.delete_pattern(
                     f"sf:cache:store_products:list:{tenant_id}:{deduct_store_id}*"
                 )
+                await scope_bump(tenant_id, "-", (REPORTS,))
 
             result_dict = result.model_dump(mode="json")
             result_dict["sale_id"] = str(result.id)
@@ -8994,6 +9026,7 @@ async def create_customer(
         result = _customer_to_dict(customer)
         await session.commit()
         await cache.delete_pattern(f"sf:cache:customers:list:{tenant_id}*")
+        await scope_bump(tenant_id, "-", (CUSTOMERS,))
         return result
 
 
@@ -9041,6 +9074,7 @@ async def update_customer(
         result = _customer_to_dict(row)
         await session.commit()
         await cache.delete_pattern(f"sf:cache:customers:list:{tenant_id}*")
+        await scope_bump(tenant_id, "-", (CUSTOMERS,))
         return result
 
 

@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 from app.core.dependencies import TenantDep, require_permission
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
 from app.customers.models import CustomerType
+from app.common.scope_cache import CUSTOMERS, TENANT_SCOPE, scope_bump, scope_read
 import app.common.bridge as bridge
 
 
@@ -34,16 +35,16 @@ router = APIRouter(prefix="/customers", tags=["Customers"])
 )
 async def create_customer(payload: CustomerCreate, ctx: TenantDep):
     try:
-        return ok(
-            await bridge.create_customer(
-                tenant_id=ctx.user.business_id,
-                name=payload.name,
-                type=payload.type,
-                phone=payload.phone,
-                email=payload.email,
-                address=payload.address,
-            )
+        result = await bridge.create_customer(
+            tenant_id=ctx.user.business_id,
+            name=payload.name,
+            type=payload.type,
+            phone=payload.phone,
+            email=payload.email,
+            address=payload.address,
         )
+        await scope_bump(ctx.user.business_id, TENANT_SCOPE, (CUSTOMERS,))
+        return ok(result)
     except ValueError as e:
         if str(e) == "customer_exists":
             raise HTTPException(status_code=409, detail="Customer with this email or phone already exists")
@@ -64,12 +65,19 @@ async def list_customers(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ):
-    result = await bridge.list_customers(
+    result = await scope_read(
         tenant_id=ctx.user.business_id,
-        page=page,
-        page_size=page_size,
-        search=search,
-        type=type,
+        store_id=TENANT_SCOPE,
+        scope=CUSTOMERS,
+        fields={"list": ctx.user.business_id, "search": search or "", "type": type or "", "page": page, "page_size": page_size},
+        ttl=60,
+        fetch=lambda: bridge.list_customers(
+            tenant_id=ctx.user.business_id,
+            page=page,
+            page_size=page_size,
+            search=search,
+            type=type,
+        ),
     )
     return paginated(
         result["items"], total=result["total"], page=result["page"], page_size=result["page_size"]
@@ -101,6 +109,7 @@ async def update_customer(customer_id: str, payload: CustomerUpdate, ctx: Tenant
     )
     if not result:
         raise HTTPException(status_code=404, detail="Customer not found")
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (CUSTOMERS,))
     return ok(result)
 
 
@@ -113,4 +122,5 @@ async def delete_customer(customer_id: str, ctx: TenantDep):
     ok_ = await bridge.delete_customer(tenant_id=ctx.user.business_id, customer_id=customer_id)
     if not ok_:
         raise HTTPException(status_code=404, detail="Customer not found")
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (CUSTOMERS,))
     return ok({"success": True, "customer_id": customer_id})

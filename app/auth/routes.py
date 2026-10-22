@@ -329,6 +329,7 @@ async def sessions(ctx: DbTenantDep):
                 "last_active_at": s.get("last_active_at"),
             }
             for s in sessions_list
+            if s.get("user_id") in users
         ]
     )
 

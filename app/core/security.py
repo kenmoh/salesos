@@ -284,7 +284,7 @@ async def list_all_sessions(user_ids: list[str] | None = None) -> list[dict]:
     client = await get_session_redis()
     if client is None:
         return []
-    wanted = set(user_ids) if user_ids else None
+    wanted = set(user_ids) if user_ids is not None else None
     sessions: list[dict] = []
     try:
         async for key in client.scan_iter("sf:session:*"):

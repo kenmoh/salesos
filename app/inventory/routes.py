@@ -70,11 +70,20 @@ async def create_category(store_id: str, payload: CategoryCreate, ctx: TenantDep
 )
 async def categories(store_id: str, ctx: TenantDep):
     from uuid import UUID
+    from app.common.scope_cache import CATALOG, scope_read
     try:
         UUID(store_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid store_id")
-    return ok(await bridge.list_categories(store_id=store_id))
+    result = await scope_read(
+        tenant_id=ctx.user.business_id,
+        store_id=store_id,
+        scope=CATALOG,
+        fields={"categories": store_id},
+        ttl=300,
+        fetch=lambda: bridge.list_categories(store_id=store_id),
+    )
+    return ok(result)
 
 
 @router.get(
@@ -188,16 +197,24 @@ async def store_products(
     page_size: int = 50,
 ):
     from uuid import UUID
+    from app.common.scope_cache import CATALOG, scope_read
     try:
         UUID(store_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid store_id")
-    result = await bridge.get_store_products(
+    result = await scope_read(
         tenant_id=ctx.user.business_id,
         store_id=store_id,
-        search=search,
-        page=page,
-        page_size=page_size,
+        scope=CATALOG,
+        fields={"products": store_id, "search": search or "", "page": page, "page_size": page_size},
+        ttl=60,
+        fetch=lambda: bridge.get_store_products(
+            tenant_id=ctx.user.business_id,
+            store_id=store_id,
+            search=search,
+            page=page,
+            page_size=page_size,
+        ),
     )
     return paginated(
         result["items"], total=result["total"], page=result["page"], page_size=result["page_size"]

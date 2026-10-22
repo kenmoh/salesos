@@ -45,7 +45,17 @@ async def create_store(payload: StoreCreate, ctx: TenantDep):
     dependencies=[Depends(require_permission("stores:read"))],
 )
 async def stores(ctx: TenantDep):
-    return ok(await bridge.list_stores(tenant_id=ctx.user.business_id))
+    from app.common.scope_cache import STORES, TENANT_SCOPE, scope_read
+
+    result = await scope_read(
+        tenant_id=ctx.user.business_id,
+        store_id=TENANT_SCOPE,
+        scope=STORES,
+        fields={"list": ctx.user.business_id},
+        ttl=300,
+        fetch=lambda: bridge.list_stores(tenant_id=ctx.user.business_id),
+    )
+    return ok(result)
 
 
 @router.get(
