@@ -1,5 +1,6 @@
 import json
 from decimal import Decimal
+from uuid import uuid4
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -710,12 +711,15 @@ async def flutterwave_webhook(request: Request, verif_hash: str = Header(default
                 await session.execute(
                     text("""
                         INSERT INTO webhook_logs
-                            (event_type, event_id, payload, processed, created_at)
+                            (id, event_type, event_id, payload, processed, created_at)
                         VALUES
-                            (:event_type, :event_id, :payload, 1, now())
+                            (:id, :event_type, :event_id, :payload, 1, now())
                         ON CONFLICT DO NOTHING
                     """),
                     {
+                        # Raw SQL bypasses the ORM default, so the uuid
+                        # primary key must be supplied here.
+                        "id": uuid4(),
                         "event_type": event,
                         "event_id": str(event_id),
                         "payload": json.dumps(payload),
