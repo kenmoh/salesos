@@ -819,13 +819,15 @@ async def create_settlement_link(ctx: DbTenantDep):
     response_model=DataResponse[dict],
     dependencies=[Depends(require_permission("payments:create"))],
 )
-async def reconcile_settlement_payment(ctx: TenantDep, tx_ref: str = Body(..., embed=True)):
+async def reconcile_settlement_payment(ctx: TenantDep, tx_ref: str = Body(default="", embed=True)):
     """Manually confirm a paid settlement whose webhook never got through.
 
     Asks Flutterwave directly whether the transaction for this reference is
     successful, and only then sweeps the pending ledger rows — the exact
     confirmation the webhook would have carried, for events the gateway
-    swallows or our side rejects before they could act.
+    swallows or our side rejects before they could act. Without a
+    reference the newest pending settlement intent for the tenant is used,
+    which is what the app holds when someone says "I've paid".
     """
     from uuid import UUID as _UUID
     from sqlalchemy import select
@@ -835,15 +837,19 @@ async def reconcile_settlement_payment(ctx: TenantDep, tx_ref: str = Body(..., e
     tx_ref = (tx_ref or "").strip()
     sdb = _get_sdb("payments")
     async with sdb.session() as session:
-        intent = (
-            await session.execute(
-                select(PaymentIntent).where(
-                    PaymentIntent.gateway_reference == tx_ref,
-                    PaymentIntent.tenant_id == _UUID(ctx.user.business_id),
-                    PaymentIntent.status == "pending",
-                )
+        stmt = (
+            select(PaymentIntent)
+            .where(
+                PaymentIntent.tenant_id == _UUID(ctx.user.business_id),
+                PaymentIntent.status == "pending",
+                PaymentIntent.gateway_reference.like("SF-SETTLE-%"),
             )
-        ).scalar_one_or_none()
+            .order_by(PaymentIntent.created_at.desc())
+            .limit(1)
+        )
+        if tx_ref:
+            stmt = stmt.where(PaymentIntent.gateway_reference == tx_ref)
+        intent = (await session.execute(stmt)).scalar_one_or_none()
         if intent is None:
             raise HTTPException(
                 status_code=404,
