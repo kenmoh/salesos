@@ -21,7 +21,7 @@ Caller is responsible for committing the transaction.
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.payments.models import (
@@ -139,16 +139,20 @@ async def get_pending_intents_by_tenant(
 ) -> list[PaymentIntent]:
     """Retrieve all pending payment intents for a tenant.
 
-    Args:
-        session: Database session for querying.
-        tenant_id: Unique identifier of the tenant.
-
-    Returns:
-        List of pending PaymentIntent records, newest first.
+    Settlement intents (``SF-SETTLE-%``) are deliberately excluded: they are
+    the platform-fee debt due to the platform, not till payments waiting on
+    a cashier, so they belong on the settlement screen and not in the POS
+    pending-payments counter or sheet.
     """
     result = await session.execute(
         select(PaymentIntent)
-        .where(PaymentIntent.tenant_id == tenant_id, PaymentIntent.status == "pending")
+        .where(
+            PaymentIntent.tenant_id == tenant_id,
+            PaymentIntent.status == "pending",
+            func.coalesce(PaymentIntent.gateway_reference, "").notlike(
+                "SF-SETTLE-%"
+            ),
+        )
         .order_by(PaymentIntent.created_at.desc())
     )
     return list(result.scalars().all())
