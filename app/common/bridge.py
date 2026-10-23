@@ -7312,6 +7312,65 @@ async def initiate_payment(
             "expiry_date": dva_result.get("expiry_date", ""),
         })
 
+        # A QR of the hosted details page lets the customer copy the account
+        # number on their own phone instead of reading it off the till.
+        business_name = ""
+        store_name = ""
+        try:
+            from app.tenancy.repository import get_tenant_by_id
+
+            async with _get_sdb("tenancy").session() as t_session:
+                tenant = await get_tenant_by_id(t_session, tenant_uid)
+                if tenant:
+                    business_name = tenant.business_name or ""
+        except Exception:
+            pass
+        if cart_store_id:
+            try:
+                from app.stores.repository import get_store_by_id
+
+                async with _get_sdb("inventory").session() as s_session:
+                    store = await get_store_by_id(s_session, UUID(cart_store_id))
+                    if store:
+                        store_name = store.name or ""
+            except Exception:
+                pass
+
+        ttl_seconds = 1800
+        try:
+            expiry_dt = datetime.fromisoformat(
+                str(dva_result.get("expiry_date") or "").replace("Z", "+00:00")
+            )
+            if expiry_dt.tzinfo is None:
+                expiry_dt = expiry_dt.replace(tzinfo=UTC)
+            ttl_seconds = int((expiry_dt - datetime.now(UTC)).total_seconds())
+        except (TypeError, ValueError):
+            pass
+        ttl_seconds = max(300, min(ttl_seconds, 86400))
+
+        from urllib.parse import urlsplit
+
+        from app.payments.transfer_page import build_transfer_token
+
+        token = build_transfer_token(
+            {
+                "account_number": dva_result["account_number"],
+                "bank_name": dva_result["bank_name"],
+                "amount": float(final_total),
+                "business_name": business_name,
+                "store_name": store_name,
+                "expiry_date": dva_result.get("expiry_date", ""),
+                "tx_ref": tx_ref,
+            },
+            ttl_seconds=ttl_seconds,
+        )
+        origin = urlsplit(settings.app_callback_url)
+        transfer_url = (
+            f"{origin.scheme}://{origin.netloc}/api/v1/payment/transfer/{token}"
+        )
+        result["transfer_url"] = transfer_url
+        result["qr_code_base64"] = generate_qr_base64(transfer_url)
+
     return result
 
 

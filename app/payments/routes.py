@@ -1127,3 +1127,30 @@ async def payment_callback(
 </body>
 </html>"""
     return HTMLResponse(html)
+
+
+@webhook_router.get(
+    "/payment/transfer/{token}",
+    include_in_schema=False,
+)
+async def transfer_details_page(token: str):
+    """Public page behind the transfer QR code.
+
+    The cashier's Receive-money screen renders a QR for the customer's own
+    phone. Everything the page shows is carried in a signed, short-lived
+    token built when the virtual account was created, so no auth is needed
+    and no database lookup is trusted for the account number.
+    """
+    from app.payments.transfer_page import (
+        parse_transfer_token,
+        render_expired_page,
+        render_not_found_page,
+        render_transfer_page,
+    )
+
+    payload, expired = parse_transfer_token(token)
+    if payload is None:
+        return HTMLResponse(render_not_found_page(), status_code=404)
+    if expired:
+        return HTMLResponse(render_expired_page(), status_code=410)
+    return HTMLResponse(render_transfer_page(payload))
