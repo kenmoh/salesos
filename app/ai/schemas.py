@@ -2,7 +2,7 @@
 
 This module defines the input (Request) and output (Response) schemas for the
 agentic AI assistant. The assistant answers natural language questions about
-business data using 14 read-only tools and web search.
+business data using 35 read-only tools and web search.
 
 Abbreviations Used in This Module
 ----------------------------------
@@ -23,7 +23,7 @@ Response Format:
 
 Action Policy:
     The AI NEVER executes write operations. It only:
-    1. Reads data via the 14 read-only tools.
+    1. Reads data via the 35 read-only tools.
     2. Searches the web for price comparisons.
     3. Returns recommendations that the user must approve.
     4. The frontend calls separate APIs to execute approved actions.

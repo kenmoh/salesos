@@ -43,7 +43,7 @@ async def _prepare_chat(payload: ChatRequest, tenant_id: UUID, user_id: UUID):
         get_conversation_messages,
         update_conversation_title,
     )
-    from app.ai.service import invoke_tools, select_tools
+    from app.ai.service import invoke_tools, plan_tools, select_tools
     from app.ai.agent import build_agent_prompt
 
     sdb = _ai_db()
@@ -78,6 +78,10 @@ async def _prepare_chat(payload: ChatRequest, tenant_id: UUID, user_id: UUID):
         history = [{"role": m.role, "content": m.content} for m in history_msgs]
 
         tools = select_tools(payload.message)
+        if not tools:
+            tools = await plan_tools(payload.message)
+        if not tools:
+            tools = ["get_sales_summary"]
         tool_results = await invoke_tools(tools, session, tenant_id, payload.message)
 
         prompt = build_agent_prompt(history, tool_results)
@@ -146,18 +150,15 @@ async def chat(payload: ChatRequest, ctx: TenantDep):
         )
         parsed = parse_agent_response(llm_response)
     except ValueError as e:
+        logger.warning("LLM unavailable: %s", e)
         parsed = {
-            "answer": (
-                f"I found the following information:\n\n"
-                + "\n".join(f"**{r['tool']}**: {r['result_summary']}" for r in tool_results)
-                + f"\n\n*Note: AI response generation unavailable ({e}). Showing raw tool results.*"
-            ),
+            "answer": "I'm sorry, but I couldn't generate a response right now. Please try again.",
             "recommendations": [],
         }
     except Exception as e:
         logger.warning("LLM call failed: %s", e)
         parsed = {
-            "answer": f"I encountered an error processing your request: {e}",
+            "answer": "Something went wrong. Please try again.",
             "recommendations": [],
         }
 
@@ -186,13 +187,14 @@ async def _stream_response(
             yield _sse_event("token", {"text": chunk})
 
     except ValueError as e:
-        fallback = f"AI response generation unavailable ({e}). Showing raw tool results instead."
+        logger.warning("LLM unavailable: %s", e)
+        fallback = "I'm sorry, but I couldn't generate a response right now. Please try again."
         full_answer.append(fallback)
         yield _sse_event("token", {"text": fallback})
 
     except Exception as e:
         logger.warning("LLM stream failed: %s", e)
-        error_msg = f"Error: {e}"
+        error_msg = "Something went wrong. Please try again."
         full_answer.append(error_msg)
         yield _sse_event("token", {"text": error_msg})
 
