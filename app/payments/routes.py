@@ -600,29 +600,72 @@ async def flutterwave_webhook(request: Request, verif_hash: str = Header(default
         sale_id = meta.get("sale_id")
         intent_id = meta.get("intent_id")
 
+        # Flutterwave does not reliably echo link metadata back through
+        # bank-transfer charges (a hosted-checkout transfer completes as a
+        # BANK_TRANSFER_TRANSACTION without meta), so routing on meta alone
+        # confirms nothing. The tx_ref stamped on the link is always present,
+        # so resolve the intent by its gateway reference and let the intent
+        # carry business and kind.
+        resolved_intent = None
+        if intent_id or tx_ref:
+            from uuid import UUID as _UUID
+            from sqlalchemy import select as _sa_select
+            from app.payments.models import PaymentIntent
+            sdb = _get_sdb("payments")
+            async with sdb.session() as session:
+                if intent_id:
+                    try:
+                        resolved_intent = (
+                            await session.execute(
+                                _sa_select(PaymentIntent).where(
+                                    PaymentIntent.id == _UUID(intent_id),
+                                    PaymentIntent.status == "pending",
+                                )
+                            )
+                        ).scalar_one_or_none()
+                    except ValueError:
+                        resolved_intent = None
+                if resolved_intent is None and tx_ref:
+                    resolved_intent = (
+                        await session.execute(
+                            _sa_select(PaymentIntent).where(
+                                PaymentIntent.gateway_reference == tx_ref,
+                                PaymentIntent.status == "pending",
+                            )
+                        )
+                    ).scalar_one_or_none()
+
         # Settlement flow: a link standing for the tenant's whole pending
         # fee balance. The frozen ledger rows must be swept before the
         # checkout confirmation path sees the same intent and misreads it
         # as a cart payment.
-        if business_id and intent_id:
+        if resolved_intent is not None:
             try:
-                await bridge.confirm_settlement_payment(
-                    business_id=business_id,
-                    intent_id=intent_id,
-                    gateway_data=data,
-                )
-                return ok({"received": True, "confirmed": True, "kind": "settlement"})
-            except ValueError as e:
-                if str(e) != "not_settlement":
-                    pass
+                intent_meta = json.loads(resolved_intent.intent_metadata or "{}")
+            except (TypeError, ValueError):
+                intent_meta = {}
+            is_settlement = intent_meta.get("type") == "settlement"
 
-        # Intent-first flow: confirm the intent which creates the sale
-        if business_id and intent_id:
+            if is_settlement:
+                try:
+                    await bridge.confirm_settlement_payment(
+                        business_id=str(resolved_intent.tenant_id),
+                        intent_id=str(resolved_intent.id),
+                        gateway_data=data,
+                    )
+                    await _log_webhook_event(event, event_id, payload)
+                    return ok({"received": True, "confirmed": True, "kind": "settlement"})
+                except ValueError as e:
+                    if str(e) != "not_settlement":
+                        pass
+
+            # Intent-first flow: confirm the intent which creates the sale
             try:
                 await bridge.confirm_payment(
-                    business_id=business_id,
-                    intent_id=intent_id,
+                    business_id=str(resolved_intent.tenant_id),
+                    intent_id=str(resolved_intent.id),
                 )
+                await _log_webhook_event(event, event_id, payload)
                 return ok({"received": True, "confirmed": True})
             except ValueError:
                 pass
@@ -636,6 +679,7 @@ async def flutterwave_webhook(request: Request, verif_hash: str = Header(default
                     tx_ref=tx_ref,
                     gateway_data=data,
                 )
+                await _log_webhook_event(event, event_id, payload)
             except ValueError:
                 pass
 
@@ -699,35 +743,46 @@ async def flutterwave_webhook(request: Request, verif_hash: str = Header(default
         logger = logging.getLogger("storeflow.payments.webhook")
         logger.warning("Transfer failed: reference=%s", reference)
 
-    if event_id:
-        from sqlalchemy import text
-        from app.common.bridge import _get_shared_engine
-        from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
-        engine = _get_shared_engine()
-        factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
-
-        async with factory() as session:
-            async with session.begin():
-                await session.execute(
-                    text("""
-                        INSERT INTO webhook_logs
-                            (id, event_type, event_id, payload, processed, created_at)
-                        VALUES
-                            (:id, :event_type, :event_id, :payload, 1, now())
-                        ON CONFLICT DO NOTHING
-                    """),
-                    {
-                        # Raw SQL bypasses the ORM default, so the uuid
-                        # primary key must be supplied here.
-                        "id": uuid4(),
-                        "event_type": event,
-                        "event_id": str(event_id),
-                        "payload": json.dumps(payload),
-                    },
-                )
-            await session.commit()
-
     return ok({"received": True})
+
+
+async def _log_webhook_event(event: str, event_id: str, payload: dict) -> None:
+    """Record a webhook as processed once a branch actually confirmed it.
+
+    Logging happens after a successful confirm, never on arrival: an event
+    logged on arrival is shielded from retries by the dedupe check even
+    when nothing acted on it, which is how a confirmed-nowhere payment
+    goes permanently stuck.
+    """
+    from sqlalchemy import text
+    from app.common.bridge import _get_shared_engine
+    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+
+    if not event_id:
+        return
+    engine = _get_shared_engine()
+    factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with factory() as session:
+        async with session.begin():
+            await session.execute(
+                text("""
+                    INSERT INTO webhook_logs
+                        (id, event_type, event_id, payload, processed, created_at)
+                    VALUES
+                        (:id, :event_type, :event_id, :payload, 1, now())
+                    ON CONFLICT DO NOTHING
+                """),
+                {
+                    # Raw SQL bypasses the ORM default, so the uuid
+                    # primary key must be supplied here.
+                    "id": uuid4(),
+                    "event_type": event,
+                    "event_id": str(event_id),
+                    "payload": json.dumps(payload),
+                },
+            )
+        await session.commit()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
