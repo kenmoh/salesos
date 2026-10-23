@@ -814,6 +814,87 @@ async def create_settlement_link(ctx: DbTenantDep):
     return ok(result)
 
 
+@router.post(
+    "/settlement/reconcile",
+    response_model=DataResponse[dict],
+    dependencies=[Depends(require_permission("payments:create"))],
+)
+async def reconcile_settlement_payment(ctx: TenantDep, tx_ref: str = Body(..., embed=True)):
+    """Manually confirm a paid settlement whose webhook never got through.
+
+    Asks Flutterwave directly whether the transaction for this reference is
+    successful, and only then sweeps the pending ledger rows — the exact
+    confirmation the webhook would have carried, for events the gateway
+    swallows or our side rejects before they could act.
+    """
+    from uuid import UUID as _UUID
+    from sqlalchemy import select
+    from app.common.bridge import confirm_settlement_payment
+    from app.payments.models import PaymentIntent
+
+    tx_ref = (tx_ref or "").strip()
+    sdb = _get_sdb("payments")
+    async with sdb.session() as session:
+        intent = (
+            await session.execute(
+                select(PaymentIntent).where(
+                    PaymentIntent.gateway_reference == tx_ref,
+                    PaymentIntent.tenant_id == _UUID(ctx.user.business_id),
+                    PaymentIntent.status == "pending",
+                )
+            )
+        ).scalar_one_or_none()
+        if intent is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No pending settlement found with this reference",
+            )
+        try:
+            intent_meta = json.loads(intent.intent_metadata or "{}")
+        except (TypeError, ValueError):
+            intent_meta = {}
+        if intent_meta.get("type") != "settlement":
+            raise HTTPException(
+                status_code=400,
+                detail="This reference is not a settlement payment",
+            )
+
+    try:
+        tx_data = await flutterwave_service.verify_transaction(tx_ref=tx_ref)
+    except flutterwave_service.FlutterwaveError as e:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Flutterwave has not marked this transaction successful: {e}",
+        )
+
+    charged = float(tx_data.get("amount") or 0)
+    if charged + 0.01 < float(intent.amount):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Amount mismatch: gateway charged {charged:,.2f} but the "
+                f"link stands for {float(intent.amount):,.2f}"
+            ),
+        )
+
+    result = await confirm_settlement_payment(
+        business_id=ctx.user.business_id,
+        intent_id=str(intent.id),
+        gateway_data={
+            "source": "manual_reconcile",
+            "tx_ref": tx_ref,
+            "flw_ref": tx_data.get("flw_ref"),
+            "flw_id": tx_data.get("id"),
+            "status": tx_data.get("status"),
+        },
+    )
+    return ok({
+        "cleared": result["cleared"],
+        "amount": float(intent.amount),
+        "intent_id": str(intent.id),
+    })
+
+
 @router.get(
     "/settlement",
     dependencies=[Depends(require_permission("payments:read"))],
