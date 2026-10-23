@@ -1,6 +1,7 @@
 import json
+from datetime import UTC, datetime
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -1136,10 +1137,10 @@ async def payment_callback(
 async def transfer_details_page(token: str):
     """Public page behind the transfer QR code.
 
-    The cashier's Receive-money screen renders a QR for the customer's own
-    phone. Everything the page shows is carried in a signed, short-lived
-    token built when the virtual account was created, so no auth is needed
-    and no database lookup is trusted for the account number.
+    New QRs carry the payment intent id. The details live on that intent,
+    so the URL stays short enough for a low-density, scannable QR. Longer
+    self-contained tokens from older builds still work and are checked by
+    signature, without touching the database.
     """
     from app.payments.transfer_page import (
         parse_transfer_token,
@@ -1148,9 +1149,49 @@ async def transfer_details_page(token: str):
         render_transfer_page,
     )
 
-    payload, expired = parse_transfer_token(token)
-    if payload is None:
+    if "." in token:
+        payload, expired = parse_transfer_token(token)
+        if payload is None:
+            return HTMLResponse(render_not_found_page(), status_code=404)
+        if expired:
+            return HTMLResponse(render_expired_page(), status_code=410)
+        return HTMLResponse(render_transfer_page(payload))
+
+    try:
+        intent_id = UUID(token)
+    except ValueError:
         return HTMLResponse(render_not_found_page(), status_code=404)
-    if expired:
+
+    from app.payments.models import PaymentIntent
+
+    sdb = _get_sdb("payments")
+    async with sdb.session() as session:
+        intent = await session.get(PaymentIntent, intent_id)
+
+    if not intent or not intent.dva_account_number:
+        return HTMLResponse(render_not_found_page(), status_code=404)
+
+    if intent.expires_at and intent.expires_at < datetime.now(UTC):
         return HTMLResponse(render_expired_page(), status_code=410)
+
+    meta = intent.intent_metadata
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except json.JSONDecodeError:
+            meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+
+    payload = {
+        "account_number": intent.dva_account_number,
+        "bank_name": intent.bank_name or "",
+        "amount": float(intent.amount),
+        "business_name": str(meta.get("business_name") or ""),
+        "store_name": str(meta.get("store_name") or ""),
+        "expiry_date": str(
+            meta.get("expiry_date") or (intent.expires_at.isoformat() if intent.expires_at else "")
+        ),
+        "tx_ref": str(meta.get("tx_ref") or intent.gateway_reference or ""),
+    }
     return HTMLResponse(render_transfer_page(payload))

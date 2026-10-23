@@ -7316,11 +7316,12 @@ async def initiate_payment(
         )
 
         async with sdb_payments.session() as session:
-            intent.dva_account_number = dva_result["account_number"]
-            intent.dva_account_name = dva_result.get("account_name", "")
-            intent.bank_name = dva_result["bank_name"]
-            intent.intent_metadata = json.dumps(dva_result)
-            await session.commit()
+            db_intent = await session.get(PaymentIntent, intent.id)
+            if db_intent:
+                db_intent.dva_account_number = dva_result["account_number"]
+                db_intent.dva_account_name = dva_result.get("account_name", "")
+                db_intent.bank_name = dva_result["bank_name"]
+                await session.commit()
 
         result.update({
             "account_number": dva_result["account_number"],
@@ -7364,25 +7365,29 @@ async def initiate_payment(
             pass
         ttl_seconds = max(300, min(ttl_seconds, 86400))
 
+        # The page is keyed by the intent id: a 36-char UUID instead of a
+        # self-contained signed payload. The shorter URL keeps the QR at
+        # ~37 modules (the same density as the card QR) so phone cameras
+        # read it reliably at the size the till screen renders it.
+        async with sdb_payments.session() as session:
+            db_intent = await session.get(PaymentIntent, intent.id)
+            if db_intent:
+                db_intent.intent_metadata = json.dumps({
+                    **dva_result,
+                    "business_name": business_name,
+                    "store_name": store_name,
+                    "tx_ref": tx_ref,
+                })
+                db_intent.expires_at = datetime.now(UTC) + timedelta(
+                    seconds=ttl_seconds
+                )
+                await session.commit()
+
         from urllib.parse import urlsplit
 
-        from app.payments.transfer_page import build_transfer_token
-
-        token = build_transfer_token(
-            {
-                "account_number": dva_result["account_number"],
-                "bank_name": dva_result["bank_name"],
-                "amount": float(final_total),
-                "business_name": business_name,
-                "store_name": store_name,
-                "expiry_date": dva_result.get("expiry_date", ""),
-                "tx_ref": tx_ref,
-            },
-            ttl_seconds=ttl_seconds,
-        )
         origin = urlsplit(settings.app_callback_url)
         transfer_url = (
-            f"{origin.scheme}://{origin.netloc}/api/v1/payment/transfer/{token}"
+            f"{origin.scheme}://{origin.netloc}/api/v1/payment/transfer/{intent.id}"
         )
         result["transfer_url"] = transfer_url
         result["qr_code_base64"] = generate_qr_base64(transfer_url)

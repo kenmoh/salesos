@@ -121,3 +121,77 @@ class TestRoute:
         token = f"{transfer_page._b64url(raw)}.{transfer_page._b64url(transfer_page._sign(raw))}"
         response = await transfer_details_page(token)
         assert response.status_code == 410
+
+
+class TestIntentKeyedPage:
+    """New QRs carry the intent id; the details come from that row."""
+
+    @staticmethod
+    def _sdb_with(intent):
+        from unittest.mock import AsyncMock, MagicMock
+
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        session.get = AsyncMock(return_value=intent)
+        sdb = MagicMock()
+        sdb.session.return_value = session
+        return sdb
+
+    @pytest.mark.asyncio
+    async def test_intent_id_renders_details(self):
+        from unittest.mock import MagicMock, patch
+        from uuid import uuid4
+
+        import app.payments.routes as routes
+
+        intent = MagicMock()
+        intent.dva_account_number = PAYLOAD["account_number"]
+        intent.bank_name = PAYLOAD["bank_name"]
+        intent.amount = PAYLOAD["amount"]
+        intent.expires_at = datetime.now(UTC) + timedelta(minutes=20)
+        intent.intent_metadata = json.dumps(
+            {
+                "business_name": PAYLOAD["business_name"],
+                "store_name": PAYLOAD["store_name"],
+                "expiry_date": PAYLOAD["expiry_date"],
+                "tx_ref": PAYLOAD["tx_ref"],
+            }
+        )
+        intent.gateway_reference = PAYLOAD["tx_ref"]
+
+        with patch.object(routes, "_get_sdb", return_value=self._sdb_with(intent)):
+            response = await routes.transfer_details_page(str(uuid4()))
+
+        assert response.status_code == 200
+        assert b"1234567890" in response.body
+        assert b"Mama&#x27;s Store" in response.body
+
+    @pytest.mark.asyncio
+    async def test_unknown_intent_404(self):
+        from unittest.mock import patch
+        from uuid import uuid4
+
+        import app.payments.routes as routes
+
+        with patch.object(routes, "_get_sdb", return_value=self._sdb_with(None)):
+            response = await routes.transfer_details_page(str(uuid4()))
+
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_expired_intent_410(self):
+        from unittest.mock import MagicMock, patch
+        from uuid import uuid4
+
+        import app.payments.routes as routes
+
+        intent = MagicMock()
+        intent.dva_account_number = PAYLOAD["account_number"]
+        intent.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+        intent.intent_metadata = "{}"
+
+        with patch.object(routes, "_get_sdb", return_value=self._sdb_with(intent)):
+            response = await routes.transfer_details_page(str(uuid4()))
+
+        assert response.status_code == 410
