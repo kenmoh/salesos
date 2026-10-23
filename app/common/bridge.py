@@ -2845,6 +2845,26 @@ async def create_product_for_store(
                 created_by=UUID(created_by) if created_by else None,
             )
             session.add(adjustment)
+            await session.flush()
+            # The same event must land in stock_movements, which is what the
+            # product history screen reads; the adjustment row alone is not
+            # enough to see where the opening balance came from.
+            await _record_movement(
+                session,
+                tenant_id=UUID(tenant_id),
+                product_id=product.id,
+                store_id=UUID(store_id),
+                movement_type="adjustment",
+                qty_change=Decimal(str(qty)),
+                balance_before=Decimal("0"),
+                balance_after=Decimal(str(qty)),
+                reference_type="adjustment",
+                reference_id=adjustment.id,
+                reason="initial_stock",
+                unit_cost=cost_price if cost_price else None,
+                notes="Initial stock on product creation",
+                created_by=UUID(created_by) if created_by else None,
+            )
 
         await session.commit()
 
