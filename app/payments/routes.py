@@ -712,7 +712,7 @@ async def flutterwave_webhook(request: Request, verif_hash: str = Header(default
                         INSERT INTO webhook_logs
                             (event_type, event_id, payload, processed, created_at)
                         VALUES
-                            (:event_type, :event_id, :payload, true, now())
+                            (:event_type, :event_id, :payload, 1, now())
                         ON CONFLICT DO NOTHING
                     """),
                     {
