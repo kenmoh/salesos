@@ -131,16 +131,6 @@ def _shell(title: str, body: str) -> str:
   .copy:active {{ transform: scale(.92); background: #f0eafc; }}
   .copy svg {{ width: 19px; height: 19px; }}
   .copy.done {{ border-color: #b5e6cf; background: #eafaf1; color: #059669; }}
-  .primary {{
-    width: 100%; margin-top: 18px; padding: 16px;
-    border: 0; border-radius: 999px; background: #5e33cb; color: #fff;
-    font-size: 15.5px; font-weight: 750; letter-spacing: .2px;
-    display: flex; align-items: center; justify-content: center; gap: 8px;
-    cursor: pointer; box-shadow: 0 10px 22px rgba(94, 51, 203, .28);
-    transition: transform .12s ease, background .12s ease;
-  }}
-  .primary:active {{ transform: scale(.985); }}
-  .primary.done {{ background: #059669; box-shadow: 0 10px 22px rgba(5, 150, 105, .25); }}
   .hint {{ font-size: 12.5px; line-height: 1.5; color: #77728a; text-align: center; margin: 16px 6px 0; }}
   .foot {{ text-align: center; font-size: 11.5px; color: #a19dae; margin-top: 20px; letter-spacing: .2px; }}
   .state {{ text-align: center; padding: 8px 4px 4px; }}
@@ -193,16 +183,6 @@ _COPY_JS = """
   document.querySelectorAll("[data-copy]").forEach(function (btn) {
     btn.addEventListener("click", function () { copy(btn.getAttribute("data-copy"), btn); });
   });
-  var primary = document.getElementById("copy-account");
-  if (primary) {
-    primary.addEventListener("click", function () {
-      var label = primary.querySelector(".label");
-      copy(primary.getAttribute("data-account"), primary);
-      if (primary.classList.contains("done")) return;
-      label.textContent = "Copied";
-      setTimeout(function () { label.textContent = "Copy account number"; }, 1600);
-    });
-  }
 })();
 </script>
 """
@@ -263,10 +243,6 @@ def render_transfer_page(payload: dict) -> str:
     <p class="amount-note">Transfer this exact amount to the account below.</p>
     <hr class="divider">
     {''.join(rows)}
-    <button class="primary" type="button" id="copy-account" data-account="{escape(account_number)}">
-      {_ICON_COPY}
-      <span class="label">Copy account number</span>
-    </button>
     <p class="hint">Your payment is confirmed automatically &mdash; no need to show
     the cashier a receipt. You can close this page after the transfer.</p>
   </div>

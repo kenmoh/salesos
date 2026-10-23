@@ -73,7 +73,7 @@ class TestRender:
         assert 'data-copy="1234567890"' in html
         assert 'data-copy="SF-TRA-ABCDEF123456"' in html
         assert "₦12,500" in html
-        assert 'id="copy-account"' in html
+        assert 'id="copy-account"' not in html
 
     def test_amount_with_kobo(self):
         html = render_transfer_page({**PAYLOAD, "amount": 12500.5})
