@@ -11,11 +11,12 @@ The catalog system provides:
 - QR code generation for products
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Integer,
@@ -88,6 +89,8 @@ class Product(StoreFlowBase):
     reorder_point: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     track_inventory: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    #: Optional best-before date; inventory screens flag rows past it.
+    expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     extra_metadata: Mapped[dict | None] = mapped_column(
         "metadata", JSON, nullable=True, default=dict
     )

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -142,6 +142,7 @@ class StoreProductListItem(_Base):
     status: str = "active"
     category: str | None = None
     qr_url: str | None = None
+    expiry_date: date | None = None
     #: The taxes this product carries -- name, rate, account -- so a cart can
     #: show what it will be charged before the customer pays for it.
     taxes: list[dict] = []
@@ -155,6 +156,7 @@ class StoreProductUpdated(_Base):
     selling_price: float = 0
     cost_price: float = 0
     status: str = "active"
+    expiry_date: date | None = None
 
 
 # ── Stock ─────────────────────────────────────────────────────────────────────
@@ -214,6 +216,7 @@ class StoreProductDetail(_Base):
     image_url: str | None = None
     qr_url: str | None = None
     category: str | None = None
+    expiry_date: date | None = None
     taxes: list[dict] = []
     history: list[StockMovementItem] = []
 

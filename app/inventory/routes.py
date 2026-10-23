@@ -178,6 +178,7 @@ async def create_product_for_store(store_id: str, payload: ProductCreateForStore
             image_url=payload.image_url,
             qty=payload.qty,
             created_by=ctx.user.user_id,
+            expiry_date=payload.expiry_date,
         )
         return ok(result)
     except ValueError as e:

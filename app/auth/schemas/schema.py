@@ -72,6 +72,7 @@ class ProductCreateForStore(Base):
     reorder_point: int = 0
     image_url: str | None = None
     qty: float = Field(default=0, ge=0)
+    expiry_date: date | None = None
 
 
 class StoreProductUpdate(Base):
@@ -83,6 +84,7 @@ class StoreProductUpdate(Base):
     reorder_point: int | None = None
     image_url: str | None = None
     status: str | None = None
+    expiry_date: date | None = None
 
 
 class StoreSyncResult(Base):
