@@ -80,6 +80,7 @@ class StoreProductUpdate(Base):
     sku: str | None = None
     selling_price: Decimal | None = None
     cost_price: Decimal | None = None
+    category_id: UUID | None = None
     tax_ids: list[UUID] | None = None
     reorder_point: int | None = None
     image_url: str | None = None

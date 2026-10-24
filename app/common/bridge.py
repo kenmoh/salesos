@@ -3136,12 +3136,13 @@ async def update_store_product(
         update_store_product as repo_update,
         get_store_with_tenant,
     )
-    from app.catalog.models import Product
+    from app.catalog.models import Category, Product
     from sqlalchemy import update as sa_update
 
     _unset = object()
     tax_ids = kwargs.pop("tax_ids", None)
-    # Expiry lives on the catalog row; store_products has no such column.
+    # Category and expiry live on the catalog row; store_products has neither.
+    category_id = kwargs.pop("category_id", _unset)
     expiry_date = kwargs.pop("expiry_date", _unset)
 
     # Catalog rows are what the product grid and detail screen read, so the
@@ -3158,6 +3159,21 @@ async def update_store_product(
         "status",
     }
     catalog_values = {k: v for k, v in kwargs.items() if k in catalog_fields}
+
+    if category_id is not _unset and category_id is not None:
+        # A category belongs to one store, so reject ids from another tenant or
+        # store before any write happens.
+        sdb_catalog = _get_sdb("catalog")
+        async with sdb_catalog.session() as session:
+            found = await session.execute(
+                select(Category.id).where(
+                    Category.id == UUID(str(category_id)),
+                    Category.tenant_id == UUID(tenant_id),
+                    Category.store_id == UUID(store_id),
+                )
+            )
+            if found.scalar_one_or_none() is None:
+                raise ValueError("unknown_category_id")
 
     if tax_ids is not None:
         # Validate before the first write: a rejected assignment must not
@@ -3188,8 +3204,15 @@ async def update_store_product(
         await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{store_id}*")
         await scope_bump(tenant_id, store_id, (CATALOG,))
 
-    if catalog_values or tax_ids is not None or expiry_date is not _unset:
+    if (
+        catalog_values
+        or category_id is not _unset
+        or tax_ids is not None
+        or expiry_date is not _unset
+    ):
         values = dict(catalog_values)
+        if category_id is not _unset:
+            values["category_id"] = UUID(str(category_id)) if category_id else None
         if tax_ids is not None:
             values["tax_ids"] = [str(UUID(str(t))) for t in tax_ids]
         if expiry_date is not _unset:
@@ -3281,7 +3304,7 @@ async def get_store_product(
             select(Product.id, Product.name, Product.sku, Product.selling_price,
                    Product.cost_price, Product.reorder_point, Product.image_url,
                    Product.status, Product.qr_url, Product.tax_ids,
-                   Product.expiry_date,
+                   Product.expiry_date, Product.category_id,
                    Category.name.label("category_name"))
             .outerjoin(Category, Product.category_id == Category.id)
             .where(Product.id == UUID(product_id))
@@ -3320,6 +3343,7 @@ async def get_store_product(
         "unit_cost": float(balance.unit_cost) if balance.unit_cost else None,
         "qr_url": qr_url,
         "category": category,
+        "category_id": str(row.category_id) if row.category_id else None,
         "expiry_date": row.expiry_date.isoformat() if row.expiry_date else None,
         "taxes": taxes,
         "history": history,

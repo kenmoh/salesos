@@ -76,6 +76,79 @@ class TestStoreProductEditReachesCatalog:
         assert params["selling_price"] == Decimal("1500")
         assert params["cost_price"] == Decimal("1000")
 
+    async def test_a_category_edit_updates_the_catalog_row(self):
+        from app.common import bridge
+        from app.stores import repository
+
+        category = uuid4()
+        validation_session = _session()
+        found = MagicMock()
+        found.scalar_one_or_none.return_value = category
+        validation_session.execute = AsyncMock(return_value=found)
+        inventory_session = _session()
+        catalog_session = _session()
+        sdb = MagicMock()
+        sdb.session.side_effect = [
+            validation_session,
+            inventory_session,
+            catalog_session,
+        ]
+
+        result = MagicMock()
+        result.id = uuid4()
+        result.selling_price = Decimal("10")
+        result.cost_price = Decimal("5")
+
+        with (
+            patch.object(bridge, "_get_sdb", return_value=sdb),
+            patch.object(bridge, "cache", MagicMock(delete_pattern=AsyncMock())),
+            patch.object(bridge, "scope_bump", AsyncMock()),
+            patch.object(
+                repository, "get_store_with_tenant", AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(
+                repository, "get_store_product", AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(
+                repository, "update_store_product", AsyncMock(return_value=result)
+            ),
+        ):
+            await bridge.update_store_product(
+                tenant_id=str(TENANT),
+                store_id=str(STORE),
+                product_id=str(PRODUCT),
+                category_id=str(category),
+            )
+
+        stmt = catalog_session.execute.call_args[0][0]
+        assert stmt.compile().params["category_id"] == category
+
+    async def test_an_unknown_category_is_rejected_before_writing(self):
+        from app.common import bridge
+        from app.stores import repository
+
+        validation_session = _session()
+        found = MagicMock()
+        found.scalar_one_or_none.return_value = None
+        validation_session.execute = AsyncMock(return_value=found)
+        sdb = MagicMock()
+        sdb.session.return_value = validation_session
+        update = AsyncMock()
+
+        with (
+            patch.object(bridge, "_get_sdb", return_value=sdb),
+            patch.object(repository, "update_store_product", update),
+        ):
+            with pytest.raises(ValueError, match="unknown_category_id"):
+                await bridge.update_store_product(
+                    tenant_id=str(TENANT),
+                    store_id=str(STORE),
+                    product_id=str(PRODUCT),
+                    category_id=str(uuid4()),
+                )
+
+        update.assert_not_awaited()
+
     async def test_an_edit_still_invalidates_the_product_grid(self):
         from app.common import bridge
         from app.stores import repository

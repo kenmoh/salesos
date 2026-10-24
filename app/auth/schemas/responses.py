@@ -216,6 +216,7 @@ class StoreProductDetail(_Base):
     image_url: str | None = None
     qr_url: str | None = None
     category: str | None = None
+    category_id: str | None = None
     expiry_date: date | None = None
     taxes: list[dict] = []
     history: list[StockMovementItem] = []
