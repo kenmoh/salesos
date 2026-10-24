@@ -3144,6 +3144,21 @@ async def update_store_product(
     # Expiry lives on the catalog row; store_products has no such column.
     expiry_date = kwargs.pop("expiry_date", _unset)
 
+    # Catalog rows are what the product grid and detail screen read, so the
+    # fields they display have to be written there too. Without this a name or
+    # price edit updated only store_products and the app kept showing the old
+    # product with no error to explain why.
+    catalog_fields = {
+        "name",
+        "sku",
+        "selling_price",
+        "cost_price",
+        "reorder_point",
+        "image_url",
+        "status",
+    }
+    catalog_values = {k: v for k, v in kwargs.items() if k in catalog_fields}
+
     if tax_ids is not None:
         # Validate before the first write: a rejected assignment must not
         # leave the store record updated and the catalog row untouched.
@@ -3173,8 +3188,8 @@ async def update_store_product(
         await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{store_id}*")
         await scope_bump(tenant_id, store_id, (CATALOG,))
 
-    if tax_ids is not None or expiry_date is not _unset:
-        values = {}
+    if catalog_values or tax_ids is not None or expiry_date is not _unset:
+        values = dict(catalog_values)
         if tax_ids is not None:
             values["tax_ids"] = [str(UUID(str(t))) for t in tax_ids]
         if expiry_date is not _unset:
@@ -5098,11 +5113,10 @@ async def create_category(
         await repo_create_category(session, category_model)
         await session.commit()
 
-    await scope_bump(store_id, "-", (CATALOG,))
+    await scope_bump(tenant_id, store_id, (CATALOG,))
     return result.model_dump(mode="json")
 
 
-@cached(prefix="categories:list", ttl=300, key_func=lambda store_id, **kw: store_id)
 async def list_categories(store_id: str) -> list[dict]:
     """List all product categories belonging to a store.
 
@@ -5164,7 +5178,9 @@ async def get_category(store_id: str, category_id: str) -> dict | None:
         }
 
 
-async def update_category(store_id: str, category_id: str, **kwargs) -> None:
+async def update_category(
+    store_id: str, category_id: str, tenant_id: str, **kwargs
+) -> None:
     """Update a category's fields in the catalog.
 
     Modifies the specified fields on a category record. Validates that
@@ -5174,6 +5190,8 @@ async def update_category(store_id: str, category_id: str, **kwargs) -> None:
     Args:
         store_id: Unique identifier of the store that owns the category.
         category_id: Unique identifier of the category to update.
+        tenant_id: Unique identifier of the tenant, used to age the cached
+            category list for this store.
         **kwargs: Arbitrary keyword arguments representing the fields to
             update (e.g. ``name``, ``description``, ``parent_id``).
 
@@ -5197,10 +5215,10 @@ async def update_category(store_id: str, category_id: str, **kwargs) -> None:
         if str(existing.store_id) != store_id:
             raise ValueError("category_not_found")
         await session.commit()
-        await scope_bump(store_id, "-", (CATALOG,))
+        await scope_bump(tenant_id, store_id, (CATALOG,))
 
 
-async def delete_category(store_id: str, category_id: str) -> None:
+async def delete_category(store_id: str, category_id: str, tenant_id: str) -> None:
     """Delete a product category from the catalog.
 
     Removes the category record after verifying that no products are
@@ -5209,6 +5227,8 @@ async def delete_category(store_id: str, category_id: str) -> None:
     Args:
         store_id: Unique identifier of the store that owns the category.
         category_id: Unique identifier of the category to delete.
+        tenant_id: Unique identifier of the tenant, used to age the cached
+            category list for this store.
 
     Raises:
         ValueError: If the category still has products assigned to it.
@@ -5221,7 +5241,10 @@ async def delete_category(store_id: str, category_id: str) -> None:
     async with sdb.session() as session:
         result = await session.execute(
             select(Product)
-            .where(Product.category_id == UUID(category_id), Product.store_id == UUID(store_id))
+            .where(
+                Product.category_id == UUID(category_id),
+                Product.tenant_id == UUID(tenant_id),
+            )
             .limit(1)
         )
         if result.scalar_one_or_none():
@@ -5229,7 +5252,7 @@ async def delete_category(store_id: str, category_id: str) -> None:
         await repo_delete_category(session, UUID(category_id))
         await session.commit()
 
-    await scope_bump(store_id, "-", (CATALOG,))
+    await scope_bump(tenant_id, store_id, (CATALOG,))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -106,6 +106,7 @@ async def get_category(store_id: str, category_id: str, ctx: TenantDep):
 async def update_category(store_id: str, category_id: str, payload: CategoryUpdate, ctx: TenantDep):
     try:
         await bridge.update_category(
+            tenant_id=ctx.user.business_id,
             store_id=store_id,
             category_id=category_id,
             **payload.model_dump(exclude_unset=True),
@@ -122,7 +123,11 @@ async def update_category(store_id: str, category_id: str, payload: CategoryUpda
 )
 async def delete_category(store_id: str, category_id: str, ctx: TenantDep):
     try:
-        await bridge.delete_category(store_id=store_id, category_id=category_id)
+        await bridge.delete_category(
+            tenant_id=ctx.user.business_id,
+            store_id=store_id,
+            category_id=category_id,
+        )
     except ValueError as e:
         if str(e) == "category_has_products":
             raise HTTPException(

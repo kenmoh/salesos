@@ -1,0 +1,192 @@
+"""Edits made from a store's product screen have to reach the rows that screen reads.
+
+The product grid and detail endpoint read catalog.products, while the store
+PATCH wrote store_products. The request succeeded and nothing changed on
+screen. Category writes had the mirror problem on the read side: their cache
+bump used the store id as the tenant, so the category list stayed stale until
+the five-minute TTL ran out.
+"""
+
+from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
+
+import pytest
+
+TENANT = uuid4()
+STORE = uuid4()
+PRODUCT = uuid4()
+
+
+def _session() -> MagicMock:
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock()
+    session.commit = AsyncMock()
+    return session
+
+
+class TestStoreProductEditReachesCatalog:
+    async def test_a_name_and_price_edit_update_the_catalog_row(self):
+        from app.common import bridge
+        from app.stores import repository
+
+        inventory_session = _session()
+        catalog_session = _session()
+        sdb = MagicMock()
+        sdb.session.side_effect = [inventory_session, catalog_session]
+
+        result = MagicMock()
+        result.id = uuid4()
+        result.store_id = STORE
+        result.product_id = PRODUCT
+        result.name = "Renamed Rice"
+        result.sku = None
+        result.selling_price = Decimal("1500")
+        result.cost_price = Decimal("1000")
+        result.status = "active"
+
+        with (
+            patch.object(bridge, "_get_sdb", return_value=sdb),
+            patch.object(bridge, "cache", MagicMock(delete_pattern=AsyncMock())),
+            patch.object(bridge, "scope_bump", AsyncMock()),
+            patch.object(
+                repository, "get_store_with_tenant", AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(
+                repository, "get_store_product", AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(
+                repository, "update_store_product", AsyncMock(return_value=result)
+            ),
+        ):
+            await bridge.update_store_product(
+                tenant_id=str(TENANT),
+                store_id=str(STORE),
+                product_id=str(PRODUCT),
+                name="Renamed Rice",
+                selling_price=Decimal("1500"),
+                cost_price=Decimal("1000"),
+            )
+
+        stmt = catalog_session.execute.call_args[0][0]
+        params = stmt.compile().params
+        assert params["name"] == "Renamed Rice"
+        assert params["selling_price"] == Decimal("1500")
+        assert params["cost_price"] == Decimal("1000")
+
+    async def test_an_edit_still_invalidates_the_product_grid(self):
+        from app.common import bridge
+        from app.stores import repository
+
+        sdb = MagicMock()
+        sdb.session.side_effect = [_session(), _session()]
+        result = MagicMock()
+        result.id = uuid4()
+        result.selling_price = Decimal("10")
+        result.cost_price = Decimal("5")
+
+        bump = AsyncMock()
+        with (
+            patch.object(bridge, "_get_sdb", return_value=sdb),
+            patch.object(bridge, "cache", MagicMock(delete_pattern=AsyncMock())),
+            patch.object(bridge, "scope_bump", bump),
+            patch.object(
+                repository, "get_store_with_tenant", AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(
+                repository, "get_store_product", AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(
+                repository, "update_store_product", AsyncMock(return_value=result)
+            ),
+        ):
+            await bridge.update_store_product(
+                tenant_id=str(TENANT),
+                store_id=str(STORE),
+                product_id=str(PRODUCT),
+                name="Only a name",
+            )
+
+        bump.assert_awaited_once_with(str(TENANT), str(STORE), (bridge.CATALOG,))
+
+
+class TestCategoryWritesAgeTheRightCache:
+    async def test_creating_a_category_bumps_this_tenants_store_catalog(self):
+        from app.common import bridge
+        from app.catalog import repository
+
+        sdb = MagicMock()
+        sdb.session.return_value = _session()
+        bump = AsyncMock()
+
+        with (
+            patch.object(bridge, "_get_sdb", return_value=sdb),
+            patch.object(bridge, "scope_bump", bump),
+            patch.object(
+                repository, "get_category_by_name", AsyncMock(return_value=None)
+            ),
+            patch.object(repository, "create_category", AsyncMock()),
+        ):
+            await bridge.create_category(
+                tenant_id=str(TENANT),
+                store_id=str(STORE),
+                name="Drinks",
+            )
+
+        bump.assert_awaited_once_with(str(TENANT), str(STORE), (bridge.CATALOG,))
+
+    async def test_updating_a_category_bumps_this_tenants_store_catalog(self):
+        from app.common import bridge
+        from app.catalog import repository
+
+        sdb = MagicMock()
+        sdb.session.return_value = _session()
+        existing = MagicMock()
+        existing.store_id = STORE
+        bump = AsyncMock()
+
+        with (
+            patch.object(bridge, "_get_sdb", return_value=sdb),
+            patch.object(bridge, "scope_bump", bump),
+            patch.object(
+                repository, "get_category_by_name", AsyncMock(return_value=None)
+            ),
+            patch.object(
+                repository, "update_category", AsyncMock(return_value=existing)
+            ),
+        ):
+            await bridge.update_category(
+                tenant_id=str(TENANT),
+                store_id=str(STORE),
+                category_id=str(uuid4()),
+                name="Drinks",
+            )
+
+        bump.assert_awaited_once_with(str(TENANT), str(STORE), (bridge.CATALOG,))
+
+    async def test_deleting_a_category_bumps_this_tenants_store_catalog(self):
+        from app.common import bridge
+        from app.catalog import repository
+
+        session = _session()
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = None
+        session.execute = AsyncMock(return_value=result)
+        sdb = MagicMock()
+        sdb.session.return_value = session
+        bump = AsyncMock()
+
+        with (
+            patch.object(bridge, "_get_sdb", return_value=sdb),
+            patch.object(bridge, "scope_bump", bump),
+            patch.object(repository, "delete_category", AsyncMock()),
+        ):
+            await bridge.delete_category(
+                tenant_id=str(TENANT),
+                store_id=str(STORE),
+                category_id=str(uuid4()),
+            )
+
+        bump.assert_awaited_once_with(str(TENANT), str(STORE), (bridge.CATALOG,))
