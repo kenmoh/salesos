@@ -2614,6 +2614,7 @@ async def get_store_products(
                 Product.qr_url,
                 Product.tax_ids,
                 Product.expiry_date,
+                Product.expiry_warning_days,
                 Category.name.label("category_name"),
             )
             .join(Product, StockBalance.product_id == Product.id)
@@ -2663,6 +2664,7 @@ async def get_store_products(
                     "expiry_date": row.expiry_date.isoformat()
                     if row.expiry_date
                     else None,
+                    "expiry_warning_days": row.expiry_warning_days,
                     "qty": float(row.StockBalance.qty),
                     "available": float(row.StockBalance.qty) - float(row.StockBalance.reserved_qty),
                     "reserved_qty": float(row.StockBalance.reserved_qty),
@@ -2754,6 +2756,7 @@ async def create_product_for_store(
     qty: float = 0,
     created_by: str | None = None,
     expiry_date=None,
+    expiry_warning_days: int | None = None,
 ) -> dict:
     """Create a new product in the catalog and add it to a store.
 
@@ -2796,6 +2799,7 @@ async def create_product_for_store(
             reorder_point=reorder_point,
             image_url=image_url,
             expiry_date=expiry_date,
+            expiry_warning_days=expiry_warning_days,
         )
         session.add(product)
         await session.flush()
@@ -3144,6 +3148,7 @@ async def update_store_product(
     # Category and expiry live on the catalog row; store_products has neither.
     category_id = kwargs.pop("category_id", _unset)
     expiry_date = kwargs.pop("expiry_date", _unset)
+    expiry_warning_days = kwargs.pop("expiry_warning_days", _unset)
 
     # Catalog rows are what the product grid and detail screen read, so the
     # fields they display have to be written there too. Without this a name or
@@ -3209,6 +3214,7 @@ async def update_store_product(
         or category_id is not _unset
         or tax_ids is not None
         or expiry_date is not _unset
+        or expiry_warning_days is not _unset
     ):
         values = dict(catalog_values)
         if category_id is not _unset:
@@ -3217,6 +3223,8 @@ async def update_store_product(
             values["tax_ids"] = [str(UUID(str(t))) for t in tax_ids]
         if expiry_date is not _unset:
             values["expiry_date"] = expiry_date
+        if expiry_warning_days is not _unset:
+            values["expiry_warning_days"] = expiry_warning_days
         sdb_catalog = _get_sdb("catalog")
         async with sdb_catalog.session() as session:
             await session.execute(
@@ -3304,7 +3312,8 @@ async def get_store_product(
             select(Product.id, Product.name, Product.sku, Product.selling_price,
                    Product.cost_price, Product.reorder_point, Product.image_url,
                    Product.status, Product.qr_url, Product.tax_ids,
-                   Product.expiry_date, Product.category_id,
+                   Product.expiry_date, Product.expiry_warning_days,
+                   Product.category_id,
                    Category.name.label("category_name"))
             .outerjoin(Category, Product.category_id == Category.id)
             .where(Product.id == UUID(product_id))
@@ -3345,6 +3354,7 @@ async def get_store_product(
         "category": category,
         "category_id": str(row.category_id) if row.category_id else None,
         "expiry_date": row.expiry_date.isoformat() if row.expiry_date else None,
+        "expiry_warning_days": row.expiry_warning_days,
         "taxes": taxes,
         "history": history,
     }

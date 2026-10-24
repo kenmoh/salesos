@@ -123,6 +123,44 @@ class TestStoreProductEditReachesCatalog:
         stmt = catalog_session.execute.call_args[0][0]
         assert stmt.compile().params["category_id"] == category
 
+    async def test_an_expiry_warning_window_reaches_the_catalog_row(self):
+        from app.common import bridge
+        from app.stores import repository
+
+        inventory_session = _session()
+        catalog_session = _session()
+        sdb = MagicMock()
+        sdb.session.side_effect = [inventory_session, catalog_session]
+
+        result = MagicMock()
+        result.id = uuid4()
+        result.selling_price = Decimal("10")
+        result.cost_price = Decimal("5")
+
+        with (
+            patch.object(bridge, "_get_sdb", return_value=sdb),
+            patch.object(bridge, "cache", MagicMock(delete_pattern=AsyncMock())),
+            patch.object(bridge, "scope_bump", AsyncMock()),
+            patch.object(
+                repository, "get_store_with_tenant", AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(
+                repository, "get_store_product", AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(
+                repository, "update_store_product", AsyncMock(return_value=result)
+            ),
+        ):
+            await bridge.update_store_product(
+                tenant_id=str(TENANT),
+                store_id=str(STORE),
+                product_id=str(PRODUCT),
+                expiry_warning_days=7,
+            )
+
+        stmt = catalog_session.execute.call_args[0][0]
+        assert stmt.compile().params["expiry_warning_days"] == 7
+
     async def test_an_unknown_category_is_rejected_before_writing(self):
         from app.common import bridge
         from app.stores import repository

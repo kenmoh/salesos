@@ -73,6 +73,7 @@ class ProductCreateForStore(Base):
     image_url: str | None = None
     qty: float = Field(default=0, ge=0)
     expiry_date: date | None = None
+    expiry_warning_days: int | None = Field(default=None, ge=0, le=3650)
 
 
 class StoreProductUpdate(Base):
@@ -86,6 +87,7 @@ class StoreProductUpdate(Base):
     image_url: str | None = None
     status: str | None = None
     expiry_date: date | None = None
+    expiry_warning_days: int | None = Field(default=None, ge=0, le=3650)
 
 
 class StoreSyncResult(Base):

@@ -669,12 +669,21 @@ class TestInventory:
     async def test_create_product_for_store(self, client):
         resp = await client.post(
             "/inventory/00000000-0000-0000-0000-000000000001/products/create",
-            json={"name": "Widget", "selling_price": 500, "qty": 20},
+            json={
+                "name": "Widget",
+                "selling_price": 500,
+                "qty": 20,
+                "expiry_warning_days": 7,
+            },
         )
         assert resp.status_code == 201
         body = resp.json()
         assert body["data"]["name"] == "Widget"
         assert body["data"]["selling_price"] == 500
+        assert (
+            bridge.create_product_for_store.await_args.kwargs["expiry_warning_days"]
+            == 7
+        )
 
     async def test_get_store_product(self, client):
         resp = await client.get("/inventory/00000000-0000-0000-0000-000000000001/products/pid")
@@ -692,11 +701,19 @@ class TestInventory:
     async def test_update_store_product(self, client):
         resp = await client.patch(
             "/inventory/00000000-0000-0000-0000-000000000001/products/pid",
-            json={"selling_price": 750, "name": "Updated Widget"},
+            json={
+                "selling_price": 750,
+                "name": "Updated Widget",
+                "expiry_warning_days": 14,
+            },
         )
         assert resp.status_code == 200
         body = resp.json()
         assert body["data"]["product_id"] == "pid"
+        assert (
+            bridge.update_store_product.await_args.kwargs["expiry_warning_days"]
+            == 14
+        )
 
     async def test_update_store_product_not_found(self, client):
         resp = await client.patch(

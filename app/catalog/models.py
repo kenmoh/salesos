@@ -91,6 +91,9 @@ class Product(StoreFlowBase):
     image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     #: Optional best-before date; inventory screens flag rows past it.
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: Optional days before expiry to start flagging it. NULL means no
+    #: near-expiry warning; the mobile card shows expired rows regardless.
+    expiry_warning_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     extra_metadata: Mapped[dict | None] = mapped_column(
         "metadata", JSON, nullable=True, default=dict
     )
