@@ -1,4 +1,5 @@
 import json
+import time
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -11,6 +12,7 @@ from app.core.responses import DataResponse, DataMessageResponse, ok
 from app.auth.schemas.auth import (
     ChangePasswordRequest,
     CreateEmployeeRequest,
+    DeleteAccountRequest,
     EmployeeStatusRequest,
     LoginRequest,
     LogoutRequest,
@@ -124,13 +126,13 @@ async def social_sign_in(
     _=Depends(auth_rate_limit(20, 900)),
 ):
     try:
-        tokens, user = await auth_service.login_with_social(
+        tokens, user, is_new_user = await auth_service.login_with_social(
             session=session,
             id_token=payload.id_token,
             provider=payload.provider,
             req=request,
         )
-        return ok({"tokens": tokens, "user": user, "requires_totp": False})
+        return ok({"tokens": tokens, "user": user, "requires_totp": False, "is_new_user": is_new_user})
     except auth_service.AuthError as exc:
         raise HTTPException(status_code=401, detail=exc.message)
 
@@ -279,6 +281,40 @@ async def change_password(
         req=request,
     )
     return ok(None, message="Password changed")
+
+
+@router.delete(
+    "/account",
+    response_model=DataMessageResponse[None],
+    dependencies=[Depends(auth_rate_limit(3, 3600))],
+)
+async def delete_account(
+    request: Request,
+    ctx: DbTenantDep,
+    payload: DeleteAccountRequest | None = None,
+):
+    """Permanently delete the owner's business and every trace of it.
+
+    Owner-only; password confirmation is required when the owner signed up
+    with an email account. Members' refresh sessions and the caller's access
+    token are revoked as part of the flow.
+    """
+    try:
+        await auth_service.delete_own_account(
+            session=ctx.session,
+            user_id=ctx.user.user_id,
+            business_id=ctx.user.business_id,
+            role_names=ctx.user.roles,
+            password=payload.password if payload else "",
+            req=request,
+            jti=ctx.user.jti,
+            token_ttl=max(int(ctx.user.exp - time.time()), 0),
+        )
+    except auth_service.AuthError as exc:
+        if exc.code == "password_required":
+            raise HTTPException(status_code=428, detail=exc.message)
+        raise HTTPException(status_code=400, detail=exc.message)
+    return ok(None, message="Your account has been deleted")
 
 
 @router.get(

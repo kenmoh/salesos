@@ -50,6 +50,10 @@ class LogoutRequest(Base):
     all_devices: bool = False
 
 
+class DeleteAccountRequest(Base):
+    password: str = ""
+
+
 class ChangePasswordRequest(Base):
     current_password: str
     new_password: str

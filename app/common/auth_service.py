@@ -556,11 +556,26 @@ async def login_with_social(*, session, id_token: str, provider: str, req):
             from google.oauth2 import id_token as google_id_token
             from google.auth.transport import requests as google_requests
 
+            # Native clients (Android/iOS) sign in with their own client ID,
+            # so the token audience is matched against the configured set.
+            allowed = [
+                client_id
+                for client_id in (
+                    settings.google_client_id,
+                    settings.google_android_client_id,
+                    settings.google_ios_client_id,
+                )
+                if client_id
+            ]
+
             payload = google_id_token.verify_oauth2_token(
                 id_token,
                 google_requests.Request(),
-                settings.google_client_id,
             )
+            if payload.get("aud") not in allowed:
+                raise AuthError("Invalid Google ID token audience", "invalid_token")
+        except AuthError:
+            raise
         except Exception:
             raise AuthError("Invalid Google ID token", "invalid_token")
 
@@ -616,6 +631,8 @@ async def login_with_social(*, session, id_token: str, provider: str, req):
     else:
         raise AuthError(f"Unsupported provider: {provider}", "unsupported_provider")
 
+    is_new_user = False
+
     if not email:
         raise AuthError("Email not available from social provider", "no_email")
 
@@ -642,6 +659,8 @@ async def login_with_social(*, session, id_token: str, provider: str, req):
                 user.avatar_url = avatar_url
         else:
             # Create new user + tenant
+            is_new_user = True
+
             from app.core.security import hash_password as hp
 
             import secrets as _secrets
@@ -757,4 +776,134 @@ async def login_with_social(*, session, id_token: str, provider: str, req):
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
         "avatar_url": user.avatar_url,
         "store_id": str(user.store_id) if user.store_id else None,
-    }
+    }, is_new_user
+
+
+DELETE_ACL_ROLE = "owner"
+
+
+async def delete_own_account(
+    *,
+    session,
+    user_id: str,
+    business_id: str,
+    role_names: list[str],
+    password: str,
+    req,
+    jti: str | None = None,
+    token_ttl: int | None = None,
+):
+    """Permanently delete the tenant owner's business and all its data.
+
+    Only the owner may call this. When the owner registered with an email
+    account, the password must be supplied as confirmation (social-only
+    accounts confirm by being authenticated).
+
+    The sweep walks every mapped table that owns a ``tenant_id`` column,
+    deleting tenant-scoped rows child-first (so foreign keys are satisfied
+    as we go), then removes the tenant row itself. Refresh sessions and the
+    caller's access token are revoked afterwards.
+    """
+    from app.common.db.base import StoreFlowBase
+    from app.common.db.session import set_rls_context
+    from app.core.security import verify_password
+    from app.identity.models import User as IdUser
+    from app.tenancy.models import Tenant
+
+    # Register every model module with the shared metadata before sweeping:
+    # sorted_tables only knows tables whose owning module has been imported,
+    # and the auth service does not import all of them itself.
+    import importlib
+
+    for _module in (
+        "app.tenancy.models",
+        "app.identity.models",
+        "app.stores.models",
+        "app.catalog.models",
+        "app.cart.models",
+        "app.sales.models",
+        "app.payments.models",
+        "app.customers.models",
+        "app.inventory.models",
+        "app.documents.models",
+        "app.taxes.models",
+        "app.accounting.models",
+        "app.ai.models",
+        "app.reporting.models",
+        "app.notifications.models",
+        "app.platform.models",
+    ):
+        importlib.import_module(_module)
+
+    if DELETE_ACL_ROLE not in role_names:
+        raise AuthError(
+            "Only the business owner can delete the account",
+            "not_owner",
+        )
+
+    result = await session.execute(select(IdUser).where(IdUser.id == UUID(user_id)))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise AuthError("Account not found", "not_found")
+
+    if user.password_hash:
+        if not password:
+            raise AuthError(
+                "Confirm your password to delete the account", "password_required"
+            )
+        if not verify_password(password, user.password_hash):
+            raise AuthError("Incorrect password", "invalid_password")
+
+    # Capture the tenant's user ids so their cached refresh sessions can be
+    # revoked after the rows are gone.
+    member_result = await session.execute(
+        select(IdUser.id).where(IdUser.tenant_id == UUID(business_id))
+    )
+    member_ids = [str(uid) for uid in member_result.scalars().all()]
+
+    await set_rls_context(session, user_id, business_id, DELETE_ACL_ROLE)
+
+    # Delete tenant-scoped rows child-first across every mapped table that
+    # carries tenant_id, then drop the tenant record itself.
+    tables = [
+        t
+        for t in reversed(StoreFlowBase.metadata.sorted_tables)
+        if any(c.name == "tenant_id" for c in t.columns)
+    ]
+    for table in tables:
+        await session.execute(
+            table.delete().where(table.c.tenant_id == UUID(business_id))
+        )
+
+    # Note: auth_audit_logs rows for this tenant are removed by the sweep
+    # above; the deletion event itself is written below and intentionally
+    # outlives the account so the action remains traceable.
+    tenant_result = await session.execute(
+        select(Tenant).where(Tenant.id == UUID(business_id))
+    )
+    tenant = tenant_result.scalar_one_or_none()
+    if tenant:
+        await session.delete(tenant)
+
+    await session.flush()
+
+    # Write the deletion audit entry after the sweep so it survives.
+    await log_auth_event(
+        session,
+        AuthAuditLog(
+            user_id=str(user.id),
+            tenant_id=business_id,
+            action="account_deleted",
+            ip_address=_ip(req),
+            user_agent=req.headers.get("user-agent", ""),
+            details=json.dumps({"email": user.email}),
+        ),
+    )
+
+    # Revoke refresh sessions for every member and blacklist the caller's
+    # access token. Cache revocation is safe to run before the transaction
+    # commits — if the DB write fails the users simply re-register sessions.
+    for uid in member_ids:
+        await revoke_all_sessions(uid)
+    if jti:
+        await blacklist_token(jti, token_ttl or 0)
