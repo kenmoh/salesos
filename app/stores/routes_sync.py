@@ -90,6 +90,7 @@ async def business_settings(ctx: DbTenantDep):
         name=tenant.business_name,
         phone=tenant.owner_phone,
         address=settings.get("address"),
+        country=settings.get("country"),
         tax_rate=settings.get("tax_rate"),
         currency=settings.get("currency"),
         logo_url=settings.get("logo_url"),
@@ -122,6 +123,8 @@ async def update_business_settings(payload: BusinessUpdate, ctx: DbTenantDep):
     settings = json.loads(tenant.settings) if isinstance(tenant.settings, str) else (tenant.settings or {})
     if payload.address is not None:
         settings["address"] = payload.address
+    if payload.country is not None:
+        settings["country"] = payload.country
     if payload.tax_rate is not None:
         settings["tax_rate"] = float(payload.tax_rate)
     if payload.currency is not None:
@@ -141,6 +144,7 @@ async def update_business_settings(payload: BusinessUpdate, ctx: DbTenantDep):
         name=tenant.business_name,
         phone=tenant.owner_phone,
         address=settings.get("address"),
+        country=settings.get("country"),
         tax_rate=settings.get("tax_rate"),
         currency=settings.get("currency"),
         logo_url=settings.get("logo_url"),
@@ -192,15 +196,17 @@ async def upload_business_logo(
     tenant.settings = json.dumps(settings)
     await ctx.session.flush()
 
-    return ok(BusinessSettings(
+    settings = BusinessSettings(
         name=tenant.business_name,
         phone=tenant.owner_phone,
         address=settings.get("address"),
+        country=settings.get("country"),
         tax_rate=settings.get("tax_rate"),
         currency=settings.get("currency"),
         logo_url=logo_url,
         settings=settings,
-    ))
+    )
+    return ok(settings)
 
 
 @sync_router.get(
