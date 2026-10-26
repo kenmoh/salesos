@@ -161,6 +161,43 @@ class TestStoreProductEditReachesCatalog:
         stmt = catalog_session.execute.call_args[0][0]
         assert stmt.compile().params["expiry_warning_days"] == 7
 
+    async def test_a_sale_block_reaches_the_catalog_row(self):
+        from app.common import bridge
+        from app.stores import repository
+
+        inventory_session = _session()
+        catalog_session = _session()
+        sdb = MagicMock()
+        sdb.session.side_effect = [inventory_session, catalog_session]
+
+        result = MagicMock()
+        result.selling_price = Decimal("10")
+        result.cost_price = Decimal("5")
+
+        with (
+            patch.object(bridge, "_get_sdb", return_value=sdb),
+            patch.object(bridge, "cache", MagicMock(delete_pattern=AsyncMock())),
+            patch.object(bridge, "scope_bump", AsyncMock()),
+            patch.object(
+                repository, "get_store_with_tenant", AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(
+                repository, "get_store_product", AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(
+                repository, "update_store_product", AsyncMock(return_value=result)
+            ),
+        ):
+            await bridge.update_store_product(
+                tenant_id=str(TENANT),
+                store_id=str(STORE),
+                product_id=str(PRODUCT),
+                block_sale_after_expiry=True,
+            )
+
+        stmt = catalog_session.execute.call_args[0][0]
+        assert stmt.compile().params["block_sale_after_expiry"] is True
+
     async def test_an_unknown_category_is_rejected_before_writing(self):
         from app.common import bridge
         from app.stores import repository
@@ -221,6 +258,45 @@ class TestStoreProductEditReachesCatalog:
             )
 
         bump.assert_awaited_once_with(str(TENANT), str(STORE), (bridge.CATALOG,))
+
+
+class TestExpiredStockCannotBeSold:
+    async def test_adding_a_blocked_expired_product_to_a_cart_is_refused(self):
+        from datetime import date
+
+        from app.common import bridge
+
+        cart = MagicMock(status="active", tenant_id=TENANT, store_id=None)
+        product = MagicMock(
+            tenant_id=TENANT,
+            block_sale_after_expiry=True,
+            expiry_date=date(2020, 1, 1),
+        )
+
+        cart_session = _session()
+        catalog_session = _session()
+        catalog_result = MagicMock()
+        catalog_result.scalar_one_or_none.return_value = product
+        catalog_session.execute.return_value = catalog_result
+
+        sdb = MagicMock()
+        sdb.session.side_effect = [cart_session, catalog_session]
+
+        with (
+            patch.object(bridge, "_get_sdb", return_value=sdb),
+            patch(
+                "app.cart.repository.get_cart_by_id",
+                AsyncMock(return_value=cart),
+            ),
+        ):
+            with pytest.raises(ValueError, match="product_expired"):
+                await bridge.add_to_cart(
+                    tenant_id=str(TENANT),
+                    cart_id=str(uuid4()),
+                    product_id=str(PRODUCT),
+                )
+
+        cart_session.commit.assert_not_awaited()
 
 
 class TestCategoryWritesAgeTheRightCache:

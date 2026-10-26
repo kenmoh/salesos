@@ -140,15 +140,25 @@ async def void_item(item_id: str, body: VoidItemRequest, ctx: TenantDep, request
     dependencies=[Depends(require_permission("cart:create"))],
 )
 async def add_item(cart_id: str, body: AddItemRequest, ctx: TenantDep):
-    return ok(
-        await bridge.add_to_cart(
-            tenant_id=ctx.user.business_id,
-            cart_id=cart_id,
-            product_id=body.product_id,
-            qty=body.qty,
-            actor_id=ctx.user.user_id,
+    try:
+        return ok(
+            await bridge.add_to_cart(
+                tenant_id=ctx.user.business_id,
+                cart_id=cart_id,
+                product_id=body.product_id,
+                qty=body.qty,
+                actor_id=ctx.user.user_id,
+            )
         )
-    )
+    except ValueError as e:
+        if str(e) == "product_expired":
+            raise HTTPException(
+                status_code=400,
+                detail="This product has expired and cannot be sold.",
+            )
+        if str(e) == "product_not_found":
+            raise HTTPException(status_code=404, detail="Product not found")
+        raise
 
 
 @router.get(
@@ -213,6 +223,12 @@ async def checkout_cart(cart_id: str, body: CheckoutRequest, ctx: TenantDep):
             raise HTTPException(
                 status_code=402,
                 detail="Fee balance exceeded. Please clear outstanding fees before completing this sale.",
+            )
+        if err.startswith("product_expired:"):
+            names = err.split(":", 1)[1]
+            raise HTTPException(
+                status_code=400,
+                detail=f"{names} has expired and cannot be sold.",
             )
         return JSONResponse(
             status_code=400,

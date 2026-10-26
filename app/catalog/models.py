@@ -94,6 +94,11 @@ class Product(StoreFlowBase):
     #: Optional days before expiry to start flagging it. NULL means no
     #: near-expiry warning; the mobile card shows expired rows regardless.
     expiry_warning_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: When true, POS/sale paths refuse this product once its expiry day has
+    #: passed. It never blocks a product that has no expiry date.
+    block_sale_after_expiry: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     extra_metadata: Mapped[dict | None] = mapped_column(
         "metadata", JSON, nullable=True, default=dict
     )

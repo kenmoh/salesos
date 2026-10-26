@@ -144,6 +144,7 @@ class StoreProductListItem(_Base):
     qr_url: str | None = None
     expiry_date: date | None = None
     expiry_warning_days: int | None = None
+    block_sale_after_expiry: bool = False
     #: The taxes this product carries -- name, rate, account -- so a cart can
     #: show what it will be charged before the customer pays for it.
     taxes: list[dict] = []
@@ -220,6 +221,7 @@ class StoreProductDetail(_Base):
     category_id: str | None = None
     expiry_date: date | None = None
     expiry_warning_days: int | None = None
+    block_sale_after_expiry: bool = False
     taxes: list[dict] = []
     history: list[StockMovementItem] = []
 
@@ -728,6 +730,7 @@ class BusinessSettings(_Base):
     name: str | None = None
     phone: str | None = None
     address: str | None = None
+    country: str | None = None
     tax_rate: float | None = None
     currency: str | None = None
     logo_url: str | None = None

@@ -13,6 +13,7 @@ class BusinessUpdate(Base):
     name: str | None = None
     phone: str | None = None
     address: str | None = None
+    country: str | None = None
     tax_rate: Decimal | None = None
     currency: str | None = None
     logo_url: str | None = None
@@ -74,6 +75,7 @@ class ProductCreateForStore(Base):
     qty: float = Field(default=0, ge=0)
     expiry_date: date | None = None
     expiry_warning_days: int | None = Field(default=None, ge=0, le=3650)
+    block_sale_after_expiry: bool = False
 
 
 class StoreProductUpdate(Base):
@@ -88,6 +90,7 @@ class StoreProductUpdate(Base):
     status: str | None = None
     expiry_date: date | None = None
     expiry_warning_days: int | None = Field(default=None, ge=0, le=3650)
+    block_sale_after_expiry: bool | None = None
 
 
 class StoreSyncResult(Base):

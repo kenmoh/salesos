@@ -541,6 +541,23 @@ class TestCart:
         assert resp.status_code == 200
         assert resp.json() == {"message": "ok", "data": {"success": True}}
 
+    async def test_adding_an_expired_blocked_product_is_rejected(self, client):
+        from app.common import bridge
+
+        with patch.object(
+            bridge,
+            "add_to_cart",
+            AsyncMock(side_effect=ValueError("product_expired")),
+        ):
+            resp = await client.post(
+                f"{self.ROUTE}/cart-1/items",
+                json={"product_id": str(uuid4()), "qty": 1},
+            )
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == (
+            "This product has expired and cannot be sold."
+        )
+
     async def test_get_cart(self, client):
         resp = await client.get(f"{self.ROUTE}/x")
         assert resp.status_code == 200
@@ -550,6 +567,20 @@ class TestCart:
         resp = await client.post(f"{self.ROUTE}/x/checkout", json={})
         assert resp.status_code == 200
         assert "data" in resp.json()
+
+    async def test_checkout_with_expired_blocked_stock_is_rejected(self, client):
+        from app.common import bridge
+
+        with patch.object(
+            bridge,
+            "checkout_cart",
+            AsyncMock(side_effect=ValueError("product_expired:Milk")),
+        ):
+            resp = await client.post(f"{self.ROUTE}/x/checkout", json={})
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == (
+            "Milk has expired and cannot be sold."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -674,6 +705,7 @@ class TestInventory:
                 "selling_price": 500,
                 "qty": 20,
                 "expiry_warning_days": 7,
+                "block_sale_after_expiry": True,
             },
         )
         assert resp.status_code == 201
@@ -683,6 +715,12 @@ class TestInventory:
         assert (
             bridge.create_product_for_store.await_args.kwargs["expiry_warning_days"]
             == 7
+        )
+        assert (
+            bridge.create_product_for_store.await_args.kwargs[
+                "block_sale_after_expiry"
+            ]
+            is True
         )
 
     async def test_get_store_product(self, client):
@@ -705,6 +743,7 @@ class TestInventory:
                 "selling_price": 750,
                 "name": "Updated Widget",
                 "expiry_warning_days": 14,
+                "block_sale_after_expiry": True,
             },
         )
         assert resp.status_code == 200
@@ -713,6 +752,12 @@ class TestInventory:
         assert (
             bridge.update_store_product.await_args.kwargs["expiry_warning_days"]
             == 14
+        )
+        assert (
+            bridge.update_store_product.await_args.kwargs[
+                "block_sale_after_expiry"
+            ]
+            is True
         )
 
     async def test_update_store_product_not_found(self, client):
