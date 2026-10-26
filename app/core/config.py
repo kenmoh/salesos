@@ -116,6 +116,8 @@ class ApiSettings(BaseSettings):
     )
 
     google_client_id: str = Field(default="", alias="GOOGLE_CLIENT_ID")
+    google_android_client_id: str = Field(default="", alias="GOOGLE_ANDROID_CLIENT_ID")
+    google_ios_client_id: str = Field(default="", alias="GOOGLE_IOS_CLIENT_ID")
     google_client_secret: str = Field(default="", alias="GOOGLE_CLIENT_SECRET")
     apple_client_id: str = Field(default="", alias="APPLE_CLIENT_ID")
 
