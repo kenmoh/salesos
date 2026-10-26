@@ -6,7 +6,7 @@ and delegates to the service package's planning functions + repository layer.
 
 import asyncio
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -79,6 +79,18 @@ def _get_sdb(service: str) -> ServiceDatabase:
         factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
         _databases[service] = ServiceDatabase(engine=engine, session_factory=factory, schema=service)
     return _databases[service]
+
+
+def _sale_blocked_by_expiry(product) -> bool:
+    """True only for an opted-in product whose expiry day has fully passed.
+
+    ``is True`` keeps mocks and legacy rows that lack the column from turning
+    into accidental blocks; a real database boolean arrives as a bool.
+    """
+    if getattr(product, "block_sale_after_expiry", False) is not True:
+        return False
+    expiry = getattr(product, "expiry_date", None)
+    return isinstance(expiry, date) and expiry < date.today()
 
 
 _MV_NAMES = [
@@ -2615,6 +2627,7 @@ async def get_store_products(
                 Product.tax_ids,
                 Product.expiry_date,
                 Product.expiry_warning_days,
+                Product.block_sale_after_expiry,
                 Category.name.label("category_name"),
             )
             .join(Product, StockBalance.product_id == Product.id)
@@ -2665,6 +2678,7 @@ async def get_store_products(
                     if row.expiry_date
                     else None,
                     "expiry_warning_days": row.expiry_warning_days,
+                    "block_sale_after_expiry": row.block_sale_after_expiry,
                     "qty": float(row.StockBalance.qty),
                     "available": float(row.StockBalance.qty) - float(row.StockBalance.reserved_qty),
                     "reserved_qty": float(row.StockBalance.reserved_qty),
@@ -2757,6 +2771,7 @@ async def create_product_for_store(
     created_by: str | None = None,
     expiry_date=None,
     expiry_warning_days: int | None = None,
+    block_sale_after_expiry: bool = False,
 ) -> dict:
     """Create a new product in the catalog and add it to a store.
 
@@ -2800,6 +2815,7 @@ async def create_product_for_store(
             image_url=image_url,
             expiry_date=expiry_date,
             expiry_warning_days=expiry_warning_days,
+            block_sale_after_expiry=block_sale_after_expiry,
         )
         session.add(product)
         await session.flush()
@@ -3149,6 +3165,7 @@ async def update_store_product(
     category_id = kwargs.pop("category_id", _unset)
     expiry_date = kwargs.pop("expiry_date", _unset)
     expiry_warning_days = kwargs.pop("expiry_warning_days", _unset)
+    block_sale_after_expiry = kwargs.pop("block_sale_after_expiry", _unset)
 
     # Catalog rows are what the product grid and detail screen read, so the
     # fields they display have to be written there too. Without this a name or
@@ -3215,6 +3232,7 @@ async def update_store_product(
         or tax_ids is not None
         or expiry_date is not _unset
         or expiry_warning_days is not _unset
+        or block_sale_after_expiry is not _unset
     ):
         values = dict(catalog_values)
         if category_id is not _unset:
@@ -3225,6 +3243,8 @@ async def update_store_product(
             values["expiry_date"] = expiry_date
         if expiry_warning_days is not _unset:
             values["expiry_warning_days"] = expiry_warning_days
+        if block_sale_after_expiry is not _unset:
+            values["block_sale_after_expiry"] = bool(block_sale_after_expiry)
         sdb_catalog = _get_sdb("catalog")
         async with sdb_catalog.session() as session:
             await session.execute(
@@ -3313,7 +3333,7 @@ async def get_store_product(
                    Product.cost_price, Product.reorder_point, Product.image_url,
                    Product.status, Product.qr_url, Product.tax_ids,
                    Product.expiry_date, Product.expiry_warning_days,
-                   Product.category_id,
+                   Product.block_sale_after_expiry, Product.category_id,
                    Category.name.label("category_name"))
             .outerjoin(Category, Product.category_id == Category.id)
             .where(Product.id == UUID(product_id))
@@ -3355,6 +3375,7 @@ async def get_store_product(
         "category_id": str(row.category_id) if row.category_id else None,
         "expiry_date": row.expiry_date.isoformat() if row.expiry_date else None,
         "expiry_warning_days": row.expiry_warning_days,
+        "block_sale_after_expiry": row.block_sale_after_expiry,
         "taxes": taxes,
         "history": history,
     }
@@ -5324,8 +5345,6 @@ async def _get_or_create_cart(
         if a new cart was created). New carts also include an internal
         ``_cart`` key with the model instance.
     """
-    from datetime import UTC, datetime, timedelta
-
     from app.cart.models import Cart
     from app.cart.repository import get_cart_by_session
 
@@ -5486,6 +5505,7 @@ async def add_to_cart(
         add_cart_item,
     )
     from app.cart.models import CartItem
+    from app.catalog.models import Product as CatalogProduct
 
     sdb = _get_sdb("cart")
     async with sdb.session() as session:
@@ -5496,6 +5516,19 @@ async def add_to_cart(
             raise ValueError("cart_not_found")
         if cart.status != "active":
             raise ValueError("cart_not_active")
+
+        # Resolve the product once for both paths: an existing line can still
+        # be topped up, so the expiry block must run even when it is not new.
+        catalog_sdb = _get_sdb("catalog")
+        async with catalog_sdb.session() as cat_session:
+            cat_result = await cat_session.execute(
+                select(CatalogProduct).where(CatalogProduct.id == UUID(product_id))
+            )
+            product = cat_result.scalar_one_or_none()
+        if not product or product.tenant_id != UUID(tenant_id):
+            raise ValueError("product_not_found")
+        if _sale_blocked_by_expiry(product):
+            raise ValueError("product_expired")
 
         add_qty = qty if qty is not None else 1
 
@@ -5527,21 +5560,6 @@ async def add_to_cart(
                 "qty": float(existing.qty),
             }
         else:
-            # Resolve product info from catalog SDB
-            from app.common.bridge import _get_sdb as __get_sdb
-            from sqlalchemy import select as _select
-
-            catalog_sdb = __get_sdb("catalog")
-            async with catalog_sdb.session() as cat_session:
-                from app.catalog.models import Product as CatalogProduct
-
-                cat_result = await cat_session.execute(
-                    _select(CatalogProduct).where(CatalogProduct.id == UUID(product_id))
-                )
-                product = cat_result.scalar_one_or_none()
-                if not product:
-                    raise ValueError("product_not_found")
-
             item = CartItem(
                 cart_id=UUID(cart_id),
                 store_id=cart.store_id,
@@ -6054,6 +6072,10 @@ async def checkout_cart(
                 if missing:
                     raise ValueError(f"products_not_found:{','.join(missing)}")
 
+                blocked = [p.name for p in products if _sale_blocked_by_expiry(p)]
+                if blocked:
+                    raise ValueError(f"product_expired:{','.join(blocked)}")
+
                 # A product carries the taxes that apply to it. Resolved from
                 # the product rows here, in the same session, so the client
                 # cannot price its own tax and the store no longer has to agree
@@ -6350,10 +6372,25 @@ async def checkout_cart(
         # the modern flow does, and no store switch in between.
         sdb_cat_legacy = _get_sdb("catalog")
         async with sdb_cat_legacy.session() as cat_session:
+            legacy_ids = [
+                i.product_id
+                for i in existing_items
+                if getattr(i, "product_id", None)
+            ]
+            from app.catalog.repository import get_products_by_ids
+
+            legacy_products = await get_products_by_ids(cat_session, legacy_ids)
+            blocked = [
+                p.name
+                for p in legacy_products
+                if p.tenant_id == tenant_uid and _sale_blocked_by_expiry(p)
+            ]
+            if blocked:
+                raise ValueError(f"product_expired:{','.join(blocked)}")
             legacy_product_taxes = await product_tax_map(
                 cat_session,
                 tenant_uid,
-                [i.product_id for i in existing_items if getattr(i, "product_id", None)],
+                legacy_ids,
             )
 
         sale_items = []
@@ -6730,7 +6767,9 @@ async def record_payment(
             if sale.status == "completed":
                 from app.platform.fee_calculator import calculate_platform_fee, sale_fee_base
 
-                fee_result = await calculate_platform_fee(session, sale_fee_base(sale))
+                fee_result = await calculate_platform_fee(
+                    session, sale_fee_base(sale), method=method
+                )
                 pm["platform_fee"] = fee_result["platform_fee"]
                 pm["settlement_amount"] = fee_result["settlement_amount"]
                 pm["fee_rule_id"] = fee_result["rule_id"]
@@ -6876,30 +6915,37 @@ async def record_split_payment(
             sale.status = "partial"
 
         if sale.status == "completed":
-            from app.platform.fee_calculator import calculate_platform_fee, sale_fee_base
+            from app.platform.fee_calculator import calculate_fee_shares, sale_fee_base
 
-            fee_result = await calculate_platform_fee(session, sale_fee_base(sale))
-            pm["platform_fee"] = fee_result["platform_fee"]
-            pm["settlement_amount"] = fee_result["settlement_amount"]
-            pm["fee_rule_id"] = fee_result["rule_id"]
+            fee_base_amount = sale_fee_base(sale)
+            fee_shares = await calculate_fee_shares(
+                session, fee_base_amount, {p["method"]: p["amount"] for p in payments}
+            )
+            pm["platform_fee"] = fee_shares["total_fee"]
+            pm["settlement_amount"] = float(
+                (Decimal(str(fee_base_amount)) - Decimal(str(fee_shares["total_fee"]))).quantize(
+                    Decimal("0.01")
+                )
+            )
+            pm["fee_rule_id"] = fee_shares["rule_id"]
             sale.payment_methods = pm
 
-            total_fee = Decimal(str(fee_result["platform_fee"]))
-            if total_fee > 0:
+            if fee_shares["total_fee"] > 0:
                 from app.platform.models import PlatformFeeLedger
 
-                sale_total = Decimal(str(sale.total))
-                for p in payments:
-                    pay_amount = Decimal(str(p["amount"]))
-                    fee_share = total_fee * (pay_amount / sale_total) if sale_total > 0 else total_fee
+                for share in fee_shares["shares"]:
                     ledger = PlatformFeeLedger(
                         tenant_id=UUID(business_id),
                         sale_id=UUID(sale_id),
-                        amount=float(fee_share.quantize(Decimal("0.01"))),
-                        fee_type=fee_result["fee_type"],
-                        rate=fee_result["rate"],
-                        payment_method=p["method"],
-                        status="deducted" if p["method"] in ("card", "transfer") else "pending",
+                        amount=share["amount"],
+                        fee_type=share["fee_type"],
+                        rate=share["rate"],
+                        payment_method=share["method"],
+                        status=(
+                            "deducted"
+                            if share["method"] in ("card", "transfer")
+                            else "pending"
+                        ),
                     )
                     session.add(ledger)
 
@@ -8044,37 +8090,43 @@ async def process_split_payment(
             sale.status = "partial"
 
         if sale.status == "completed":
-            from app.platform.fee_calculator import calculate_platform_fee, sale_fee_base
+            from app.platform.fee_calculator import calculate_fee_shares, sale_fee_base
 
-            fee_result = await calculate_platform_fee(session, sale_fee_base(sale))
-            pm["platform_fee"] = fee_result["platform_fee"]
-            pm["settlement_amount"] = fee_result["settlement_amount"]
-            pm["fee_rule_id"] = fee_result["rule_id"]
+            fee_base_amount = sale_fee_base(sale)
+            fee_shares = await calculate_fee_shares(
+                session,
+                fee_base_amount,
+                {
+                    "cash": float(cash_amount),
+                    "card": float(card_amount),
+                    "transfer": float(transfer_amount),
+                },
+            )
+            pm["platform_fee"] = fee_shares["total_fee"]
+            pm["settlement_amount"] = float(
+                (Decimal(str(fee_base_amount)) - Decimal(str(fee_shares["total_fee"]))).quantize(
+                    Decimal("0.01")
+                )
+            )
+            pm["fee_rule_id"] = fee_shares["rule_id"]
             sale.payment_methods = pm
 
-            if fee_result["platform_fee"] > 0:
+            if fee_shares["total_fee"] > 0:
                 from app.platform.models import PlatformFeeLedger
 
-                total_fee = Decimal(str(fee_result["platform_fee"]))
-                sale_total = Decimal(str(total))
-                splits = [
-                    ("cash", cash_amount),
-                    ("card", card_amount),
-                    ("transfer", transfer_amount),
-                ]
-                for method, amt in splits:
-                    if amt <= 0:
-                        continue
-                    pay_amount = Decimal(str(amt))
-                    fee_share = total_fee * (pay_amount / sale_total) if sale_total > 0 else total_fee
+                for share in fee_shares["shares"]:
                     ledger = PlatformFeeLedger(
                         tenant_id=UUID(business_id),
                         sale_id=UUID(sale_id),
-                        amount=float(fee_share.quantize(Decimal("0.01"))),
-                        fee_type=fee_result["fee_type"],
-                        rate=fee_result["rate"],
-                        payment_method=method,
-                        status="deducted" if method in ("card", "transfer") else "pending",
+                        amount=share["amount"],
+                        fee_type=share["fee_type"],
+                        rate=share["rate"],
+                        payment_method=share["method"],
+                        status=(
+                            "deducted"
+                            if share["method"] in ("card", "transfer")
+                            else "pending"
+                        ),
                     )
                     session.add(ledger)
 
