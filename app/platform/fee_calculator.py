@@ -61,7 +61,27 @@ def sale_fee_base(sale) -> float:
     return max(base, 0.0)
 
 
-async def calculate_platform_fee(session: AsyncSession, sale_total: float) -> dict:
+# Payment methods whose money arrives without an external processor. The full
+# rate bundles the processor's share, which these collections never incurred,
+# so they are charged the platform-only rate (rule.cash_amount) instead.
+NO_PROCESSOR_METHODS = frozenset({"cash", "converted", "receipt", "document"})
+
+
+def rate_for_rule(rule, method: str | None) -> Decimal:
+    """Pick the rate a rule charges for a payment collected via ``method``.
+
+    Cash and other processorless methods are charged ``cash_amount`` when the
+    rule defines one, and the full ``amount`` otherwise. Gateway-processed
+    methods (card, transfer) always pay ``amount``.
+    """
+    if method in NO_PROCESSOR_METHODS and getattr(rule, "cash_amount", None) is not None:
+        return Decimal(str(rule.cash_amount))
+    return Decimal(str(rule.amount))
+
+
+async def calculate_platform_fee(
+    session: AsyncSession, sale_total: float, method: str | None = None
+) -> dict:
     """Apply a tiered commission rule to the given base amount.
 
     Applies tiered commission rules to determine the fee amount.
@@ -71,6 +91,10 @@ async def calculate_platform_fee(session: AsyncSession, sale_total: float) -> di
         session: Database session for querying commission rules.
         sale_total: Commission base in Nigerian Naira (pre-tax,
             post-discount sale value).
+        method: Payment method that produced the money (e.g. "cash",
+            "card"), or a document type ("receipt", "converted") when the
+            fee is booked for a non-sale collection. Methods without an
+            external processor are charged the rule's cash_amount.
 
     Returns:
         Dict containing:
@@ -102,7 +126,7 @@ async def calculate_platform_fee(session: AsyncSession, sale_total: float) -> di
     for rule in rules:
         threshold = Decimal(str(rule.min_threshold))
         if total >= threshold:
-            rate = Decimal(str(rule.amount))
+            rate = rate_for_rule(rule, method)
             if rule.fee_type == FeeType.FLAT.value:
                 fee = rate
             else:
@@ -130,6 +154,58 @@ async def calculate_platform_fee(session: AsyncSession, sale_total: float) -> di
         "platform_fee": 0,
         "settlement_amount": _round(total),
     }
+
+
+async def calculate_fee_shares(
+    session: AsyncSession, fee_base: float, method_amounts: dict[str, float]
+) -> dict:
+    """Compute each method's fee for a batch that mixes collection channels.
+
+    Every method is charged its own rate — cash at the platform-only rate,
+    card/transfer at the full rate — so a batch is never billed the
+    processor's share on its processorless portion. Each method's fee is
+    calculated on the full commission base with its rate, then scaled by that
+    method's share of the money actually collected.
+
+    Args:
+        session: Database session for querying commission rules.
+        fee_base: Commission base in Naira (pre-tax, post-discount).
+        method_amounts: Maps payment method to the amount collected with it.
+
+    Returns:
+        Dict containing:
+            - "rule_id": Identifier of the matched commission rule (None if no rule)
+            - "total_fee": Sum of all method shares
+            - "shares": One dict per method with "method", "amount",
+              "rate" and "fee_type" for its ledger row.
+    """
+    total_collected = Decimal(str(sum(method_amounts.values())))
+    total_fee = Decimal("0")
+    rule_id = None
+    shares: list[dict] = []
+
+    for method, amount in method_amounts.items():
+        if Decimal(str(amount)) <= 0:
+            continue
+        result = await calculate_platform_fee(session, fee_base, method=method)
+        rule_id = result["rule_id"]
+        fraction = (
+            Decimal(str(amount)) / total_collected if total_collected > 0 else Decimal("0")
+        )
+        share = (Decimal(str(result["platform_fee"])) * fraction).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        total_fee += share
+        shares.append(
+            {
+                "method": method,
+                "amount": _round(share),
+                "rate": result["rate"],
+                "fee_type": result["fee_type"],
+            }
+        )
+
+    return {"rule_id": rule_id, "total_fee": _round(total_fee), "shares": shares}
 
 
 async def get_pending_fee_balance(session: AsyncSession, tenant_id: UUID) -> float:
@@ -244,7 +320,7 @@ async def record_platform_fee(
     if existing:
         return None
 
-    fee_result = await calculate_platform_fee(session, total)
+    fee_result = await calculate_platform_fee(session, total, method=payment_method)
     if fee_result["platform_fee"] <= 0:
         return None
 

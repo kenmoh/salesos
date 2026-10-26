@@ -115,7 +115,13 @@ class PlatformCommission(StoreFlowBase):
     Attributes:
         label: Human-readable fee rule name.
         fee_type: Calculation type (flat or percentage).
-        amount: Fee amount (flat: NGN, percentage: 0-100).
+        amount: Fee amount (flat: NGN, percentage: 0-100) for payments an
+            external processor handled (card, transfer).
+        cash_amount: Fee amount charged when the money arrives without an
+            external processor (cash at the counter, a converted document, a
+            standalone receipt). The full rate bundles the processor's share,
+            which a processorless collection never incurred. None falls back
+            to ``amount``.
         min_threshold: Minimum sale total for this rule to apply.
         max_pending_balance: Cash fee threshold before blocking (default 1000 NGN).
     """
@@ -127,6 +133,7 @@ class PlatformCommission(StoreFlowBase):
     label: Mapped[str] = mapped_column(String(40), nullable=False)
     fee_type: Mapped[str] = mapped_column(String(10), nullable=False, default=FeeType.FLAT.value)
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    cash_amount: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
     min_threshold: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     max_pending_balance: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=1000)
     created_at: Mapped[datetime] = mapped_column(

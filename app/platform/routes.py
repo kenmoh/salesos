@@ -1388,6 +1388,7 @@ class CommissionCreate(BaseModel):
     label: str
     fee_type: str = FeeType.FLAT.value
     amount: float
+    cash_amount: float | None = None
     min_threshold: float = 0
     max_pending_balance: float = 1000
 
@@ -1396,6 +1397,7 @@ class CommissionUpdate(BaseModel):
     label: str | None = None
     fee_type: str | None = None
     amount: float | None = None
+    cash_amount: float | None = None
     min_threshold: float | None = None
     max_pending_balance: float | None = None
 
@@ -1426,6 +1428,7 @@ async def create_commission(payload: CommissionCreate, request: Request, ctx: Pl
         label=payload.label,
         fee_type=payload.fee_type,
         amount=payload.amount,
+        cash_amount=payload.cash_amount,
         min_threshold=payload.min_threshold,
         max_pending_balance=payload.max_pending_balance,
     )
@@ -1442,6 +1445,7 @@ async def create_commission(payload: CommissionCreate, request: Request, ctx: Pl
             "label": payload.label,
             "fee_type": payload.fee_type,
             "amount": payload.amount,
+            "cash_amount": payload.cash_amount,
             "min_threshold": payload.min_threshold,
             "max_pending_balance": payload.max_pending_balance,
         },
@@ -1454,6 +1458,9 @@ async def create_commission(payload: CommissionCreate, request: Request, ctx: Pl
             "label": commission.label,
             "fee_type": commission.fee_type,
             "amount": float(commission.amount),
+            "cash_amount": (
+                float(commission.cash_amount) if commission.cash_amount is not None else None
+            ),
             "min_threshold": float(commission.min_threshold),
             "max_pending_balance": float(commission.max_pending_balance),
             "created_at": commission.created_at.isoformat(),
@@ -1480,6 +1487,7 @@ async def list_commissions(ctx: PlatformDep):
                 "label": c.label,
                 "fee_type": c.fee_type,
                 "amount": float(c.amount),
+                "cash_amount": float(c.cash_amount) if c.cash_amount is not None else None,
                 "min_threshold": float(c.min_threshold),
                 "max_pending_balance": float(c.max_pending_balance),
                 "created_at": c.created_at.isoformat(),
@@ -1513,6 +1521,9 @@ async def get_commission(commission_id: str, ctx: PlatformDep):
             "label": commission.label,
             "fee_type": commission.fee_type,
             "amount": float(commission.amount),
+            "cash_amount": (
+                float(commission.cash_amount) if commission.cash_amount is not None else None
+            ),
             "min_threshold": float(commission.min_threshold),
             "max_pending_balance": float(commission.max_pending_balance),
             "created_at": commission.created_at.isoformat(),
@@ -1553,6 +1564,9 @@ async def update_commission(
     if payload.amount is not None:
         changes["amount"] = payload.amount
         commission.amount = payload.amount
+    if payload.cash_amount is not None:
+        changes["cash_amount"] = payload.cash_amount
+        commission.cash_amount = payload.cash_amount
     if payload.min_threshold is not None:
         changes["min_threshold"] = payload.min_threshold
         commission.min_threshold = payload.min_threshold
@@ -1578,6 +1592,9 @@ async def update_commission(
             "label": commission.label,
             "fee_type": commission.fee_type,
             "amount": float(commission.amount),
+            "cash_amount": (
+                float(commission.cash_amount) if commission.cash_amount is not None else None
+            ),
             "min_threshold": float(commission.min_threshold),
             "max_pending_balance": float(commission.max_pending_balance),
             "created_at": commission.created_at.isoformat(),
@@ -1604,6 +1621,9 @@ async def delete_commission(commission_id: str, request: Request, ctx: PlatformD
     deleted_label = commission.label
     deleted_fee_type = commission.fee_type
     deleted_amount = float(commission.amount)
+    deleted_cash_amount = (
+        float(commission.cash_amount) if commission.cash_amount is not None else None
+    )
     deleted_min_threshold = float(commission.min_threshold)
     deleted_max_pending_balance = float(commission.max_pending_balance)
 
@@ -1620,6 +1640,7 @@ async def delete_commission(commission_id: str, request: Request, ctx: PlatformD
             "label": deleted_label,
             "fee_type": deleted_fee_type,
             "amount": deleted_amount,
+            "cash_amount": deleted_cash_amount,
             "min_threshold": deleted_min_threshold,
             "max_pending_balance": deleted_max_pending_balance,
         },
