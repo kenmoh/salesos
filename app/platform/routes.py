@@ -8,7 +8,12 @@ from app.core.platform_deps import PlatformDep, require_platform_permission
 from app.core.ratelimit import auth_rate_limit
 from app.core.responses import ok, paginated
 from app.platform.models import FeeType, PlatformAdmin
-from app.platform.auth import platform_login, platform_refresh, PlatformAuthError
+from app.platform.auth import (
+    PlatformAuthError,
+    PlatformTotpRequired,
+    platform_login,
+    platform_refresh,
+)
 
 router = APIRouter(prefix="/platform", tags=["Platform"])
 
@@ -16,10 +21,31 @@ router = APIRouter(prefix="/platform", tags=["Platform"])
 class PlatformLoginRequest(BaseModel):
     email: str
     password: str
+    totp_code: str | None = None
 
 
 class PlatformRefreshRequest(BaseModel):
     refresh_token: str
+
+
+class PlatformTotpVerifyRequest(BaseModel):
+    code: str
+
+
+class PlatformTotpDisableRequest(BaseModel):
+    password: str
+    code: str
+
+
+class CreateAdminRequest(BaseModel):
+    email: str
+    full_name: str
+    password: str
+    role: str = "admin"
+
+
+class AdminUpdateRequest(BaseModel):
+    status: str | None = None
 
 
 class TenantUpdateRequest(BaseModel):
@@ -45,8 +71,17 @@ async def login(payload: PlatformLoginRequest, request: Request):
                     email=payload.email,
                     password=payload.password,
                     req=request,
+                    totp_code=payload.totp_code,
                 )
                 return ok(result)
+            except PlatformTotpRequired:
+                return ok(
+                    {
+                        "tokens": {"access_token": "", "refresh_token": ""},
+                        "admin": {},
+                        "requires_totp": True,
+                    }
+                )
             except PlatformAuthError as e:
                 raise HTTPException(status_code=401, detail=str(e))
 
@@ -88,11 +123,197 @@ async def me(ctx: PlatformDep):
                     "full_name": admin.full_name,
                     "role": admin.role,
                     "status": admin.status,
+                    "totp_enabled": bool(admin.totp_enabled),
                     "last_login_at": admin.last_login_at.isoformat()
                     if admin.last_login_at
                     else None,
                 }
             )
+
+
+@router.post(
+    "/auth/totp/setup", dependencies=[Depends(require_platform_permission("platform:*"))]
+)
+async def totp_setup(ctx: PlatformDep):
+    from app.platform.auth import platform_totp_setup
+
+    return ok(await platform_totp_setup(session=ctx.session, admin_id=ctx.user.admin_id))
+
+
+@router.post(
+    "/auth/totp/verify", dependencies=[Depends(require_platform_permission("platform:*"))]
+)
+async def totp_verify(payload: PlatformTotpVerifyRequest, ctx: PlatformDep):
+    from app.platform.auth import platform_totp_enable
+
+    try:
+        await platform_totp_enable(session=ctx.session, admin_id=ctx.user.admin_id, code=payload.code)
+    except PlatformAuthError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return ok(None, message="TOTP enabled")
+
+
+@router.post(
+    "/auth/totp/disable", dependencies=[Depends(require_platform_permission("platform:*"))]
+)
+async def totp_disable(payload: PlatformTotpDisableRequest, ctx: PlatformDep):
+    from app.platform.auth import platform_totp_disable
+
+    try:
+        await platform_totp_disable(
+            session=ctx.session,
+            admin_id=ctx.user.admin_id,
+            password=payload.password,
+            code=payload.code,
+        )
+    except PlatformAuthError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return ok(None, message="TOTP disabled")
+
+
+# ── Platform admins ───────────────────────────────────────────────
+
+
+@router.get("/admins", dependencies=[Depends(require_platform_permission("platform:*"))])
+async def list_admins(
+    ctx: PlatformDep,
+    search: str | None = None,
+    status_filter: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+):
+    query = select(PlatformAdmin)
+    count_query = select(func.count(PlatformAdmin.id))
+    if status_filter:
+        query = query.where(PlatformAdmin.status == status_filter)
+        count_query = count_query.where(PlatformAdmin.status == status_filter)
+    if search:
+        query = query.where(
+            PlatformAdmin.email.ilike(f"%{search}%") | PlatformAdmin.full_name.ilike(f"%{search}%")
+        )
+        count_query = count_query.where(
+            PlatformAdmin.email.ilike(f"%{search}%") | PlatformAdmin.full_name.ilike(f"%{search}%")
+        )
+
+    total = (await ctx.session.execute(count_query)).scalar()
+    rows = (
+        await ctx.session.execute(
+            query.order_by(PlatformAdmin.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).scalars().all()
+
+    return ok(
+        {
+            "items": [
+                {
+                    "id": str(a.id),
+                    "email": a.email,
+                    "full_name": a.full_name,
+                    "role": a.role,
+                    "status": a.status,
+                    "totp_enabled": bool(a.totp_enabled),
+                    "last_login_at": a.last_login_at.isoformat() if a.last_login_at else None,
+                    "created_at": a.created_at.isoformat() if a.created_at else None,
+                }
+                for a in rows
+            ],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+    )
+
+
+@router.post("/admins", status_code=201, dependencies=[Depends(require_platform_permission("platform:*"))])
+async def create_admin(payload: CreateAdminRequest, ctx: PlatformDep):
+    from app.core.security import hash_password
+    from app.platform.audit import log_platform_audit
+
+    PLATFORM_ROLE_RANK = {"super_admin", "admin", "support", "readonly"}
+    if payload.role not in PLATFORM_ROLE_RANK:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+    exists = await ctx.session.scalar(
+        select(PlatformAdmin.id).where(PlatformAdmin.email == payload.email)
+    )
+    if exists:
+        raise HTTPException(status_code=409, detail="An admin with this email already exists")
+
+    admin = PlatformAdmin(
+        email=payload.email,
+        password_hash=hash_password(payload.password),
+        full_name=payload.full_name,
+        role=payload.role,
+    )
+    ctx.session.add(admin)
+    await ctx.session.flush()
+
+    await log_platform_audit(
+        ctx.session,
+        admin_id=ctx.user.admin_id,
+        action="admin.create",
+        resource="platform_admin",
+        resource_id=str(admin.id),
+        details={"email": payload.email, "role": payload.role},
+    )
+    return ok(
+        {
+            "id": str(admin.id),
+            "email": admin.email,
+            "full_name": admin.full_name,
+            "role": admin.role,
+            "status": admin.status,
+        }
+    )
+
+
+@router.patch(
+    "/admins/{admin_id}",
+    dependencies=[Depends(require_platform_permission("platform:*"))],
+)
+async def update_admin(admin_id: str, payload: AdminUpdateRequest, ctx: PlatformDep):
+    from app.platform.audit import log_platform_audit
+
+    admin_row = (
+        await ctx.session.execute(select(PlatformAdmin).where(PlatformAdmin.id == admin_id))
+    ).scalar_one_or_none()
+    if not admin_row:
+        raise HTTPException(status_code=404, detail="Admin not found")
+
+    if payload.status is not None:
+        if payload.status not in ("active", "disabled"):
+            raise HTTPException(status_code=400, detail="Invalid status")
+        if admin_row.id == ctx.user.admin_id and payload.status != "active":
+            raise HTTPException(status_code=400, detail="You cannot disable your own account")
+        admin_row.status = payload.status
+        if payload.status == "disabled":
+            from app.core.security import revoke_all_sessions
+
+            await revoke_all_sessions(str(admin_row.id))
+
+        await log_platform_audit(
+            ctx.session,
+            admin_id=ctx.user.admin_id,
+            action="admin.update_status",
+            resource="platform_admin",
+            resource_id=str(admin_row.id),
+            details={"status": payload.status, "email": admin_row.email},
+        )
+    await ctx.session.flush()
+
+    return ok(
+        {
+            "id": str(admin_row.id),
+            "email": admin_row.email,
+            "full_name": admin_row.full_name,
+            "role": admin_row.role,
+            "status": admin_row.status,
+        }
+    )
 
 
 # ── Tenants ───────────────────────────────────────────────────────
