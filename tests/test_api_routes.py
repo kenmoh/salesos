@@ -1742,6 +1742,24 @@ class TestAuth:
         assert "data" in body
         assert "message" in body
 
+    async def test_register_without_a_business_name(self, client):
+        """Registration no longer asks for a store name; the owner names the
+        business in settings, so the tenant is seeded with a placeholder."""
+        resp = await client.post(
+            f"{self.ROUTE}/register",
+            json={
+                "business_email": "unnamed@b.com",
+                "owner_name": "Ada Obi",
+                "owner_email": "ada@b.com",
+                "password": "Str0ng!Pass",
+                "confirm_password": "Str0ng!Pass",
+            },
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert "data" in body
+        assert "message" in body
+
     async def test_login(self, client):
         resp = await client.post(
             f"{self.ROUTE}/login",

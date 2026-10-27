@@ -11,7 +11,9 @@ class Base(BaseModel):
 
 
 class RegisterRequest(Base):
-    business_name: str = Field(..., min_length=2, max_length=120)
+    # Optional: the business names itself later in settings; a placeholder
+    # tenant name is derived from the owner at registration.
+    business_name: str | None = Field(default=None, min_length=2, max_length=120)
     business_email: EmailStr
     owner_name: str = Field(..., min_length=2, max_length=100)
     owner_email: EmailStr

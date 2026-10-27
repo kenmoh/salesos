@@ -73,8 +73,16 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 async def register(payload: RegisterRequest, request: Request):
     from app.core.security import hash_password
 
+    # The tenant names its business in settings after sign-up; registration
+    # only needs a placeholder to seed the tenant record and slug.
+    business_name = (
+        (payload.business_name or payload.owner_name or "").strip()
+        or payload.business_email.split("@")[0].split("+")[0]
+        or "My business"
+    )
+
     tenant_result = await create_tenant(
-        business_name=payload.business_name,
+        business_name=business_name,
         business_email=payload.business_email,
         owner_name=payload.owner_name,
         owner_email=payload.owner_email or payload.business_email,
