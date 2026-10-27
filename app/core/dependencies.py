@@ -17,6 +17,47 @@ from app.identity.models import Role, UserRole
 
 bearer = HTTPBearer(auto_error=False)
 
+TENANT_BLOCKED_STATUSES = frozenset({"suspended", "cancelled"})
+
+
+async def assert_tenant_active(business_id: str | None) -> None:
+    """Reject requests from suspended or cancelled businesses.
+
+    A platform suspend must bite even on tokens issued beforehand: this PK
+    lookup runs once per authenticated tenant request, on a short-lived
+    pooled session. Cancelled is treated as gone-for-good, same gate.
+    """
+    if not business_id or business_id == "platform":
+        return
+
+    from app.tenancy.models import Tenant
+
+    factory = _get_session_factory()
+    for attempt in range(2):
+        try:
+            async with factory() as s:
+                tenant_status = await s.scalar(
+                    select(Tenant.status).where(Tenant.id == business_id)
+                )
+            break
+        except DBAPIError as exc:
+            if attempt == 1 or not exc.connection_invalidated:
+                raise
+            # Stale pooled connection killed server-side by Neon; the read
+            # is side-effect free, so retry once on a fresh checkout.
+
+    if tenant_status is not None and tenant_status in TENANT_BLOCKED_STATUSES:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            {
+                "code": "tenant_suspended",
+                "message": (
+                    "This business account is currently suspended. "
+                    "Contact support to have it reactivated."
+                ),
+            },
+        )
+
 
 async def get_cached_role_rank(
     user_id: str, business_id: str, session: AsyncSession | None = None
@@ -178,6 +219,7 @@ async def get_tenant_context(
     user = await _authenticate(creds, unauth)
     request.state.user_id = user.user_id
     request.state.business_id = user.business_id
+    await assert_tenant_active(user.business_id)
     tokens = set_current_tenant(user.user_id, user.business_id, user.role)
     try:
         yield TenantContext(user)
@@ -204,6 +246,7 @@ async def get_tenant_db_context(
     user = await _authenticate(creds, unauth)
     request.state.user_id = user.user_id
     request.state.business_id = user.business_id
+    await assert_tenant_active(user.business_id)
     tokens = set_current_tenant(user.user_id, user.business_id, user.role)
     try:
         factory = _get_session_factory()

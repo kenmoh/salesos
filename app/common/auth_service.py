@@ -33,6 +33,7 @@ from app.core.security import (
 )
 from app.identity.models import User, Role, UserRole, Permission, RolePermission, AuthAuditLog
 from app.identity.repository import log_auth_event
+from app.tenancy.models import Tenant
 
 
 class AuthError(Exception):
@@ -140,6 +141,14 @@ async def login(*, session, email, password, totp_code, req, device_name=None):
     user = await _get_user_by_email(session, email)
     if not user:
         raise AuthError("Invalid email or password", "invalid_credentials")
+    tenant_status = await session.scalar(
+        select(Tenant.status).where(Tenant.id == user["business_id"])
+    )
+    if tenant_status in ("suspended", "cancelled"):
+        raise AuthError(
+            "Your business account is currently suspended. Contact support.",
+            "tenant_suspended",
+        )
     if not user.get("password_hash"):
         raise AuthError(
             "This account uses social login. Please sign in with Google or Apple.",

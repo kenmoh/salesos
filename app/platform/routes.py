@@ -483,6 +483,45 @@ async def get_tenant(tenant_id: str, ctx: PlatformDep):
     )
 
 
+async def _suspend_tenant_users(session, tenant_id: str) -> int:
+    """Suspend every member of a business and kill their refresh sessions.
+
+    Existing access tokens still pass one more status check (the tenant dep
+    gates on Tenant.status); revoked refresh tokens stop re-entry afterwards.
+    """
+    from sqlalchemy import update
+
+    from app.core.security import revoke_all_sessions
+    from app.identity.models import User
+
+    result = await session.execute(
+        update(User)
+        .where(User.tenant_id == tenant_id, User.status != "suspended")
+        .values(status="suspended")
+    )
+    member_ids = (
+        (await session.execute(select(User.id).where(User.tenant_id == tenant_id)))
+        .scalars()
+        .all()
+    )
+    for uid in member_ids:
+        await revoke_all_sessions(str(uid))
+    return int(result.rowcount or 0)
+
+
+async def _reinstate_tenant_users(session, tenant_id: str) -> int:
+    from sqlalchemy import update
+
+    from app.identity.models import User
+
+    result = await session.execute(
+        update(User)
+        .where(User.tenant_id == tenant_id, User.status == "suspended")
+        .values(status="active")
+    )
+    return int(result.rowcount or 0)
+
+
 @router.patch(
     "/tenants/{tenant_id}", dependencies=[Depends(require_platform_permission("platform:*"))]
 )
@@ -501,6 +540,15 @@ async def update_tenant(tenant_id: str, payload: TenantUpdateRequest, ctx: Platf
             raise HTTPException(status_code=400, detail="Invalid status")
         changes["status"] = {"from": tenant.status, "to": payload.status}
         tenant.status = payload.status
+
+        if payload.status in ("suspended", "cancelled"):
+            users_affected = await _suspend_tenant_users(ctx.session, tenant_id)
+            details_extra = {"users_suspended": users_affected}
+        else:
+            users_affected = await _reinstate_tenant_users(ctx.session, tenant_id)
+            details_extra = {"users_reinstated": users_affected}
+    else:
+        details_extra = {}
     if payload.tier is not None and payload.tier != tenant.tier:
         if payload.tier not in ("starter", "growth", "enterprise"):
             raise HTTPException(status_code=400, detail="Invalid tier")
@@ -546,7 +594,7 @@ async def update_tenant(tenant_id: str, payload: TenantUpdateRequest, ctx: Platf
             action="tenant.update",
             resource="tenant",
             resource_id=str(tenant.id),
-            details=changes,
+            details={**changes, **details_extra},
         )
 
     return ok(
