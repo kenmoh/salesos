@@ -1582,6 +1582,7 @@ async def tenant_audit_trail(
                 AuditEvent.user_id,
                 AuditEvent.action,
                 AuditEvent.resource_type,
+                AuditEvent.resource_id,
                 AuditEvent.details,
                 AuditEvent.status_code,
                 AuditEvent.created_at,
