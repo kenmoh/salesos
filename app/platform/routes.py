@@ -1470,6 +1470,16 @@ async def create_commission(payload: CommissionCreate, request: Request, ctx: Pl
 
 
 @router.get(
+    "/contact/messages",
+    dependencies=[Depends(require_platform_permission("platform:*"))],
+)
+async def contact_inbox(ctx: PlatformDep, page: int = 1, page_size: int = 50):
+    from app.contact.routes import platform_list_messages
+
+    return await platform_list_messages(ctx.session, page=page, page_size=page_size)
+
+
+@router.get(
     "/commissions",
     dependencies=[Depends(require_platform_permission("platform:*"))],
 )

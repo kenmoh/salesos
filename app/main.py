@@ -200,9 +200,11 @@ def create_app() -> FastAPI:
 
     from app.events.routes import router as events_router
     from app.catalog.routes import scan_router as scan_products_router
+    from app.contact.routes import router as contact_router
 
     app.include_router(scan_products_router, prefix=prefix)
     app.include_router(events_router, prefix=prefix)
+    app.include_router(contact_router, prefix=prefix)
 
     from app.platform.routes import router as platform_router
 
