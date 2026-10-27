@@ -1482,6 +1482,7 @@ async def tenant_audit_trail(
       business_id).
     """
     from datetime import datetime, timedelta, timezone
+    import json
 
     from app.auth.audit import AuditEvent
     from app.identity.models import AuthAuditLog
@@ -1513,7 +1514,7 @@ async def tenant_audit_trail(
 
     rows_data = []
 
-    def _collect(resource, when, actor, action, detail, status, resource_type=None, resource_id=None):
+    def _collect(resource, when, actor, action, detail, status, resource_type=None, resource_id=None, approver=None):
         rows_data.append(
             {
                 "at": when,
@@ -1524,6 +1525,7 @@ async def tenant_audit_trail(
                 "status": status,
                 "resource": resource_type,
                 "resource_id": resource_id,
+                "approver": approver,
             }
         )
 
@@ -1563,6 +1565,7 @@ async def tenant_audit_trail(
     if include_auth:
         auth_r = await ctx.session.execute(
             select(
+                AuthAuditLog.user_id,
                 AuthAuditLog.action,
                 AuthAuditLog.details,
                 AuthAuditLog.created_at,
@@ -1574,7 +1577,20 @@ async def tenant_audit_trail(
             .order_by(AuthAuditLog.created_at.desc())
         )
         for r in auth_r.all():
-            _collect("auth", r.created_at, None, r.action, r.details, "ok")
+            actor = str(r.user_id) if r.user_id else None
+            # For cart_void_approved, also extract the approver from details
+            approver = None
+            if r.action == "cart_void_approved" and r.details:
+                import json
+                try:
+                    det = json.loads(r.details) if isinstance(r.details, str) else r.details
+                    if isinstance(det, dict):
+                        sup = det.get("supervisor_id")
+                        if sup:
+                            approver = str(sup)
+                except Exception:
+                    pass
+            _collect("auth", r.created_at, actor, r.action, r.details, "ok", approver=approver)
 
     if include_business:
         biz_r = await ctx.session.execute(

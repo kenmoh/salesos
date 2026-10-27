@@ -36,6 +36,7 @@ def _plat_row():
 
 def _auth_row():
     return dict(
+        user_id=uuid4(),
         action="login_success",
         details='{"method": "password"}',
         created_at=Now - timedelta(days=1),
