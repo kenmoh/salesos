@@ -1603,6 +1603,98 @@ async def tenant_audit_trail(
 
 
 @router.get(
+    "/audit/actor/{actor_id}",
+    dependencies=[Depends(require_platform_permission("platform:*"))],
+)
+async def audit_actor_details(actor_id: str, ctx: PlatformDep):
+    """Resolve an audit-trail actor id into a human profile.
+
+    Tries tenant users first, then platform admins; "system" actors are
+    handled client-side and never hit this route with a real id.
+    """
+    from uuid import UUID as _UUID
+
+    from app.identity.models import Role, User, UserRole
+    from app.stores.models import Store
+    from app.tenancy.models import Tenant
+
+    try:
+        aid = _UUID(actor_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Actor not found")
+
+    row = (
+        await ctx.session.execute(select(User).where(User.id == aid))
+    ).scalar_one_or_none()
+    if row:
+        tenant_name = None
+        store_name = None
+        if row.tenant_id:
+            t = (
+                await ctx.session.execute(select(Tenant).where(Tenant.id == row.tenant_id))
+            ).scalar_one_or_none()
+            tenant_name = t.business_name if t else None
+        if row.store_id:
+            s = (
+                await ctx.session.execute(select(Store).where(Store.id == row.store_id))
+            ).scalar_one_or_none()
+            store_name = s.name if s else None
+
+        role_rows = (
+            await ctx.session.execute(
+                select(Role.name)
+                .join(UserRole, UserRole.role_id == Role.id)
+                .where(UserRole.user_id == aid)
+            )
+        ).all()
+        roles = [r[0] for r in role_rows]
+
+        return ok(
+            {
+                "actor_type": "user",
+                "id": str(row.id),
+                "full_name": row.full_name,
+                "email": row.email,
+                "phone": row.phone,
+                "status": row.status,
+                "roles": roles,
+                "tenant_id": str(row.tenant_id) if row.tenant_id else None,
+                "tenant_name": tenant_name,
+                "store_id": str(row.store_id) if row.store_id else None,
+                "store_name": store_name,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "last_login_at": row.last_login_at.isoformat() if row.last_login_at else None,
+            }
+        )
+
+    from app.platform.models import PlatformAdmin
+
+    admin = (
+        await ctx.session.execute(select(PlatformAdmin).where(PlatformAdmin.id == aid))
+    ).scalar_one_or_none()
+    if admin:
+        return ok(
+            {
+                "actor_type": "admin",
+                "id": str(admin.id),
+                "full_name": admin.full_name,
+                "email": admin.email,
+                "phone": None,
+                "status": admin.status,
+                "roles": [admin.role],
+                "tenant_id": None,
+                "tenant_name": None,
+                "store_id": None,
+                "store_name": None,
+                "created_at": admin.created_at.isoformat() if admin.created_at else None,
+                "last_login_at": admin.last_login_at.isoformat() if admin.last_login_at else None,
+            }
+        )
+
+    raise HTTPException(status_code=404, detail="Actor not found")
+
+
+@router.get(
     "/audit-log",
     dependencies=[Depends(require_platform_permission("platform:*"))],
 )

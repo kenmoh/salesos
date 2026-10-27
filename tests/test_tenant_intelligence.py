@@ -12,7 +12,13 @@ from fastapi import HTTPException
 
 from datetime import datetime, timedelta, timezone
 
-from app.platform.routes import platform_audit_log_feed, tenant_audit_trail, tenant_overview, tenant_stores
+from app.platform.routes import (
+    audit_actor_details,
+    platform_audit_log_feed,
+    tenant_audit_trail,
+    tenant_overview,
+    tenant_stores,
+)
 
 Now = datetime(2026, 10, 27, 12, 0, tzinfo=timezone.utc)
 
@@ -342,3 +348,89 @@ class TestPlatformAuditFeed:
         assert item["details"] == {"confirm": "Ked Mart"}
         assert item["created_at"].startswith("2026-10-25")
         assert item["ip_address"] == "10.0.0.1"
+
+
+class TestAuditActorDetails:
+    def _ctx(self, results):
+        """results: ordered list; each is a _Result for that execute call."""
+        calls = []
+
+        async def execute(_q):
+            calls.append(_q)
+            return results[len(calls) - 1]
+
+        ctx = MagicMock()
+        ctx.session.execute = AsyncMock(side_effect=execute)
+        return ctx
+
+    async def test_resolves_tenant_user(self):
+        uid = uuid4()
+        user = _row(
+            id=uid,
+            full_name="Ada Obi",
+            email="ada@kedmart.com",
+            phone="+2348000000001",
+            status="active",
+            tenant_id=uuid4(),
+            store_id=uuid4(),
+            created_at=Now - timedelta(days=200),
+            last_login_at=Now - timedelta(days=1),
+        )
+        tenant = _tenant()
+        store = _row(name="Main Store")
+        ctx = self._ctx(
+            [
+                _Result(scalar=user),      # user lookup
+                _Result(scalar=tenant),    # tenant lookup
+                _Result(scalar=store),     # store lookup
+                _Result(rows=[("Cashier",)]),  # role rows
+            ]
+        )
+        resp = await audit_actor_details(str(uid), ctx)
+        data = resp["data"]
+        assert data["actor_type"] == "user"
+        assert data["full_name"] == "Ada Obi"
+        assert data["tenant_name"] == "Ked Mart"
+        assert data["store_name"] == "Main Store"
+        assert data["roles"] == ["Cashier"]
+
+    async def test_resolves_platform_admin(self):
+        aid = uuid4()
+        admin = _row(
+            id=aid,
+            full_name="Platform Owner",
+            email="admin@servi-pal.com",
+            status="active",
+            role="super_admin",
+            created_at=Now - timedelta(days=30),
+            last_login_at=Now - timedelta(days=2),
+        )
+        ctx = self._ctx(
+            [
+                _Result(scalar=None),   # user lookup misses
+                _Result(scalar=admin),  # admin lookup hits
+            ]
+        )
+        resp = await audit_actor_details(str(aid), ctx)
+        data = resp["data"]
+        assert data["actor_type"] == "admin"
+        assert data["full_name"] == "Platform Owner"
+        assert data["roles"] == ["super_admin"]
+
+    async def test_unknown_actor_404(self):
+        ctx = self._ctx(
+            [
+                _Result(scalar=None),
+                _Result(scalar=None),
+            ]
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await audit_actor_details(str(uuid4()), ctx)
+        assert exc_info.value.status_code == 404
+
+    async def test_non_uuid_404(self):
+        ctx = self._ctx([])
+        with pytest.raises(HTTPException) as exc_info:
+            await audit_actor_details("system", ctx)
+        assert exc_info.value.status_code == 404
+        ctx.session.execute.assert_not_awaited()
