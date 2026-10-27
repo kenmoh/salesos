@@ -72,7 +72,7 @@ async def get_platform_context(
                 select(PlatformAdmin).where(PlatformAdmin.id == user.admin_id)
             )
             admin = result.scalar_one_or_none()
-            if not admin or not admin.is_active:
+            if not admin or admin.status != "active":
                 raise HTTPException(
                     status.HTTP_403_FORBIDDEN, "Platform admin account is inactive or not found"
                 )

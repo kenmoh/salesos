@@ -35,5 +35,5 @@ class TierChangeCommand(BaseModel):
 TIER_LIMITS: dict[str, dict] = {
     "starter": {"max_terminals": 1, "max_products": 100, "max_users": 2},
     "growth": {"max_terminals": 3, "max_products": 1000, "max_users": 10},
-    "pro": {"max_terminals": 10, "max_products": 999999, "max_users": 50},
+    "enterprise": {"max_terminals": 10, "max_products": 10000, "max_users": 100},
 }

@@ -124,6 +124,17 @@ async def create_tenant(payload: CreateTenantRequest, ctx: PlatformDep):
         owner_password_hash=hash_password(payload.password),
         actor_id=ctx.user.admin_id,
     )
+
+    from app.platform.audit import log_platform_audit
+
+    await log_platform_audit(
+        ctx.session,
+        admin_id=ctx.user.admin_id,
+        action="tenant.create",
+        resource="tenant",
+        resource_id=result.get("id"),
+        details={"business_name": payload.business_name, "tier": payload.tier},
+    )
     return ok(result)
 
 
@@ -255,6 +266,7 @@ async def get_tenant(tenant_id: str, ctx: PlatformDep):
     "/tenants/{tenant_id}", dependencies=[Depends(require_platform_permission("platform:*"))]
 )
 async def update_tenant(tenant_id: str, payload: TenantUpdateRequest, ctx: PlatformDep):
+    from app.platform.audit import log_platform_audit
     from app.tenancy.models import Tenant
 
     result = await ctx.session.execute(select(Tenant).where(Tenant.id == tenant_id))
@@ -262,18 +274,59 @@ async def update_tenant(tenant_id: str, payload: TenantUpdateRequest, ctx: Platf
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    if payload.status is not None:
+    changes: dict[str, dict] = {}
+    if payload.status is not None and payload.status != tenant.status:
         if payload.status not in ("active", "suspended", "cancelled"):
             raise HTTPException(status_code=400, detail="Invalid status")
+        changes["status"] = {"from": tenant.status, "to": payload.status}
         tenant.status = payload.status
-    if payload.tier is not None:
+    if payload.tier is not None and payload.tier != tenant.tier:
         if payload.tier not in ("starter", "growth", "enterprise"):
             raise HTTPException(status_code=400, detail="Invalid tier")
+
+        from app.tenancy.schemas import TIER_LIMITS
+
+        limits = TIER_LIMITS.get(payload.tier)
+        if not limits:
+            raise HTTPException(status_code=400, detail="Invalid tier")
+        changes["tier"] = {"from": tenant.tier, "to": payload.tier}
         tenant.tier = payload.tier
-    if payload.business_name is not None:
+
+        from app.tenancy.models import TenantTierProjection
+
+        proj = await ctx.session.scalar(
+            select(TenantTierProjection).where(TenantTierProjection.tenant_id == tenant.id)
+        )
+        if proj:
+            proj.tier = payload.tier
+            proj.max_terminals = limits["max_terminals"]
+            proj.max_products = limits["max_products"]
+            proj.max_users = limits["max_users"]
+        else:
+            ctx.session.add(
+                TenantTierProjection(
+                    tenant_id=tenant.id,
+                    tier=payload.tier,
+                    max_terminals=limits["max_terminals"],
+                    max_products=limits["max_products"],
+                    max_users=limits["max_users"],
+                )
+            )
+    if payload.business_name is not None and payload.business_name != tenant.business_name:
+        changes["business_name"] = {"to": payload.business_name}
         tenant.business_name = payload.business_name
 
     await ctx.session.flush()
+
+    if changes:
+        await log_platform_audit(
+            ctx.session,
+            admin_id=ctx.user.admin_id,
+            action="tenant.update",
+            resource="tenant",
+            resource_id=str(tenant.id),
+            details=changes,
+        )
 
     return ok(
         {
@@ -290,12 +343,22 @@ async def update_tenant(tenant_id: str, payload: TenantUpdateRequest, ctx: Platf
     "/tenants/{tenant_id}", dependencies=[Depends(require_platform_permission("platform:*"))]
 )
 async def delete_tenant(tenant_id: str, ctx: PlatformDep):
+    from app.platform.audit import log_platform_audit
     from app.tenancy.models import Tenant
 
     result = await ctx.session.execute(select(Tenant).where(Tenant.id == tenant_id))
     tenant = result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
+
+    await log_platform_audit(
+        ctx.session,
+        admin_id=ctx.user.admin_id,
+        action="tenant.delete",
+        resource="tenant",
+        resource_id=str(tenant.id),
+        details={"business_name": tenant.business_name, "owner_email": tenant.owner_email},
+    )
 
     await ctx.session.delete(tenant)
     await ctx.session.flush()
@@ -992,7 +1055,7 @@ async def analytics_system_health(
     to_date: str | None = None,
     group_by: str = "day",
 ):
-    from app.common.models.audit import AuditEvent
+    from app.auth.audit import AuditEvent
     from datetime import datetime, timezone, timedelta
 
     now = datetime.now(timezone.utc)
