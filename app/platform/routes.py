@@ -2102,6 +2102,16 @@ async def analytics_platform_revenue(
 
     trunc_map = {"day": "day", "week": "week", "month": "month"}
     bucket = trunc_map.get(group_by, "month")
+
+    def _period_label(dt):
+        if dt is None:
+            return None
+        if bucket == "month":
+            return dt.strftime("%b %Y")
+        if bucket == "week":
+            return dt.strftime("%d %b")
+        return dt.strftime("%d %b %Y")
+
     trend_rows = (
         await ctx.session.execute(
             _window(
@@ -2148,6 +2158,7 @@ async def analytics_platform_revenue(
             "trend": [
                 {
                     "period": r.period.isoformat() if r.period else None,
+                    "label": _period_label(r.period),
                     "count": int(r.count),
                     "settled": float(r.settled),
                     "pending": float(r.pending),
@@ -2241,6 +2252,7 @@ async def analytics_system_health(
     error_trend_data = [
         {
             "period": r[0].isoformat(),
+            "label": r[0].strftime("%d %b %Y"),
             "total": int(r[1]),
             "errors": int(r[2]),
             "error_rate": round(int(r[2]) / int(r[1]) * 100, 1) if int(r[1]) else 0,
@@ -2318,6 +2330,7 @@ async def analytics_user_engagement(
             "login_trend": [
                 {
                     "period": r[0].isoformat(),
+                    "label": r[0].strftime("%d %b %Y"),
                     "unique_logins": int(r[1]),
                 }
                 for r in login_trend
