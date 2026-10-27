@@ -10,7 +10,42 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
-from app.platform.routes import tenant_overview, tenant_stores
+from datetime import datetime, timedelta, timezone
+
+from app.platform.routes import platform_audit_log_feed, tenant_audit_trail, tenant_overview, tenant_stores
+
+Now = datetime(2026, 10, 27, 12, 0, tzinfo=timezone.utc)
+
+
+def _plat_row():
+    return dict(
+        admin_id=uuid4(),
+        action="tenant.delete",
+        resource="tenant",
+        resource_id="t1",
+        details='{"confirm": "Ked Mart"}',
+        created_at=Now - timedelta(days=2),
+    )
+
+
+def _auth_row():
+    return dict(
+        action="login_success",
+        details='{"method": "password"}',
+        created_at=Now - timedelta(days=1),
+    )
+
+
+def _biz_row():
+    return dict(
+        user_id=uuid4(),
+        action="login",
+        resource_type="auth",
+        details=None,
+        status_code=200,
+        created_at=Now - timedelta(hours=3),
+    )
+
 
 
 def _row(**kwargs):
@@ -181,3 +216,129 @@ class TestTenantStores:
         with pytest.raises(HTTPException) as exc_info:
             await tenant_stores("nope", ctx)
         assert exc_info.value.status_code == 404
+
+
+def _data(r):
+    return r["data"]
+
+
+class TestTenantAuditTrail:
+    def _trail_session(self, tenant, rows_by_source):
+        """rows_by_source maps call index -> list of row-dicts (already flat)."""
+        executor_calls = []
+
+        async def execute(_query):
+            executor_calls.append(_query)
+            idx = len(executor_calls)
+            rows_spec = rows_by_source.get(idx, [])
+            objs = []
+            for r in rows_spec:
+                obj = MagicMock()
+                for key, value in r.items():
+                    if key == "created_at":
+                        setattr(obj, "created_at", value)
+                    else:
+                        setattr(obj, key, value)
+                objs.append(obj)
+            result = MagicMock()
+            result.all.return_value = objs
+            if idx == 1:
+                result.scalar_one_or_none.return_value = tenant
+            return result
+
+        ctx = MagicMock()
+        ctx.session.execute = AsyncMock(side_effect=execute)
+        return ctx
+
+    async def test_merged_sources_sorted_desc(self):
+        tenant = _tenant()
+        # call 2 = platform, 3 = auth, 4 = business (source=None pulls all)
+        ctx = self._trail_session(
+            tenant,
+            {
+                2: [_plat_row()],
+                3: [_auth_row()],
+                4: [_biz_row()],
+            },
+        )
+        resp = await tenant_audit_trail(tenant.id, ctx, days=90)
+
+        data = _data(resp)
+        assert data["total"] == 3
+        sources = [i["source"] for i in data["items"]]
+        assert sources == ["tenant", "auth", "platform"]  # desc by at
+        platform_item = data["items"][2]
+        assert platform_item["action"] == "tenant.delete"
+        assert platform_item["detail"] == {"confirm": "Ked Mart"}
+        assert platform_item["actor"] is not None
+
+    async def test_auth_source_skips_other_layers(self):
+        tenant = _tenant()
+        calls = []
+
+        async def execute(_q):
+            calls.append(_q)
+            result = MagicMock()
+            result.scalar_one_or_none.return_value = tenant if len(calls) == 1 else None
+            result.all.return_value = []
+            return result
+
+        ctx = MagicMock()
+        ctx.session.execute = AsyncMock(side_effect=execute)
+        resp = await tenant_audit_trail(tenant.id, ctx, days=90, source="auth")
+
+        assert _data(resp)["total"] == 0
+        assert len(calls) == 2  # tenant lookup + auth layer only
+
+    async def test_invalid_source_422(self):
+        ctx = MagicMock()
+        ctx.session.execute = AsyncMock(return_value=_Result(scalar=_tenant()))
+        with pytest.raises(HTTPException) as exc_info:
+            await tenant_audit_trail("t", ctx, source="bogus")
+        assert exc_info.value.status_code == 422
+
+    async def test_unknown_tenant_404(self):
+        ctx = MagicMock()
+        ctx.session.execute = AsyncMock(return_value=_Result(scalar=None))
+        with pytest.raises(HTTPException) as exc_info:
+            await tenant_audit_trail("nope", ctx)
+        assert exc_info.value.status_code == 404
+
+
+class TestPlatformAuditFeed:
+    async def _feed_session(self, rows):
+        executor_calls = []
+
+        async def execute(_q):
+            executor_calls.append(_q)
+            idx = len(executor_calls)
+            if idx == 1:
+                return _Result(scalar=len(rows))
+            objs = []
+            for r in rows:
+                obj = MagicMock()
+                for key, value in r.items():
+                    setattr(obj, key, value)
+                objs.append(obj)
+            result = MagicMock()
+            result.all.return_value = objs
+            return result
+
+        ctx = MagicMock()
+        ctx.session.execute = AsyncMock(side_effect=execute)
+        return ctx
+
+    async def test_feed_shape(self):
+        r = _plat_row()
+        r["id"] = uuid4()
+        r["ip_address"] = "10.0.0.1"
+        ctx = await self._feed_session([r])
+        resp = await platform_audit_log_feed(ctx)
+
+        data = resp["data"]
+        assert data["total"] == 1
+        item = data["items"][0]
+        assert item["action"] == "tenant.delete"
+        assert item["details"] == {"confirm": "Ked Mart"}
+        assert item["created_at"].startswith("2026-10-25")
+        assert item["ip_address"] == "10.0.0.1"

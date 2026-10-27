@@ -1,3 +1,4 @@
+import json
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -1455,6 +1456,229 @@ async def tenant_stores(tenant_id: str, ctx: PlatformDep, days: int = 30):
 
     items.sort(key=lambda s: s["window_revenue"], reverse=True)
     return ok({"items": items, "total": len(items), "window_days": days})
+
+
+@router.get(
+    "/tenants/{tenant_id}/audit-trail",
+    dependencies=[Depends(require_platform_permission("platform:*"))],
+)
+async def tenant_audit_trail(
+    tenant_id: str,
+    ctx: PlatformDep,
+    days: int = 90,
+    source: str | None = None,
+    page: int = 1,
+    page_size: int = 100,
+):
+    """Unified audit trail for one tenant across all three layers.
+
+    - ``platform``: actions platform admins took against this tenant
+      (platform_audit_log where resource='tenant', resource_id=tenant).
+    - ``auth``: member authentication events (auth_audit_logs by tenant_id).
+    - ``tenant``: the tenant's own business-action log (audit_events by
+      business_id).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.auth.audit import AuditEvent
+    from app.identity.models import AuthAuditLog
+    from app.platform.models import PlatformAuditLog
+    from app.tenancy.models import Tenant
+
+    tenant_r = await ctx.session.execute(select(Tenant).where(Tenant.id == tenant_id))
+    tenant = tenant_r.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    now = datetime.now(timezone.utc)
+    days = min(max(days, 1), 365)
+    since = now - timedelta(days=days)
+
+    allowed_sources = {"platform", "auth", "tenant"}
+    if source is not None and source not in allowed_sources:
+        raise HTTPException(status_code=422, detail=f"source must be one of {sorted(allowed_sources)}")
+
+    def _norm_details(raw):
+        if raw is None:
+            return None
+        if isinstance(raw, dict):
+            return raw
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError):
+            return raw
+
+    rows_data = []
+
+    def _collect(resource, when, actor, action, detail, status):
+        rows_data.append(
+            {
+                "at": when,
+                "source": resource,
+                "actor": actor,
+                "action": action,
+                "detail": _norm_details(detail),
+                "status": status,
+            }
+        )
+
+    include_platform = source in (None, "platform")
+    include_auth = source in (None, "auth")
+    include_business = source in (None, "tenant")
+
+    if include_platform:
+        plat_r = await ctx.session.execute(
+            select(
+                PlatformAuditLog.admin_id,
+                PlatformAuditLog.action,
+                PlatformAuditLog.resource,
+                PlatformAuditLog.resource_id,
+                PlatformAuditLog.details,
+                PlatformAuditLog.created_at,
+            )
+            .where(
+                PlatformAuditLog.resource == "tenant",
+                PlatformAuditLog.resource_id == tenant_id,
+                PlatformAuditLog.created_at >= since,
+            )
+            .order_by(PlatformAuditLog.created_at.desc())
+        )
+        for r in plat_r.all():
+            _collect("platform", r.created_at, str(r.admin_id) if r.admin_id else None, r.action, r.details, "ok")
+
+    if include_auth:
+        auth_r = await ctx.session.execute(
+            select(
+                AuthAuditLog.action,
+                AuthAuditLog.details,
+                AuthAuditLog.created_at,
+            )
+            .where(
+                AuthAuditLog.tenant_id == tenant.id,
+                AuthAuditLog.created_at >= since,
+            )
+            .order_by(AuthAuditLog.created_at.desc())
+        )
+        for r in auth_r.all():
+            _collect("auth", r.created_at, None, r.action, r.details, "ok")
+
+    if include_business:
+        biz_r = await ctx.session.execute(
+            select(
+                AuditEvent.user_id,
+                AuditEvent.action,
+                AuditEvent.resource_type,
+                AuditEvent.details,
+                AuditEvent.status_code,
+                AuditEvent.created_at,
+            )
+            .where(AuditEvent.business_id == tenant_id, AuditEvent.created_at >= since)
+            .order_by(AuditEvent.created_at.desc())
+        )
+        for r in biz_r.all():
+            _collect(
+                "tenant",
+                r.created_at,
+                str(r.user_id) if r.user_id else None,
+                r.action,
+                r.details,
+                r.status_code,
+            )
+
+    rows_data.sort(key=lambda x: x["at"], reverse=True)
+
+    total = len(rows_data)
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 200)
+    start = (page - 1) * page_size
+    window_rows = rows_data[start : start + page_size]
+
+    for row in window_rows:
+        row["at"] = row["at"].isoformat()
+
+    return ok({"items": window_rows, "total": total, "page": page, "page_size": page_size, "window_days": days})
+
+
+@router.get(
+    "/audit-log",
+    dependencies=[Depends(require_platform_permission("platform:*"))],
+)
+async def platform_audit_log_feed(
+    ctx: PlatformDep,
+    resource: str | None = None,
+    admin_id: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+):
+    """Global platform action feed (all platform admin actions)."""
+    from datetime import datetime
+
+    from app.platform.models import PlatformAuditLog
+
+    def _parse_details(raw):
+        if raw is None:
+            return None
+        if isinstance(raw, dict):
+            return raw
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError):
+            return raw
+
+    def _iso(value):
+        return value.isoformat() if isinstance(value, datetime) else value
+
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 200)
+
+    count_q = select(func.count(PlatformAuditLog.id))
+    query = (
+        select(
+            PlatformAuditLog.id,
+            PlatformAuditLog.admin_id,
+            PlatformAuditLog.action,
+            PlatformAuditLog.resource,
+            PlatformAuditLog.resource_id,
+            PlatformAuditLog.details,
+            PlatformAuditLog.ip_address,
+            PlatformAuditLog.created_at,
+        )
+        .order_by(PlatformAuditLog.created_at.desc(), PlatformAuditLog.id.desc())
+    )
+    if resource:
+        count_q = count_q.where(PlatformAuditLog.resource == resource)
+        query = query.where(PlatformAuditLog.resource == resource)
+    if admin_id:
+        count_q = count_q.where(PlatformAuditLog.admin_id == admin_id)
+        query = query.where(PlatformAuditLog.admin_id == admin_id)
+
+    total = (await ctx.session.execute(count_q)).scalar()
+    rows = (
+        await ctx.session.execute(
+            query.offset((page - 1) * page_size).limit(page_size)
+        )
+    ).all()
+
+    return ok(
+        {
+            "items": [
+                {
+                    "id": str(r.id),
+                    "admin_id": str(r.admin_id) if r.admin_id else None,
+                    "action": r.action,
+                    "resource": r.resource,
+                    "resource_id": r.resource_id,
+                    "details": _parse_details(r.details),
+                    "ip_address": r.ip_address,
+                    "created_at": _iso(r.created_at),
+                }
+                for r in rows
+            ],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════
