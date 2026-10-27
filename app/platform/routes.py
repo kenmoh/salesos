@@ -1513,7 +1513,7 @@ async def tenant_audit_trail(
 
     rows_data = []
 
-    def _collect(resource, when, actor, action, detail, status):
+    def _collect(resource, when, actor, action, detail, status, resource_type=None, resource_id=None):
         rows_data.append(
             {
                 "at": when,
@@ -1522,6 +1522,8 @@ async def tenant_audit_trail(
                 "action": action,
                 "detail": _norm_details(detail),
                 "status": status,
+                "resource": resource_type,
+                "resource_id": resource_id,
             }
         )
 
@@ -1547,7 +1549,16 @@ async def tenant_audit_trail(
             .order_by(PlatformAuditLog.created_at.desc())
         )
         for r in plat_r.all():
-            _collect("platform", r.created_at, str(r.admin_id) if r.admin_id else None, r.action, r.details, "ok")
+            _collect(
+                "platform",
+                r.created_at,
+                str(r.admin_id) if r.admin_id else None,
+                r.action,
+                r.details,
+                "ok",
+                resource_type=r.resource,
+                resource_id=r.resource_id,
+            )
 
     if include_auth:
         auth_r = await ctx.session.execute(
@@ -1586,6 +1597,8 @@ async def tenant_audit_trail(
                 r.action,
                 r.details,
                 r.status_code,
+                resource_type=r.resource_type,
+                resource_id=r.resource_id,
             )
 
     rows_data.sort(key=lambda x: x["at"], reverse=True)
