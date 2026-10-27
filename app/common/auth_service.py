@@ -813,36 +813,12 @@ async def delete_own_account(
     as we go), then removes the tenant row itself. Refresh sessions and the
     caller's access token are revoked afterwards.
     """
-    from app.common.db.base import StoreFlowBase
     from app.common.db.session import set_rls_context
     from app.core.security import verify_password
     from app.identity.models import User as IdUser
     from app.tenancy.models import Tenant
 
-    # Register every model module with the shared metadata before sweeping:
-    # sorted_tables only knows tables whose owning module has been imported,
-    # and the auth service does not import all of them itself.
-    import importlib
-
-    for _module in (
-        "app.tenancy.models",
-        "app.identity.models",
-        "app.stores.models",
-        "app.catalog.models",
-        "app.cart.models",
-        "app.sales.models",
-        "app.payments.models",
-        "app.customers.models",
-        "app.inventory.models",
-        "app.documents.models",
-        "app.taxes.models",
-        "app.accounting.models",
-        "app.ai.models",
-        "app.reporting.models",
-        "app.notifications.models",
-        "app.platform.models",
-    ):
-        importlib.import_module(_module)
+    from app.common.tenant_sweep import sweep_tenant_data
 
     if DELETE_ACL_ROLE not in role_names:
         raise AuthError(
@@ -874,27 +850,7 @@ async def delete_own_account(
 
     # Delete tenant-scoped rows child-first across every mapped table that
     # carries tenant_id, then drop the tenant record itself.
-    tables = [
-        t
-        for t in reversed(StoreFlowBase.metadata.sorted_tables)
-        if any(c.name == "tenant_id" for c in t.columns)
-    ]
-    for table in tables:
-        await session.execute(
-            table.delete().where(table.c.tenant_id == UUID(business_id))
-        )
-
-    # Note: auth_audit_logs rows for this tenant are removed by the sweep
-    # above; the deletion event itself is written below and intentionally
-    # outlives the account so the action remains traceable.
-    tenant_result = await session.execute(
-        select(Tenant).where(Tenant.id == UUID(business_id))
-    )
-    tenant = tenant_result.scalar_one_or_none()
-    if tenant:
-        await session.delete(tenant)
-
-    await session.flush()
+    await sweep_tenant_data(session, business_id)
 
     # Write the deletion audit entry after the sweep so it survives.
     await log_auth_event(

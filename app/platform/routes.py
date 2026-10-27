@@ -48,6 +48,11 @@ class AdminUpdateRequest(BaseModel):
     status: str | None = None
 
 
+class DeleteTenantRequest(BaseModel):
+    """Hard delete confirmation: must match the tenant's business_name."""
+    business_name: str
+
+
 class TenantUpdateRequest(BaseModel):
     status: str | None = None
     tier: str | None = None
@@ -611,7 +616,13 @@ async def update_tenant(tenant_id: str, payload: TenantUpdateRequest, ctx: Platf
 @router.delete(
     "/tenants/{tenant_id}", dependencies=[Depends(require_platform_permission("platform:*"))]
 )
-async def delete_tenant(tenant_id: str, ctx: PlatformDep):
+async def delete_tenant(
+    tenant_id: str, payload: DeleteTenantRequest, ctx: PlatformDep
+):
+    from app.common.db.session import set_rls_context
+    from app.common.tenant_sweep import sweep_tenant_data
+    from app.core.security import revoke_all_sessions
+    from app.identity.models import User
     from app.platform.audit import log_platform_audit
     from app.tenancy.models import Tenant
 
@@ -619,6 +630,24 @@ async def delete_tenant(tenant_id: str, ctx: PlatformDep):
     tenant = result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
+
+    if payload.business_name.strip().lower() != tenant.business_name.strip().lower():
+        raise HTTPException(
+            status_code=400,
+            detail="Confirmation failed: business_name does not match this tenant",
+        )
+
+    # Capture member ids before the sweep erases their rows.
+    member_ids = [
+        str(uid)
+        for uid in (
+            await ctx.session.execute(
+                select(User.id).where(User.tenant_id == tenant.id)
+            )
+        )
+        .scalars()
+        .all()
+    ]
 
     await log_platform_audit(
         ctx.session,
@@ -629,10 +658,17 @@ async def delete_tenant(tenant_id: str, ctx: PlatformDep):
         details={"business_name": tenant.business_name, "owner_email": tenant.owner_email},
     )
 
-    await ctx.session.delete(tenant)
-    await ctx.session.flush()
+    # The platform session satisfies the forced-RLS tenant policies the same
+    # way an owner flow does: business_id GUC pinned to this tenant.
+    await set_rls_context(ctx.session, ctx.user.admin_id, str(tenant.id), "owner")
+    swept = await sweep_tenant_data(ctx.session, tenant.id)
 
-    return {"success": True, "deleted": tenant_id}
+    # Cache revocation before commit is safe; a failed commit leaves live
+    # rows whose users simply establish fresh sessions.
+    for uid in member_ids:
+        await revoke_all_sessions(uid)
+
+    return {"success": True, "deleted": tenant_id, "swept_tables": swept}
 
 
 # ── Users (cross-tenant) ─────────────────────────────────────────

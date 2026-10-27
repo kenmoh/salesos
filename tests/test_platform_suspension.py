@@ -16,9 +16,12 @@ from app.core.dependencies import assert_tenant_active
 
 
 def _session_result(scalars_rows=None, scalar_value=None, rowcount=0):
-    scalars = MagicMock()
-    scalars.all = MagicMock(return_value=scalars_rows or [])
-    return MagicMock(scalars=MagicMock(return_value=scalars), scalar=MagicMock(return_value=scalar_value), rowcount=rowcount)
+    scalars = MagicMock(
+        return_value=MagicMock(all=MagicMock(return_value=scalars_rows or []))
+    )
+    return MagicMock(
+        scalars=scalars, scalar=MagicMock(return_value=scalar_value), rowcount=rowcount
+    )
 
 
 async def _suspend_via_route(tenant_id: str, *, initial_status="active", to_status="suspended"):
