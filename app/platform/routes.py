@@ -53,6 +53,10 @@ class DeleteTenantRequest(BaseModel):
     business_name: str
 
 
+class ContactStatusRequest(BaseModel):
+    status: str
+
+
 class TenantUpdateRequest(BaseModel):
     status: str | None = None
     tier: str | None = None
@@ -797,18 +801,22 @@ async def tenant_employees(tenant_id: str, ctx: PlatformDep):
 async def tenant_sales(
     tenant_id: str,
     ctx: PlatformDep,
+    store_id: str | None = None,
     page: int = 1,
     page_size: int = 50,
 ):
     from app.sales.models import Sale
 
     count_q = select(func.count(Sale.id)).where(Sale.tenant_id == tenant_id)
+    if store_id:
+        count_q = count_q.where(Sale.store_id == store_id)
     total = (await ctx.session.execute(count_q)).scalar()
 
+    query = select(Sale).where(Sale.tenant_id == tenant_id)
+    if store_id:
+        query = query.where(Sale.store_id == store_id)
     query = (
-        select(Sale)
-        .where(Sale.tenant_id == tenant_id)
-        .order_by(Sale.created_at.desc())
+        query.order_by(Sale.created_at.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
@@ -821,6 +829,7 @@ async def tenant_sales(
                 {
                     "id": str(s.id),
                     "sale_number": s.sale_number,
+                    "store_id": str(s.store_id) if s.store_id else None,
                     "cashier_id": str(s.cashier_id) if s.cashier_id else None,
                     "total": float(s.total),
                     "discount": float(s.discount) if s.discount else 0,
@@ -990,12 +999,23 @@ async def tenant_documents(
     "/tenants/{tenant_id}/overview",
     dependencies=[Depends(require_platform_permission("platform:*"))],
 )
-async def tenant_overview(tenant_id: str, ctx: PlatformDep):
-    from app.identity.models import User
+async def tenant_overview(tenant_id: str, ctx: PlatformDep, days: int = 30):
+    """Deep per-tenant profile: people, ops, sales, payments, fees, risk.
+
+    Every block reads its own aggregate; no per-row loops, no N+1.
+    ``days`` (default 30, capped 365) drives the sales window and its
+    change-versus-previous-window comparison.
+    """
+    from datetime import datetime, timedelta, timezone
+
     from app.catalog.models import Product
-    from app.sales.models import Sale
-    from app.payments.models import Payment
+    from app.customers.models import Customer
     from app.documents.models import Document
+    from app.identity.models import Role, User, UserRole
+    from app.payments.models import Payment
+    from app.platform.models import PlatformFeeLedger as Fee
+    from app.sales.models import Sale
+    from app.stores.models import Store
     from app.tenancy.models import Tenant
 
     tenant_r = await ctx.session.execute(select(Tenant).where(Tenant.id == tenant_id))
@@ -1003,8 +1023,40 @@ async def tenant_overview(tenant_id: str, ctx: PlatformDep):
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
+    now = datetime.now(timezone.utc)
+    days = min(max(days, 1), 365)
+    window_start = now - timedelta(days=days)
+    prev_window_start = now - timedelta(days=days * 2)
+
+    # ── People: roles via the join table, statuses in one row.
+    role_rows = (
+        await ctx.session.execute(
+            select(Role.name, func.count(UserRole.user_id))
+            .select_from(UserRole)
+            .join(Role, Role.id == UserRole.role_id)
+            .where(
+                UserRole.user_id.in_(select(User.id).where(User.tenant_id == tenant_id))
+            )
+            .group_by(Role.name)
+        )
+    ).all()
+    people = (
+        await ctx.session.execute(
+            select(
+                func.coalesce(func.sum(case((User.status != "suspended", 1), else_=0)), 0).label(
+                    "active"
+                ),
+                func.coalesce(func.sum(case((User.status == "suspended", 1), else_=0)), 0).label(
+                    "suspended"
+                ),
+                func.max(User.last_login_at).label("last_login"),
+            ).where(User.tenant_id == tenant_id)
+        )
+    ).one()
     user_count = (
-        await ctx.session.execute(select(func.count(User.id)).where(User.tenant_id == tenant_id))
+        await ctx.session.execute(
+            select(func.count(User.id)).where(User.tenant_id == tenant_id)
+        )
     ).scalar()
 
     product_count = (
@@ -1025,17 +1077,119 @@ async def tenant_overview(tenant_id: str, ctx: PlatformDep):
         )
     ).scalar()
 
+    def _sales_window(start, end):
+        return select(
+            func.count(Sale.id).label("cnt"),
+            func.coalesce(func.sum(Sale.total), 0).label("vol"),
+        ).where(
+            Sale.tenant_id == tenant_id,
+            Sale.status != "voided",
+            Sale.created_at >= start,
+            Sale.created_at < end,
+        )
+
+    cur_stats = (await ctx.session.execute(_sales_window(window_start, now))).one()
+    prev_stats = (await ctx.session.execute(_sales_window(prev_window_start, window_start))).one()
+    cur_vol = float(cur_stats.vol)
+    prev_vol = float(prev_stats.vol)
+    vol_change = (
+        round((cur_vol - prev_vol) / prev_vol * 100, 1)
+        if prev_vol
+        else (100.0 if cur_vol else 0.0)
+    )
+    avg_basket = round(cur_vol / cur_stats.cnt, 2) if cur_stats.cnt else 0.0
+    last_sale_at = (
+        await ctx.session.execute(
+            select(func.max(Sale.created_at)).where(Sale.tenant_id == tenant_id)
+        )
+    ).scalar()
+
+    daily_activity = (
+        await ctx.session.execute(
+            select(
+                cast(Sale.created_at, Date).label("day"),
+                func.count(Sale.id).label("cnt"),
+                func.coalesce(func.sum(Sale.total), 0).label("vol"),
+            )
+            .where(
+                Sale.tenant_id == tenant_id,
+                Sale.status != "voided",
+                Sale.created_at >= window_start,
+            )
+            .group_by(text("1"))
+            .order_by(text("1"))
+        )
+    ).all()
+
     payment_count = (
         await ctx.session.execute(
             select(func.count(Payment.id)).where(Payment.tenant_id == tenant_id)
         )
     ).scalar()
-
-    doc_count = (
+    method_rows = (
         await ctx.session.execute(
-            select(func.count(Document.id)).where(Document.tenant_id == tenant_id)
+            select(
+                Payment.method.label("method"),
+                func.count(Payment.id).label("cnt"),
+                func.sum(Payment.amount).label("vol"),
+            )
+            .where(Payment.tenant_id == tenant_id)
+            .group_by(Payment.method)
+            .order_by(func.sum(Payment.amount).desc())
+        )
+    ).all()
+
+    fee_stats = (
+        await ctx.session.execute(
+            select(
+                func.coalesce(
+                    func.sum(case((Fee.status == "deducted", Fee.amount), else_=0)), 0
+                ).label("settled"),
+                func.coalesce(
+                    func.sum(case((Fee.status == "pending", Fee.amount), else_=0)), 0
+                ).label("pending"),
+                func.count(Fee.id).filter(Fee.status == "pending").label("pending_count"),
+                func.max(Fee.created_at).label("last_fee"),
+            ).where(Fee.tenant_id == tenant_id)
+        )
+    ).one()
+
+    doc_rows = (
+        await ctx.session.execute(
+            select(Document.doc_type, func.count(Document.id))
+            .where(Document.tenant_id == tenant_id)
+            .group_by(Document.doc_type)
+        )
+    ).all()
+    doc_count = sum(int(d[1]) for d in doc_rows)
+
+    customer_count = (
+        await ctx.session.execute(
+            select(func.count(Customer.id)).where(Customer.tenant_id == tenant_id)
         )
     ).scalar()
+
+    store_count = (
+        await ctx.session.execute(select(func.count(Store.id)).where(Store.tenant_id == tenant_id))
+    ).scalar()
+    warehouse_count = (
+        await ctx.session.execute(
+            select(func.count(Store.id)).where(
+                Store.tenant_id == tenant_id, Store.is_warehouse.is_(True)
+            )
+        )
+    ).scalar()
+
+    def _days_since(ts):
+        return (now - ts).days if ts else None
+
+    last_sale_days = _days_since(last_sale_at)
+    last_login_days = _days_since(people.last_login)
+    risk_level = "low"
+    if (last_sale_days or 999) > 30 or (last_login_days or 999) > 30:
+        risk_level = "high"
+    elif (last_sale_days or 999) > 7:
+        risk_level = "medium"
 
     return ok(
         {
@@ -1052,10 +1206,255 @@ async def tenant_overview(tenant_id: str, ctx: PlatformDep):
                 "sales": sale_count,
                 "payments": payment_count,
                 "documents": doc_count,
+                "stores": store_count,
             },
             "revenue": float(total_revenue),
+            "employees": {
+                "total": user_count,
+                "active": int(people.active),
+                "suspended": int(people.suspended),
+                "by_role": [
+                    {"role": r[0] or "unassigned", "count": int(r[1])} for r in role_rows
+                ],
+                "last_login_at": people.last_login.isoformat()
+                if people.last_login
+                else None,
+            },
+            "stores": {"total": store_count, "warehouses": warehouse_count},
+            "sales": {
+                "lifetime_count": sale_count,
+                "lifetime_revenue": float(total_revenue),
+                "window_days": days,
+                "window_count": int(cur_stats.cnt),
+                "window_revenue": cur_vol,
+                "prev_window_revenue": prev_vol,
+                "revenue_change_pct": vol_change,
+                "avg_basket": avg_basket,
+                "last_sale_at": last_sale_at.isoformat() if last_sale_at else None,
+            },
+            "payments": {
+                "by_method": [
+                    {"method": r.method, "count": int(r.cnt), "total": float(r.vol)}
+                    for r in method_rows
+                ]
+            },
+            "fees": {
+                "settled_total": float(fee_stats.settled),
+                "pending_total": float(fee_stats.pending),
+                "pending_count": int(fee_stats.pending_count or 0),
+                "last_fee_at": fee_stats.last_fee.isoformat()
+                if fee_stats.last_fee
+                else None,
+            },
+            "documents": {
+                "by_type": [{"doc_type": d[0], "count": int(d[1])} for d in doc_rows]
+            },
+            "customers": {"total": customer_count},
+            "risk": {
+                "days_since_last_sale": last_sale_days if last_sale_days is not None else 999,
+                "days_since_last_login": last_login_days
+                if last_login_days is not None
+                else 999,
+                "level": risk_level,
+            },
+            "activity": [
+                {
+                    "date": r.day.isoformat() if r.day else None,
+                    "count": int(r.cnt),
+                    "revenue": float(r.vol),
+                }
+                for r in daily_activity
+            ],
         }
     )
+
+
+@router.get(
+    "/tenants/{tenant_id}/stores",
+    dependencies=[Depends(require_platform_permission("platform:*"))],
+)
+async def tenant_stores(tenant_id: str, ctx: PlatformDep, days: int = 30):
+    """Store-level breakdown for one tenant.
+
+    OUTLET rows carry product/employee counts, revenue for the window with
+    change versus the previous window, payment-method mix, last-sale date
+    and a low-stock signal.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.inventory.models import StockBalance
+    from app.identity.models import User
+    from app.payments.models import Payment
+    from app.sales.models import Sale
+    from app.stores.models import Store, StoreProduct
+    from app.tenancy.models import Tenant
+
+    tenant_r = await ctx.session.execute(select(Tenant).where(Tenant.id == tenant_id))
+    tenant = tenant_r.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    now = datetime.now(timezone.utc)
+    days = min(max(days, 1), 365)
+    window_start = now - timedelta(days=days)
+    prev_window_start = now - timedelta(days=days * 2)
+
+    sale_stats_sq = (
+        select(
+            Sale.store_id.label("store_id"),
+            func.count(Sale.id).label("lt_count"),
+            func.coalesce(func.sum(Sale.total), 0).label("lt_revenue"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                Sale.created_at >= window_start,
+                                Sale.created_at < now,
+                                Sale.status != "voided",
+                            ),
+                            Sale.total,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("cur_revenue"),
+            func.count(Sale.id)
+            .filter(Sale.created_at >= window_start)
+            .label("cur_count"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                Sale.created_at >= prev_window_start,
+                                Sale.created_at < window_start,
+                                Sale.status != "voided",
+                            ),
+                            Sale.total,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("prev_revenue"),
+            func.max(Sale.created_at).label("last_sale"),
+        )
+        .where(Sale.tenant_id == tenant.id)
+        .group_by(Sale.store_id)
+        .subquery()
+    )
+
+    product_sq = (
+        select(StoreProduct.store_id, func.count(StoreProduct.id).label("products"))
+        .where(StoreProduct.tenant_id == tenant.id)
+        .group_by(StoreProduct.store_id)
+        .subquery()
+    )
+    employees_sq = (
+        select(User.store_id, func.count(User.id).label("employees"))
+        .where(User.tenant_id == tenant.id, User.store_id.isnot(None))
+        .group_by(User.store_id)
+        .subquery()
+    )
+    # Store products whose available stock has fallen to/below reorder point.
+    low_stock_sq = (
+        select(StoreProduct.store_id, func.count(StoreProduct.id).label("low_stock"))
+        .select_from(StoreProduct)
+        .join(
+            StockBalance,
+            and_(
+                StockBalance.store_id == StoreProduct.store_id,
+                StockBalance.product_id == StoreProduct.product_id,
+            ),
+        )
+        .where(
+            StoreProduct.tenant_id == tenant.id,
+            StockBalance.qty - StockBalance.reserved_qty <= StoreProduct.reorder_point,
+        )
+        .group_by(StoreProduct.store_id)
+        .subquery()
+    )
+
+    rows = (
+        await ctx.session.execute(
+            select(
+                Store.id,
+                Store.name,
+                Store.address,
+                Store.status,
+                Store.is_warehouse,
+                func.coalesce(sale_stats_sq.c.lt_count, 0).label("lt_count"),
+                func.coalesce(sale_stats_sq.c.lt_revenue, 0).label("lt_revenue"),
+                func.coalesce(sale_stats_sq.c.cur_revenue, 0).label("cur_revenue"),
+                func.coalesce(sale_stats_sq.c.cur_count, 0).label("cur_count"),
+                func.coalesce(sale_stats_sq.c.prev_revenue, 0).label("prev_revenue"),
+                sale_stats_sq.c.last_sale,
+                func.coalesce(product_sq.c.products, 0).label("products"),
+                func.coalesce(employees_sq.c.employees, 0).label("employees"),
+                func.coalesce(low_stock_sq.c.low_stock, 0).label("low_stock"),
+            )
+            .outerjoin(sale_stats_sq, sale_stats_sq.c.store_id == Store.id)
+            .outerjoin(product_sq, product_sq.c.store_id == Store.id)
+            .outerjoin(employees_sq, employees_sq.c.store_id == Store.id)
+            .outerjoin(low_stock_sq, low_stock_sq.c.store_id == Store.id)
+            .where(Store.tenant_id == tenant.id)
+        )
+    ).all()
+
+    method_splits = (
+        await ctx.session.execute(
+            select(
+                Sale.store_id.label("store_id"),
+                Payment.method.label("method"),
+                func.count(Payment.id).label("cnt"),
+                func.sum(Payment.amount).label("vol"),
+            )
+            .join(Sale, Sale.id == Payment.sale_id)
+            .where(Payment.tenant_id == tenant.id, Payment.created_at >= window_start)
+            .group_by(Sale.store_id, Payment.method)
+        )
+    ).all()
+    split_map: dict = {}
+    for r in method_splits:
+        split_map.setdefault(r.store_id, []).append(
+            {"method": r.method, "count": int(r.cnt), "total": float(r.vol)}
+        )
+
+    items = []
+    for r in rows:
+        cur_rev = float(r.cur_revenue)
+        prev_rev = float(r.prev_revenue)
+        change = (
+            round((cur_rev - prev_rev) / prev_rev * 100, 1)
+            if prev_rev
+            else (100.0 if cur_rev else 0.0)
+        )
+        items.append(
+            {
+                "store_id": str(r.id),
+                "name": r.name,
+                "address": r.address,
+                "status": r.status,
+                "is_warehouse": bool(r.is_warehouse),
+                "products": int(r.products),
+                "employees": int(r.employees),
+                "low_stock": int(r.low_stock),
+                "lifetime_sales": int(r.lt_count),
+                "lifetime_revenue": float(r.lt_revenue),
+                "window_sales": int(r.cur_count),
+                "window_revenue": cur_rev,
+                "prev_window_revenue": prev_rev,
+                "revenue_change_pct": change,
+                "avg_basket": round(cur_rev / int(r.cur_count), 2) if r.cur_count else 0.0,
+                "last_sale_at": r.last_sale.isoformat() if r.last_sale else None,
+                "payment_methods": split_map.get(r.id, []),
+            }
+        )
+
+    items.sort(key=lambda s: s["window_revenue"], reverse=True)
+    return ok({"items": items, "total": len(items), "window_days": days})
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1891,10 +2290,32 @@ async def create_commission(payload: CommissionCreate, request: Request, ctx: Pl
     "/contact/messages",
     dependencies=[Depends(require_platform_permission("platform:*"))],
 )
-async def contact_inbox(ctx: PlatformDep, page: int = 1, page_size: int = 50):
-    from app.contact.routes import platform_list_messages
+async def contact_inbox(
+    ctx: PlatformDep, page: int = 1, page_size: int = 50, status_filter: str | None = None
+):
+    from app.contact.routes import _message_as_dict, platform_list_messages
 
-    return await platform_list_messages(ctx.session, page=page, page_size=page_size)
+    items, total = await platform_list_messages(
+        ctx.session, page=page, page_size=page_size, status_filter=status_filter
+    )
+    return paginated(
+        [_message_as_dict(m) for m in items], total=total, page=page, page_size=page_size
+    )
+
+
+@router.patch(
+    "/contact/messages/{message_id}",
+    dependencies=[Depends(require_platform_permission("platform:*"))],
+)
+async def contact_mark(message_id: str, payload: ContactStatusRequest, ctx: PlatformDep):
+    from app.contact import routes as contact_routes
+
+    row = await contact_routes.platform_update_message_status(
+        ctx.session, message_id, payload.status
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    return ok(contact_routes._message_as_dict(row))
 
 
 @router.get(

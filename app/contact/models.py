@@ -37,6 +37,7 @@ class ContactMessage(StoreFlowBase):
     phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     source: Mapped[str] = mapped_column(String(30), nullable=False, default="website")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )

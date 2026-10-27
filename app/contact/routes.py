@@ -36,6 +36,7 @@ def _message_as_dict(msg) -> dict:
         "phone": msg.phone,
         "message": msg.message,
         "source": msg.source,
+        "status": msg.status,
         "created_at": msg.created_at.isoformat(),
     }
 
@@ -82,7 +83,9 @@ async def submit_message(payload: ContactMessageCreate, db=Depends(get_db)):
     )
 
 
-async def platform_list_messages(db, page: int = 1, page_size: int = 50):
+async def platform_list_messages(
+    db, page: int = 1, page_size: int = 50, status_filter: str | None = None
+):
     """Read the inbox, newest first. Called from the platform router, which
     supplies the platform-authenticated session."""
     from sqlalchemy import desc, func, select
@@ -91,10 +94,39 @@ async def platform_list_messages(db, page: int = 1, page_size: int = 50):
 
     page = max(page, 1)
     page_size = min(max(page_size, 1), 100)
+
+    base = select(ContactMessage)
+    count_base = select(func.count()).select_from(ContactMessage)
+    if status_filter:
+        base = base.where(ContactMessage.status == status_filter)
+        count_base = count_base.where(ContactMessage.status == status_filter)
+
+    total = (await db.execute(count_base)).scalar()
     items = (
-        (await db.execute(select(ContactMessage).order_by(desc(ContactMessage.created_at))))
-        .scalars()
-        .all()
-    )
-    total = (await db.execute(select(func.count()).select_from(ContactMessage))).scalar()
-    return paginated([_message_as_dict(m) for m in items], total=total, page=page, page_size=page_size)
+        await db.execute(
+            base.order_by(desc(ContactMessage.created_at))
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).scalars().all()
+    return items, total
+
+
+async def platform_update_message_status(db, message_id, status: str):
+    """Mark a thread handled or push it back to the open pile."""
+    from sqlalchemy import select
+
+    from app.contact.models import ContactMessage
+
+    ALLOWED = frozenset({"open", "handled"})
+    if status not in ALLOWED:
+        raise ValueError("status must be one of: open, handled")
+
+    row = (
+        await db.execute(select(ContactMessage).where(ContactMessage.id == message_id))
+    ).scalar_one_or_none()
+    if not row:
+        return None
+    row.status = status
+    await db.commit()
+    return row
