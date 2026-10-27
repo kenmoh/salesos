@@ -60,7 +60,8 @@ class ContactStatusRequest(BaseModel):
 
 class TenantUpdateRequest(BaseModel):
     status: str | None = None
-    tier: str | None = None
+    # Subscriptions are gone — tier changes parked; PATCH now ignores tier.
+    # tier: str | None = None
     business_name: str | None = None
 
 
@@ -386,9 +387,9 @@ async def list_tenants(
     if status_filter:
         query = query.where(Tenant.status == status_filter)
         count_query = count_query.where(Tenant.status == status_filter)
-    if tier:
-        query = query.where(Tenant.tier == tier)
-        count_query = count_query.where(Tenant.tier == tier)
+    # if tier:
+    #     query = query.where(Tenant.tier == tier)
+    #     count_query = count_query.where(Tenant.tier == tier)
     if search:
         query = query.where(
             Tenant.business_name.ilike(f"%{search}%")
@@ -444,16 +445,16 @@ async def tenant_stats(ctx: PlatformDep):
     suspended = await ctx.session.execute(
         select(func.count(Tenant.id)).where(Tenant.status == "suspended")
     )
-    tiers = await ctx.session.execute(
-        select(Tenant.tier, func.count(Tenant.id)).group_by(Tenant.tier)
-    )
+    # Tiers parked (no subscriptions) — by_tier removed from stats.
+    # tiers = await ctx.session.execute(
+    #     select(Tenant.tier, func.count(Tenant.id)).group_by(Tenant.tier)
+    # )
 
     return ok(
         {
             "total": total.scalar(),
             "active": active.scalar(),
             "suspended": suspended.scalar(),
-            "by_tier": {row[0]: row[1] for row in tiers.all()},
         }
     )
 
@@ -559,38 +560,40 @@ async def update_tenant(tenant_id: str, payload: TenantUpdateRequest, ctx: Platf
             details_extra = {"users_reinstated": users_affected}
     else:
         details_extra = {}
-    if payload.tier is not None and payload.tier != tenant.tier:
-        if payload.tier not in ("starter", "growth", "enterprise"):
-            raise HTTPException(status_code=400, detail="Invalid tier")
-
-        from app.tenancy.schemas import TIER_LIMITS
-
-        limits = TIER_LIMITS.get(payload.tier)
-        if not limits:
-            raise HTTPException(status_code=400, detail="Invalid tier")
-        changes["tier"] = {"from": tenant.tier, "to": payload.tier}
-        tenant.tier = payload.tier
-
-        from app.tenancy.models import TenantTierProjection
-
-        proj = await ctx.session.scalar(
-            select(TenantTierProjection).where(TenantTierProjection.tenant_id == tenant.id)
-        )
-        if proj:
-            proj.tier = payload.tier
-            proj.max_terminals = limits["max_terminals"]
-            proj.max_products = limits["max_products"]
-            proj.max_users = limits["max_users"]
-        else:
-            ctx.session.add(
-                TenantTierProjection(
-                    tenant_id=tenant.id,
-                    tier=payload.tier,
-                    max_terminals=limits["max_terminals"],
-                    max_products=limits["max_products"],
-                    max_users=limits["max_users"],
-                )
-            )
+    # Tier changes parked — subscriptions are gone; tier stays only as a
+    # stored label. Reinstate together with the tier-distribution endpoint.
+    # if payload.tier is not None and payload.tier != tenant.tier:
+    #     if payload.tier not in ("starter", "growth", "enterprise"):
+    #         raise HTTPException(status_code=400, detail="Invalid tier")
+    #
+    #     from app.tenancy.schemas import TIER_LIMITS
+    #
+    #     limits = TIER_LIMITS.get(payload.tier)
+    #     if not limits:
+    #         raise HTTPException(status_code=400, detail="Invalid tier")
+    #     changes["tier"] = {"from": tenant.tier, "to": payload.tier}
+    #     tenant.tier = payload.tier
+    #
+    #     from app.tenancy.models import TenantTierProjection
+    #
+    #     proj = await ctx.session.scalar(
+    #         select(TenantTierProjection).where(TenantTierProjection.tenant_id == tenant.id)
+    #     )
+    #     if proj:
+    #         proj.tier = payload.tier
+    #         proj.max_terminals = limits["max_terminals"]
+    #         proj.max_products = limits["max_products"]
+    #         proj.max_users = limits["max_users"]
+    #     else:
+    #         ctx.session.add(
+    #             TenantTierProjection(
+    #                 tenant_id=tenant.id,
+    #                 tier=payload.tier,
+    #                 max_terminals=limits["max_terminals"],
+    #                 max_products=limits["max_products"],
+    #                 max_users=limits["max_users"],
+    #             )
+    #         )
     if payload.business_name is not None and payload.business_name != tenant.business_name:
         changes["business_name"] = {"to": payload.business_name}
         tenant.business_name = payload.business_name
@@ -2296,11 +2299,12 @@ async def analytics_churn_risk(
     )
 
 
-@router.get(
-    "/analytics/tier-distribution",
-    dependencies=[Depends(require_platform_permission("platform:*"))],
-)
-async def analytics_tier_distribution(ctx: PlatformDep):
+# ── Tiers parked (no subscriptions). Reinstated the day we bill by tier: ──
+# @router.get(
+#     "/analytics/tier-distribution",
+#     dependencies=[Depends(require_platform_permission("platform:*"))],
+# )
+async def _tier_distribution_disabled(ctx: PlatformDep):  # noqa: F841 - kept for reference
     """Tier mix + who is pressing against their limits — no subscription math."""
     from app.tenancy.models import Tenant, TenantTierProjection
     from app.catalog.models import Product
