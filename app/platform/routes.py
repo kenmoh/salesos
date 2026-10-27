@@ -2,7 +2,7 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import Date, cast, desc, func, select, text
+from sqlalchemy import Date, and_, case, cast, desc, func, select, text
 
 from app.core.platform_deps import PlatformDep, require_platform_permission
 from app.core.ratelimit import auth_rate_limit
@@ -1282,71 +1282,130 @@ async def analytics_platform_revenue(
     to_date: str | None = None,
     group_by: str = "month",
 ):
+    """What the platform actually earns: transaction fees.
+
+    Built from platform_fee_ledger — settled ("deducted") and pending
+    ("pending") amounts, split by payment method, with a per-bucket trend.
+    """
+    from app.platform.models import PlatformFeeLedger as Fee
     from app.tenancy.models import Tenant
     from datetime import datetime, timezone, timedelta
 
     now = datetime.now(timezone.utc)
     if not from_date:
-        from_date = (now - timedelta(days=365)).date().isoformat()
+        from_date = (now - timedelta(days=90)).date().isoformat()
     if not to_date:
         to_date = now.date().isoformat()
 
     d_from = date.fromisoformat(from_date)
     d_to = date.fromisoformat(to_date)
 
-    tier_pricing = {"starter": 15000, "growth": 45000, "enterprise": 150000}
+    def _window(q):
+        return q.where(
+            cast(Fee.created_at, Date) >= d_from,
+            cast(Fee.created_at, Date) <= d_to,
+        )
 
-    tiers = (
+    settled_total = (
         await ctx.session.execute(
-            select(
-                Tenant.tier,
-                func.count(Tenant.id).label("count"),
+            _window(
+                select(func.coalesce(func.sum(Fee.amount), 0)).where(Fee.status == "deducted")
             )
-            .where(Tenant.status == "active")
-            .group_by(Tenant.tier)
+        )
+    ).scalar() or 0
+    settled_count = (
+        await ctx.session.execute(
+            _window(
+                select(func.count(Fee.id)).where(Fee.status == "deducted")
+            )
+        )
+    ).scalar() or 0
+
+    pending_total = (
+        await ctx.session.execute(
+            select(func.coalesce(func.sum(Fee.amount), 0)).where(Fee.status == "pending")
+        )
+    ).scalar() or 0
+    pending_count = (
+        await ctx.session.execute(
+            select(func.count(Fee.id)).where(Fee.status == "pending")
+        )
+    ).scalar() or 0
+    oldest_pending = (
+        await ctx.session.execute(
+            select(func.min(Fee.created_at)).where(Fee.status == "pending")
+        )
+    ).scalar()
+
+    by_method = (
+        await ctx.session.execute(
+            _window(
+                select(
+                    Fee.payment_method.label("method"),
+                    func.count(Fee.id).label("count"),
+                    func.sum(Fee.amount).label("total"),
+                )
+                .where(Fee.status == "deducted")
+                .group_by(Fee.payment_method)
+                .order_by(func.sum(Fee.amount).desc())
+            )
         )
     ).all()
 
-    by_tier = {}
-    total_mrr = 0
-    for tier_name, cnt in tiers:
-        price = tier_pricing.get(tier_name, 0)
-        mrr = price * cnt
-        by_tier[tier_name] = {"tenants": cnt, "mrr_per": price, "total_mrr": mrr}
-        total_mrr += mrr
+    trunc_map = {"day": "day", "week": "week", "month": "month"}
+    bucket = trunc_map.get(group_by, "month")
+    trend_rows = (
+        await ctx.session.execute(
+            _window(
+                select(
+                    func.date_trunc(bucket, Fee.created_at).label("period"),
+                    func.count(Fee.id).label("count"),
+                    func.sum(case((Fee.status == "deducted", Fee.amount), else_=0)).label(
+                        "settled"
+                    ),
+                    func.sum(case((Fee.status == "pending", Fee.amount), else_=0)).label(
+                        "pending"
+                    ),
+                )
+                .group_by(text("1"))
+                .order_by(text("1"))
+            )
+        )
+    ).all()
 
-    trend_rows = await ctx.session.execute(
-        select(
-            func.date_trunc(group_by, Tenant.created_at).label("period"),
-            func.count(Tenant.id).label("new_tenants"),
+    tenant_count = (
+        await ctx.session.execute(
+            select(func.count(Tenant.id)).where(Tenant.status == "active")
         )
-        .where(
-            cast(Tenant.created_at, Date) >= d_from,
-            cast(Tenant.created_at, Date) <= d_to,
-        )
-        .group_by(text("1"))
-        .order_by(text("1"))
-    )
-
-    trend = []
-    running_mrr = 0
-    for r in trend_rows.mappings():
-        new_cnt = int(r["new_tenants"])
-        new_mrr = new_cnt * tier_pricing.get("starter", 15000)
-        running_mrr += new_mrr
-        trend.append(
-            {
-                "period": r["period"].isoformat() if r["period"] else None,
-                "mrr": running_mrr,
-                "new": new_mrr,
-                "churn": 0,
-            }
-        )
+    ).scalar() or 0
 
     return ok(
         {
-            "summary": {"mrr": total_mrr, "by_tier": by_tier},
-            "trend": trend,
+            "summary": {
+                "settled_total": float(settled_total),
+                "settled_count": int(settled_count),
+                "pending_total": float(pending_total),
+                "pending_count": int(pending_count),
+                "oldest_pending": oldest_pending.isoformat() if oldest_pending else None,
+                "active_tenants": tenant_count,
+            },
+            "by_method": [
+                {
+                    "method": r.method,
+                    "count": int(r.count),
+                    "total": float(r.total),
+                }
+                for r in by_method
+            ],
+            "trend": [
+                {
+                    "period": r.period.isoformat() if r.period else None,
+                    "count": int(r.count),
+                    "settled": float(r.settled),
+                    "pending": float(r.pending),
+                }
+                for r in trend_rows
+            ],
         }
     )
 
@@ -1526,6 +1585,7 @@ async def analytics_churn_risk(
     ctx: PlatformDep,
     inactive_days: int = 30,
 ):
+    """Per-tenant staleness in ONE aggregate SQL (was O(N) queries/tenant)."""
     from app.tenancy.models import Tenant
     from app.sales.models import Sale
     from app.identity.models import User
@@ -1533,46 +1593,52 @@ async def analytics_churn_risk(
 
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=inactive_days)
-    at_risk_cutoff = now - timedelta(days=7)
 
-    tenants = await ctx.session.execute(select(Tenant).where(Tenant.status == "active"))
+    last_sale_sq = (
+        select(func.max(Sale.created_at))
+        .where(Sale.tenant_id == Tenant.id, Sale.status != "voided")
+        .correlate(Tenant)
+        .scalar_subquery()
+    )
+    last_login_sq = (
+        select(func.max(User.last_login_at))
+        .where(User.tenant_id == Tenant.id, User.status == "active")
+        .correlate(Tenant)
+        .scalar_subquery()
+    )
+
+    user_stats_sq = (
+        select(
+            User.tenant_id.label("tenant_id"),
+            func.count(User.id).label("total_users"),
+            func.sum(case((and_(User.status == "active", User.last_login_at >= cutoff), 1), else_=0)).label("active_users"),
+        )
+        .group_by(User.tenant_id)
+        .subquery()
+    )
+
+    rows = (
+        await ctx.session.execute(
+            select(
+                Tenant.id,
+                Tenant.business_name,
+                Tenant.slug,
+                Tenant.tier,
+                last_sale_sq.label("last_sale"),
+                last_login_sq.label("last_login"),
+                func.coalesce(user_stats_sq.c.active_users, 0).label("active_users"),
+                func.coalesce(user_stats_sq.c.total_users, 0).label("total_users"),
+            )
+            .outerjoin(user_stats_sq, user_stats_sq.c.tenant_id == Tenant.id)
+            .where(Tenant.status == "active")
+        )
+    ).all()
+
     items = []
     healthy = at_risk = churned = 0
-    for tenant in tenants.scalars():
-        last_sale = (
-            await ctx.session.execute(
-                select(func.max(Sale.created_at)).where(
-                    Sale.tenant_id == tenant.id,
-                    Sale.status != "voided",
-                )
-            )
-        ).scalar()
-
-        last_login = (
-            await ctx.session.execute(
-                select(func.max(User.last_login_at)).where(
-                    User.tenant_id == tenant.id,
-                    User.status == "active",
-                )
-            )
-        ).scalar()
-
+    for r in rows:
+        last_sale = r.last_sale
         days_inactive = (now - last_sale).days if last_sale else 999
-        active_user_count = (
-            await ctx.session.execute(
-                select(func.count(User.id)).where(
-                    User.tenant_id == tenant.id,
-                    User.status == "active",
-                    User.last_login_at >= cutoff,
-                )
-            )
-        ).scalar() or 0
-
-        total_users = (
-            await ctx.session.execute(
-                select(func.count(User.id)).where(User.tenant_id == tenant.id)
-            )
-        ).scalar() or 0
 
         if days_inactive <= 7:
             risk = "low"
@@ -1586,17 +1652,16 @@ async def analytics_churn_risk(
 
         items.append(
             {
-                "tenant_id": str(tenant.id),
-                "business_name": tenant.business_name,
-                "slug": tenant.slug,
-                "tier": tenant.tier,
-                "status": tenant.status,
+                "tenant_id": str(r.id),
+                "business_name": r.business_name,
+                "slug": r.slug,
+                "tier": r.tier,
                 "last_sale": last_sale.date().isoformat() if last_sale else None,
                 "days_inactive": days_inactive,
-                "last_user_login": last_login.date().isoformat() if last_login else None,
+                "last_user_login": r.last_login.date().isoformat() if r.last_login else None,
                 "risk_level": risk,
-                "total_users": total_users,
-                "active_users": active_user_count,
+                "total_users": int(r.total_users or 0),
+                "active_users": int(r.active_users or 0),
             }
         )
 
@@ -1613,109 +1678,94 @@ async def analytics_churn_risk(
     dependencies=[Depends(require_platform_permission("platform:*"))],
 )
 async def analytics_tier_distribution(ctx: PlatformDep):
+    """Tier mix + who is pressing against their limits — no subscription math."""
     from app.tenancy.models import Tenant, TenantTierProjection
     from app.catalog.models import Product
     from app.identity.models import User
 
-    tier_pricing = {"starter": 15000, "growth": 45000, "enterprise": 150000}
+    user_stats_sq = (
+        select(
+            User.tenant_id.label("tenant_id"),
+            func.count(User.id).label("users"),
+        )
+        .group_by(User.tenant_id)
+        .subquery()
+    )
+    product_stats_sq = (
+        select(
+            Product.tenant_id.label("tenant_id"),
+            func.count(Product.id).label("products"),
+        )
+        .group_by(Product.tenant_id)
+        .subquery()
+    )
 
-    tiers = (
+    rows = (
         await ctx.session.execute(
             select(
+                Tenant.id,
                 Tenant.tier,
-                func.count(Tenant.id).label("count"),
+                Tenant.business_name,
+                func.coalesce(user_stats_sq.c.users, 0).label("users"),
+                func.coalesce(product_stats_sq.c.products, 0).label("products"),
             )
+            .outerjoin(user_stats_sq, user_stats_sq.c.tenant_id == Tenant.id)
+            .outerjoin(product_stats_sq, product_stats_sq.c.tenant_id == Tenant.id)
             .where(Tenant.status == "active")
-            .group_by(Tenant.tier)
         )
     ).all()
 
-    total_tenants = sum(r[1] for r in tiers)
+    tier_limits = {
+        "starter": {"products": 100, "users": 2},
+        "growth": {"products": 1000, "users": 10},
+        "enterprise": {"products": 10000, "users": 100},
+    }
+    next_tier = {"starter": "growth", "growth": "enterprise", "enterprise": "enterprise"}
+
+    total_tenants = len(rows)
+    grouped: dict[str, list] = {}
+    for r in rows:
+        grouped.setdefault(r.tier, []).append(r)
+
     items = []
     upgrade_candidates = []
-
-    for tier_name, cnt in tiers:
+    for tier_name, tenants_in_tier in grouped.items():
+        cnt = len(tenants_in_tier)
         pct = round(cnt / total_tenants * 100, 1) if total_tenants else 0
-        mrr = tier_pricing.get(tier_name, 0) * cnt
-
-        tenants_in_tier = await ctx.session.execute(
-            select(Tenant.id).where(Tenant.tier == tier_name, Tenant.status == "active")
-        )
-        tids = [r[0] for r in tenants_in_tier.all()]
-
-        avg_users = 0
-        avg_products = 0
-        if tids:
-            user_count = (
-                await ctx.session.execute(
-                    select(func.count(User.id)).where(User.tenant_id.in_(tids))
-                )
-            ).scalar() or 0
-            avg_users = round(user_count / len(tids), 1)
-
-            prod_count = (
-                await ctx.session.execute(
-                    select(func.count(Product.id)).where(Product.tenant_id.in_(tids))
-                )
-            ).scalar() or 0
-            avg_products = round(prod_count / len(tids), 1)
-
+        avg_users = round(sum(r.users for r in tenants_in_tier) / cnt, 1)
+        avg_products = round(sum(r.products for r in tenants_in_tier) / cnt, 1)
         items.append(
             {
                 "tier": tier_name,
                 "count": cnt,
                 "percentage": pct,
-                "mrr": mrr,
                 "avg_users": avg_users,
                 "avg_products": avg_products,
             }
         )
 
-        tier_limits = {
-            "starter": {"products": 100, "users": 2},
-            "growth": {"products": 1000, "users": 10},
-            "enterprise": {"products": 10000, "users": 100},
-        }
-        limits = tier_limits.get(tier_name, {})
-        if tids and limits:
-            for tid in tids:
-                tu = (
-                    await ctx.session.execute(
-                        select(func.count(User.id)).where(User.tenant_id == tid)
-                    )
-                ).scalar() or 0
-                tp = (
-                    await ctx.session.execute(
-                        select(func.count(Product.id)).where(Product.tenant_id == tid)
-                    )
-                ).scalar() or 0
-
+        limits = tier_limits.get(tier_name)
+        if limits:
+            for r in tenants_in_tier:
                 reasons = []
-                if tu >= limits["users"]:
-                    reasons.append(f"At user limit ({tu}/{limits['users']})")
-                if tp >= limits["products"]:
-                    reasons.append(f"At product limit ({tp}/{limits['products']})")
-
+                if r.users >= limits["users"]:
+                    reasons.append(f"At user limit ({r.users}/{limits['users']})")
+                if r.products >= limits["products"]:
+                    reasons.append(f"At product limit ({r.products}/{limits['products']})")
                 if reasons:
-                    tenant_info = (
-                        await ctx.session.execute(
-                            select(Tenant.business_name).where(Tenant.id == tid)
-                        )
-                    ).scalar()
-                    next_tier = {
-                        "starter": "growth",
-                        "growth": "enterprise",
-                        "enterprise": "enterprise",
-                    }
                     upgrade_candidates.append(
                         {
-                            "tenant_id": str(tid),
-                            "business_name": tenant_info or "",
+                            "tenant_id": str(r.id),
+                            "business_name": r.business_name,
                             "current_tier": tier_name,
                             "suggested_tier": next_tier.get(tier_name, tier_name),
                             "reason": "; ".join(reasons),
                         }
                     )
+
+    # Preserve tier ordering even when some tiers have no active tenants.
+    order = {t: i for i, t in enumerate(tier_limits)}
+    items.sort(key=lambda i: order.get(i["tier"], 99))
 
     return ok(
         {
