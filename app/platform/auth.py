@@ -104,7 +104,7 @@ async def platform_totp_setup(*, session: AsyncSession, admin_id: str) -> dict:
     admin.totp_secret = secret
     admin.totp_enabled = False
     await session.flush()
-    return {"provisioning_uri": get_totp_uri(secret, admin.email)}
+    return {"provisioning_uri": get_totp_uri(secret, admin.email), "secret": secret}
 
 
 async def platform_totp_enable(*, session: AsyncSession, admin_id: str, code: str) -> None:

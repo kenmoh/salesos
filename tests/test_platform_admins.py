@@ -106,6 +106,7 @@ class TestTotpLifecycle:
         ):
             result = await platform_totp_setup(session=session, admin_id=str(admin.id))
         assert result["provisioning_uri"] == "otpauth://totp/x"
+        assert result["secret"] == "SECRET"
         assert admin.totp_secret == "SECRET"
         assert admin.totp_enabled is False
 
