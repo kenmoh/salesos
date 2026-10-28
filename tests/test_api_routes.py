@@ -1726,13 +1726,17 @@ class TestAuth:
     ROUTE = "/auth"
 
     async def test_register(self, client):
+        # Unique emails: these tests write to the shared dev database, so a
+        # fixed address collides on the second run (duplicate key on
+        # ix_users_email) and cascades into the rest of the class.
+        suffix = uuid4().hex[:10]
         resp = await client.post(
             f"{self.ROUTE}/register",
             json={
                 "business_name": "Biz",
-                "business_email": "b@b.com",
+                "business_email": f"biz-{suffix}@b.com",
                 "owner_name": "Owner",
-                "owner_email": "o@o.com",
+                "owner_email": f"owner-{suffix}@o.com",
                 "password": "Str0ng!Pass",
                 "confirm_password": "Str0ng!Pass",
             },
@@ -1745,12 +1749,13 @@ class TestAuth:
     async def test_register_without_a_business_name(self, client):
         """Registration no longer asks for a store name; the owner names the
         business in settings, so the tenant is seeded with a placeholder."""
+        suffix = uuid4().hex[:10]
         resp = await client.post(
             f"{self.ROUTE}/register",
             json={
-                "business_email": "unnamed@b.com",
+                "business_email": f"unnamed-{suffix}@b.com",
                 "owner_name": "Ada Obi",
-                "owner_email": "ada@b.com",
+                "owner_email": f"ada-{suffix}@b.com",
                 "password": "Str0ng!Pass",
                 "confirm_password": "Str0ng!Pass",
             },

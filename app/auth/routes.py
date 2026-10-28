@@ -855,3 +855,203 @@ async def audit(
             for log in logs
         ]
     )
+
+
+def _norm_audit_details(raw):
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+
+
+@router.get(
+    "/activity",
+    dependencies=[Depends(require_permission("employees:read"))],
+)
+async def tenant_activity(
+    ctx: DbTenantDep,
+    action: str | None = None,
+    user_id: str | None = None,
+    days: int = 90,
+    page: int = 1,
+    page_size: int = 50,
+):
+    """Unified activity trail for one tenant — mirrors the platform trail.
+
+    Merges the two tenant-visible layers:
+    - ``auth``: member authentication events (auth_audit_logs).
+    - ``tenant``: the tenant's own business-action log (audit_events), which
+      carries the resource that was acted on.
+
+    Rows look like the platform audit trail so both consoles read alike.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select as sa_select
+
+    from app.auth.audit import AuditEvent
+    from app.identity.models import AuthAuditLog
+
+    tid = UUID(ctx.user.business_id)
+    now = datetime.now(timezone.utc)
+    days = min(max(days, 1), 365)
+    since = now - timedelta(days=days)
+
+    rows: list[dict] = []
+
+    auth_r = await ctx.session.execute(
+        sa_select(
+            AuthAuditLog.user_id,
+            AuthAuditLog.action,
+            AuthAuditLog.ip_address,
+            AuthAuditLog.user_agent,
+            AuthAuditLog.details,
+            AuthAuditLog.created_at,
+        )
+        .where(
+            AuthAuditLog.tenant_id == tid,
+            AuthAuditLog.created_at >= since,
+        )
+        .order_by(AuthAuditLog.created_at.desc())
+    )
+    for r in auth_r.all():
+        details = _norm_audit_details(r.details)
+        approver = None
+        if r.action == "cart_void_approved" and isinstance(details, dict):
+            supervisor = details.get("supervisor_id")
+            if supervisor:
+                approver = str(supervisor)
+        rows.append(
+            {
+                "at": r.created_at,
+                "source": "auth",
+                "actor": str(r.user_id) if r.user_id else None,
+                "action": r.action,
+                "detail": details,
+                "status": "ok",
+                "resource": None,
+                "resource_id": None,
+                "approver": approver,
+                "ip_address": r.ip_address,
+                "user_agent": r.user_agent,
+            }
+        )
+
+    biz_r = await ctx.session.execute(
+        sa_select(
+            AuditEvent.user_id,
+            AuditEvent.action,
+            AuditEvent.resource_type,
+            AuditEvent.resource_id,
+            AuditEvent.details,
+            AuditEvent.status_code,
+            AuditEvent.ip_address,
+            AuditEvent.created_at,
+        )
+        .where(
+            AuditEvent.business_id == str(tid),
+            AuditEvent.created_at >= since,
+        )
+        .order_by(AuditEvent.created_at.desc())
+    )
+    for r in biz_r.all():
+        rows.append(
+            {
+                "at": r.created_at,
+                "source": "tenant",
+                "actor": str(r.user_id) if r.user_id else None,
+                "action": r.action,
+                "detail": _norm_audit_details(r.details),
+                "status": r.status_code,
+                "resource": r.resource_type,
+                "resource_id": r.resource_id,
+                "approver": None,
+                "ip_address": r.ip_address,
+                "user_agent": None,
+            }
+        )
+
+    if action:
+        rows = [r for r in rows if r["action"] == action]
+    if user_id:
+        rows = [r for r in rows if r["actor"] == user_id or r["approver"] == user_id]
+
+    rows.sort(key=lambda r: r["at"], reverse=True)
+
+    total = len(rows)
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 200)
+    start = (page - 1) * page_size
+    window = rows[start : start + page_size]
+    for r in window:
+        r["at"] = r["at"].isoformat() if r["at"] else None
+
+    return ok(
+        {
+            "items": window,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "window_days": days,
+        }
+    )
+
+
+@router.get(
+    "/activity/actor/{actor_id}",
+    dependencies=[Depends(require_permission("employees:read"))],
+)
+async def tenant_activity_actor(actor_id: str, ctx: DbTenantDep):
+    """Resolve a tenant activity actor id into a human profile."""
+    from sqlalchemy import select as sa_select
+
+    from app.identity.models import Role, User, UserRole
+    from app.stores.models import Store
+
+    try:
+        aid = UUID(actor_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Actor not found")
+
+    tid = UUID(ctx.user.business_id)
+    user = (
+        await ctx.session.execute(
+            sa_select(User).where(User.id == aid, User.tenant_id == tid)
+        )
+    ).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Actor not found")
+
+    store_name = None
+    if user.store_id:
+        store = (
+            await ctx.session.execute(sa_select(Store).where(Store.id == user.store_id))
+        ).scalar_one_or_none()
+        store_name = store.name if store else None
+
+    role_rows = (
+        await ctx.session.execute(
+            sa_select(Role.name)
+            .join(UserRole, UserRole.role_id == Role.id)
+            .where(UserRole.user_id == aid)
+        )
+    ).all()
+
+    return ok(
+        {
+            "id": str(user.id),
+            "full_name": user.full_name,
+            "email": user.email,
+            "phone": user.phone,
+            "status": user.status,
+            "roles": [r[0] for r in role_rows],
+            "store_id": str(user.store_id) if user.store_id else None,
+            "store_name": store_name,
+            "created_at": user.created_at.isoformat() if user.created_at else None,
+            "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+        }
+    )
