@@ -31,13 +31,20 @@ class StoreFlowPDF(FPDF):
     def header(self):
         contact_bits = [bit for bit in (self.address.strip(), self.phone.strip()) if bit]
         contact_line = "  |  ".join(contact_bits)
-        name_font = 16 if self.logo_bytes else 18
+        logo_bottom = 0.0
         if self.logo_bytes:
             try:
+                from PIL import Image
+
+                with Image.open(BytesIO(self.logo_bytes)) as image:
+                    ratio = image.height / image.width
                 self.image(BytesIO(self.logo_bytes), x=self.l_margin, y=8, w=20)
+                logo_bottom = 8 + 20 * ratio + 4
             except Exception:
                 self.logo_bytes = None
-                name_font = 18
+
+        name_font = 16 if self.logo_bytes else 18
+        if self.logo_bytes:
             self.set_xy(self.l_margin + 24, 8)
         else:
             self.set_x(self.l_margin)
@@ -50,6 +57,7 @@ class StoreFlowPDF(FPDF):
             self.set_text_color(110, 110, 110)
             self.multi_cell(0, 4.5, contact_line)
             self.set_text_color(0, 0, 0)
+        self.set_y(max(self.get_y(), logo_bottom))
         self.ln(3)
 
     def footer(self):
@@ -124,22 +132,14 @@ class StoreFlowPDF(FPDF):
         self.cell(40, 8, f"NGN{total:,.2f}", align="R")
         self.ln(8)
 
-    def notes_section(self, notes: str = "", terms: str = "", note_on_document: str = ""):
-        if notes:
+    def notes_section(self, note: str = "", terms: str = ""):
+        if note:
             self.ln(5)
-            self.set_font("Helvetica", "B", 10)
-            self.cell(0, 6, "Notes:")
-            self.ln(6)
-            self.set_font("Helvetica", "", 9)
-            self.multi_cell(0, 5, notes)
-
-        if note_on_document:
-            self.ln(3 if notes else 5)
             self.set_font("Helvetica", "B", 10)
             self.cell(0, 6, "Note:")
             self.ln(6)
             self.set_font("Helvetica", "", 9)
-            self.multi_cell(0, 5, note_on_document)
+            self.multi_cell(0, 5, note)
 
         if terms:
             self.ln(3)
@@ -164,7 +164,6 @@ def generate_invoice_pdf(
     logo_bytes: bytes | None = None,
     address: str = "",
     phone: str = "",
-    note_on_document: str = "",
     title: str = "Invoice",
     tax_breakdown: list[dict] | None = None,
 ) -> bytes:
@@ -180,7 +179,7 @@ def generate_invoice_pdf(
 
     pdf.items_table(items)
     pdf.totals_section(subtotal, tax, total, tax_breakdown=tax_breakdown)
-    pdf.notes_section(notes, terms, note_on_document=note_on_document)
+    pdf.notes_section(note=notes, terms=terms)
 
     return pdf.output()
 
@@ -192,11 +191,11 @@ def generate_receipt_pdf(
     subtotal: float,
     payment_method: str = "Cash",
     total: float = 0,
+    notes: str = "",
     business_name: str = "StoreFlow",
     logo_bytes: bytes | None = None,
     address: str = "",
     phone: str = "",
-    note_on_document: str = "",
     tax: float = 0,
     tax_breakdown: list[dict] | None = None,
 ) -> bytes:
@@ -211,7 +210,7 @@ def generate_receipt_pdf(
 
     pdf.items_table(items)
     pdf.totals_section(subtotal, tax, total, tax_breakdown=tax_breakdown)
-    pdf.notes_section(note_on_document=note_on_document)
+    pdf.notes_section(note=notes)
 
     return pdf.output()
 
@@ -229,7 +228,6 @@ def generate_quote_pdf(
     logo_bytes: bytes | None = None,
     address: str = "",
     phone: str = "",
-    note_on_document: str = "",
     tax_breakdown: list[dict] | None = None,
 ) -> bytes:
     pdf = StoreFlowPDF(business_name, logo_bytes=logo_bytes, address=address, phone=phone)
@@ -242,6 +240,6 @@ def generate_quote_pdf(
 
     pdf.items_table(items)
     pdf.totals_section(subtotal, tax, total, tax_breakdown=tax_breakdown)
-    pdf.notes_section(notes, terms, note_on_document=note_on_document)
+    pdf.notes_section(note=notes, terms=terms)
 
     return pdf.output()

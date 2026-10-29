@@ -277,7 +277,6 @@ def _build_document_pdf(doc: dict, business: dict | None = None) -> tuple[str, s
         logo_bytes=business.get("logo_bytes"),
         address=business.get("address") or "",
         phone=business.get("phone") or "",
-        note_on_document=business.get("note_on_document") or "",
     )
 
     if doc_type == "receipt":
@@ -288,6 +287,7 @@ def _build_document_pdf(doc: dict, business: dict | None = None) -> tuple[str, s
             subtotal=subtotal,
             total=total,
             tax=tax,
+            notes=notes,
             tax_breakdown=tax_breakdown,
             **business_kwargs,
         )
@@ -382,7 +382,6 @@ async def _business_profile(ctx) -> dict:
         "name": tenant.business_name,
         "address": settings.get("address") or "",
         "phone": tenant.owner_phone or "",
-        "note_on_document": settings.get("note_on_document") or "",
         "logo_bytes": logo_bytes,
     }
 

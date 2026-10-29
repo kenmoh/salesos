@@ -11,7 +11,6 @@ from app.common.pdf_service import (
     generate_quote_pdf,
     generate_receipt_pdf,
 )
-from app.documents.routes import _build_document_pdf, _format_due_date
 
 
 def _doc(doc_type: str = "invoice") -> dict:
@@ -43,7 +42,6 @@ def _business(**overrides) -> dict:
         "name": "Bright Spark Stores Ltd",
         "address": "12 Allen Avenue, Ikeja, Lagos",
         "phone": "+234 801 234 5678",
-        "note_on_document": "No signature is required for this document.",
         "logo_bytes": None,
     }
     business.update(overrides)
@@ -52,6 +50,8 @@ def _business(**overrides) -> dict:
 
 @pytest.mark.parametrize("doc_type", ["invoice", "quote", "receipt", "purchase_order"])
 def test_build_document_pdf_returns_pdf_bytes(doc_type):
+    from app.documents.routes import _build_document_pdf
+
     doc_type_out, doc_number, pdf_bytes = _build_document_pdf(_doc(doc_type), _business())
 
     assert doc_type_out == doc_type
@@ -61,6 +61,8 @@ def test_build_document_pdf_returns_pdf_bytes(doc_type):
 
 
 def test_build_document_pdf_without_business_profile():
+    from app.documents.routes import _build_document_pdf
+
     _, _, pdf_bytes = _build_document_pdf(_doc("invoice"), None)
 
     assert pdf_bytes.startswith(b"%PDF")
@@ -68,6 +70,8 @@ def test_build_document_pdf_without_business_profile():
 
 def test_build_document_pdf_with_logo():
     from io import BytesIO
+
+    from app.documents.routes import _build_document_pdf
 
     from PIL import Image
 
@@ -104,6 +108,8 @@ def test_generate_receipt_and_quote_are_pdfs():
 
 
 def test_format_due_date_renders_date_only():
+    from app.documents.routes import _format_due_date
+
     assert _format_due_date("2026-11-06T00:00:00+00:00") == "06 Nov 2026"
     assert _format_due_date("2026-11-06") == "06 Nov 2026"
     assert _format_due_date(None) == ""

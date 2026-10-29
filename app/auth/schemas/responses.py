@@ -734,7 +734,6 @@ class BusinessSettings(_Base):
     tax_rate: float | None = None
     currency: str | None = None
     logo_url: str | None = None
-    note_on_document: str | None = None
     settings: dict = {}
 
 

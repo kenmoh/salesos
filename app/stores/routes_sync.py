@@ -94,7 +94,6 @@ async def business_settings(ctx: DbTenantDep):
         tax_rate=settings.get("tax_rate"),
         currency=settings.get("currency"),
         logo_url=settings.get("logo_url"),
-        note_on_document=settings.get("note_on_document"),
         settings=settings,
     ))
 
@@ -132,8 +131,6 @@ async def update_business_settings(payload: BusinessUpdate, ctx: DbTenantDep):
         settings["currency"] = payload.currency
     if payload.logo_url is not None:
         settings["logo_url"] = payload.logo_url
-    if payload.note_on_document is not None:
-        settings["note_on_document"] = payload.note_on_document
     if payload.settings is not None:
         settings.update(payload.settings)
         # System notifications are always enabled
@@ -151,7 +148,6 @@ async def update_business_settings(payload: BusinessUpdate, ctx: DbTenantDep):
         tax_rate=settings.get("tax_rate"),
         currency=settings.get("currency"),
         logo_url=settings.get("logo_url"),
-        note_on_document=settings.get("note_on_document"),
         settings=settings,
     ))
 
@@ -208,7 +204,6 @@ async def upload_business_logo(
         tax_rate=settings.get("tax_rate"),
         currency=settings.get("currency"),
         logo_url=logo_url,
-        note_on_document=settings.get("note_on_document"),
         settings=settings,
     )
     return ok(settings)
