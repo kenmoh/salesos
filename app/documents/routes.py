@@ -239,7 +239,10 @@ def _ensure_pdf_bytes(data) -> bytes:
     """
     if isinstance(data, str):
         return data.encode("latin-1")
-    return bytes(data)
+    pdf_bytes = bytes(data)
+    if not pdf_bytes.startswith(b"%PDF"):
+        raise RuntimeError("PDF generator produced invalid output")
+    return pdf_bytes
 
 
 def _build_document_pdf(doc: dict) -> tuple[str, str, bytes]:
