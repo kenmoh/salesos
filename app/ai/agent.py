@@ -92,14 +92,28 @@ def parse_agent_response(response: Any) -> dict[str, Any]:
     """
     content = response.content if hasattr(response, "content") else str(response)
 
+    # LangChain providers may return content as a list of typed blocks
+    # (e.g. Gemini: [{"type": "text", "text": "..."}]). Normalize to text.
+    if isinstance(content, list):
+        text = "".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+        content = text or json.dumps(content)
+    elif not isinstance(content, str):
+        content = str(content)
+
     try:
         parsed = json.loads(content)
-        return {
-            "answer": parsed.get("answer", content),
-            "recommendations": parsed.get("recommendations", []),
-        }
     except (json.JSONDecodeError, TypeError):
+        parsed = None
+    if not isinstance(parsed, dict):
         return {
             "answer": content,
             "recommendations": [],
         }
+    return {
+        "answer": parsed.get("answer", content),
+        "recommendations": parsed.get("recommendations", []),
+    }
