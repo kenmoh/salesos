@@ -3,36 +3,62 @@
 Generates invoices, receipts, and quotes as PDF bytes.
 """
 
+from io import BytesIO
+
 from fpdf import FPDF
 
 
 class StoreFlowPDF(FPDF):
-    """Custom PDF class with StoreFlow branding."""
+    """Custom PDF class with tenant branding."""
 
-    def __init__(self, business_name: str = "StoreFlow"):
+    def __init__(
+        self,
+        business_name: str = "StoreFlow",
+        logo_bytes: bytes | None = None,
+        address: str = "",
+        phone: str = "",
+    ):
         super().__init__()
         self.business_name = business_name
+        self.logo_bytes = logo_bytes
+        self.address = address
+        self.phone = phone
 
     @staticmethod
     def _naira(amount: float) -> str:
         return f"NGN {amount:,.2f}"
 
     def header(self):
-        self.set_font("Helvetica", "B", 18)
-        self.cell(0, 10, self.business_name)
-        self.ln(10)
-        self.set_font("Helvetica", "", 9)
-        self.set_text_color(128, 128, 128)
-        self.cell(0, 5, "Powered by StoreFlow")
-        self.ln(5)
-        self.set_text_color(0, 0, 0)
-        self.ln(5)
+        contact_bits = [bit for bit in (self.address.strip(), self.phone.strip()) if bit]
+        contact_line = "  |  ".join(contact_bits)
+        name_font = 16 if self.logo_bytes else 18
+        if self.logo_bytes:
+            try:
+                self.image(BytesIO(self.logo_bytes), x=self.l_margin, y=8, w=20)
+            except Exception:
+                self.logo_bytes = None
+                name_font = 18
+            self.set_xy(self.l_margin + 24, 8)
+        else:
+            self.set_x(self.l_margin)
+        self.set_font("Helvetica", "B", name_font)
+        self.cell(0, 9, self.business_name)
+        self.ln(9)
+        if contact_line:
+            self.set_x(self.l_margin + (24 if self.logo_bytes else 0))
+            self.set_font("Helvetica", "", 9)
+            self.set_text_color(110, 110, 110)
+            self.multi_cell(0, 4.5, contact_line)
+            self.set_text_color(0, 0, 0)
+        self.ln(3)
 
     def footer(self):
-        self.set_y(-15)
+        self.set_y(-18)
         self.set_font("Helvetica", "I", 8)
         self.set_text_color(128, 128, 128)
-        self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", align="C")
+        self.cell(0, 5, "This is a digitally generated document and is valid without a signature.", align="C")
+        self.set_y(-12)
+        self.cell(0, 6, f"Page {self.page_no()}/{{nb}}", align="C")
 
     def document_title(self, title: str, doc_number: str):
         self.set_font("Helvetica", "B", 14)
@@ -74,31 +100,31 @@ class StoreFlowPDF(FPDF):
     def totals_section(self, subtotal: float, tax: float = 0, total: float = 0, tax_breakdown: list[dict] | None = None):
         self.ln(3)
         self.set_font("Helvetica", "B", 10)
-        x_start = self.w - 70
+        x_start = self.w - self.r_margin - 75
         self.set_x(x_start)
         self.cell(35, 7, "Subtotal:")
-        self.cell(35, 7, f"NGN{subtotal:,.2f}", align="R")
+        self.cell(40, 7, f"NGN{subtotal:,.2f}", align="R")
         self.ln(7)
 
         if tax_breakdown:
             for t in tax_breakdown:
                 self.set_x(x_start)
                 self.cell(35, 7, f"{t['name']} ({t['rate']}%):")
-                self.cell(35, 7, f"NGN{t['amount']:,.2f}", align="R")
+                self.cell(40, 7, f"NGN{t['amount']:,.2f}", align="R")
                 self.ln(7)
         elif tax > 0:
             self.set_x(x_start)
             self.cell(35, 7, "Tax:")
-            self.cell(35, 7, f"NGN{tax:,.2f}", align="R")
+            self.cell(40, 7, f"NGN{tax:,.2f}", align="R")
             self.ln(7)
 
         self.set_font("Helvetica", "B", 12)
         self.set_x(x_start)
         self.cell(35, 8, "Total:")
-        self.cell(35, 8, f"NGN{total:,.2f}", align="R")
+        self.cell(40, 8, f"NGN{total:,.2f}", align="R")
         self.ln(8)
 
-    def notes_section(self, notes: str = "", terms: str = ""):
+    def notes_section(self, notes: str = "", terms: str = "", note_on_document: str = ""):
         if notes:
             self.ln(5)
             self.set_font("Helvetica", "B", 10)
@@ -106,6 +132,14 @@ class StoreFlowPDF(FPDF):
             self.ln(6)
             self.set_font("Helvetica", "", 9)
             self.multi_cell(0, 5, notes)
+
+        if note_on_document:
+            self.ln(3 if notes else 5)
+            self.set_font("Helvetica", "B", 10)
+            self.cell(0, 6, "Note:")
+            self.ln(6)
+            self.set_font("Helvetica", "", 9)
+            self.multi_cell(0, 5, note_on_document)
 
         if terms:
             self.ln(3)
@@ -127,13 +161,18 @@ def generate_invoice_pdf(
     notes: str = "",
     terms: str = "",
     business_name: str = "StoreFlow",
+    logo_bytes: bytes | None = None,
+    address: str = "",
+    phone: str = "",
+    note_on_document: str = "",
+    title: str = "Invoice",
     tax_breakdown: list[dict] | None = None,
 ) -> bytes:
-    pdf = StoreFlowPDF(business_name)
+    pdf = StoreFlowPDF(business_name, logo_bytes=logo_bytes, address=address, phone=phone)
     pdf.alias_nb_pages()
     pdf.add_page()
 
-    pdf.document_title("Invoice", doc_number)
+    pdf.document_title(title, doc_number)
     pdf.info_row("Customer:", customer_name)
     if due_date:
         pdf.info_row("Due Date:", due_date)
@@ -141,7 +180,7 @@ def generate_invoice_pdf(
 
     pdf.items_table(items)
     pdf.totals_section(subtotal, tax, total, tax_breakdown=tax_breakdown)
-    pdf.notes_section(notes, terms)
+    pdf.notes_section(notes, terms, note_on_document=note_on_document)
 
     return pdf.output()
 
@@ -154,10 +193,14 @@ def generate_receipt_pdf(
     payment_method: str = "Cash",
     total: float = 0,
     business_name: str = "StoreFlow",
+    logo_bytes: bytes | None = None,
+    address: str = "",
+    phone: str = "",
+    note_on_document: str = "",
     tax: float = 0,
     tax_breakdown: list[dict] | None = None,
 ) -> bytes:
-    pdf = StoreFlowPDF(business_name)
+    pdf = StoreFlowPDF(business_name, logo_bytes=logo_bytes, address=address, phone=phone)
     pdf.alias_nb_pages()
     pdf.add_page()
 
@@ -168,6 +211,7 @@ def generate_receipt_pdf(
 
     pdf.items_table(items)
     pdf.totals_section(subtotal, tax, total, tax_breakdown=tax_breakdown)
+    pdf.notes_section(note_on_document=note_on_document)
 
     return pdf.output()
 
@@ -182,9 +226,13 @@ def generate_quote_pdf(
     notes: str = "",
     terms: str = "",
     business_name: str = "StoreFlow",
+    logo_bytes: bytes | None = None,
+    address: str = "",
+    phone: str = "",
+    note_on_document: str = "",
     tax_breakdown: list[dict] | None = None,
 ) -> bytes:
-    pdf = StoreFlowPDF(business_name)
+    pdf = StoreFlowPDF(business_name, logo_bytes=logo_bytes, address=address, phone=phone)
     pdf.alias_nb_pages()
     pdf.add_page()
 
@@ -194,6 +242,6 @@ def generate_quote_pdf(
 
     pdf.items_table(items)
     pdf.totals_section(subtotal, tax, total, tax_breakdown=tax_breakdown)
-    pdf.notes_section(notes, terms)
+    pdf.notes_section(notes, terms, note_on_document=note_on_document)
 
     return pdf.output()

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
+from datetime import datetime
 from uuid import UUID
 
 from app.core.dependencies import DbTenantDep, TenantDep, require_permission
@@ -245,9 +246,12 @@ def _ensure_pdf_bytes(data) -> bytes:
     return pdf_bytes
 
 
-def _build_document_pdf(doc: dict) -> tuple[str, str, bytes]:
+def _build_document_pdf(doc: dict, business: dict | None = None) -> tuple[str, str, bytes]:
     """Generate PDF bytes for a document dict.
 
+    ``business`` carries the tenant profile: name, logo bytes, address,
+    phone, and the dynamic note to print on documents. Any piece may be
+    missing; the generator falls back to plain output.
     Returns (doc_type, doc_number, pdf_bytes).
     """
     from app.common.pdf_service import (
@@ -256,16 +260,25 @@ def _build_document_pdf(doc: dict) -> tuple[str, str, bytes]:
         generate_quote_pdf,
     )
 
+    business = business or {}
     doc_type = doc.get("doc_type", "invoice")
     doc_number = doc.get("doc_number", "")
     customer_name = doc.get("customer_name", "")
     items = doc.get("items", [])
     subtotal = float(doc.get("subtotal", 0))
-    tax = float(doc.get("tax_total", 0))
-    total = float(doc.get("grand_total", 0))
-    due_date = doc.get("due_date", "")
-    notes = doc.get("notes", "")
-    terms = doc.get("terms", "")
+    tax = float(doc.get("tax") or 0)
+    total = float(doc.get("total") or 0)
+    due_date = _format_due_date(doc.get("due_date"))
+    notes = doc.get("notes") or ""
+    terms = doc.get("terms") or ""
+    tax_breakdown = doc.get("tax_breakdown") or None
+    business_kwargs = dict(
+        business_name=business.get("name") or "StoreFlow",
+        logo_bytes=business.get("logo_bytes"),
+        address=business.get("address") or "",
+        phone=business.get("phone") or "",
+        note_on_document=business.get("note_on_document") or "",
+    )
 
     if doc_type == "receipt":
         pdf_bytes = generate_receipt_pdf(
@@ -274,6 +287,9 @@ def _build_document_pdf(doc: dict) -> tuple[str, str, bytes]:
             items=items,
             subtotal=subtotal,
             total=total,
+            tax=tax,
+            tax_breakdown=tax_breakdown,
+            **business_kwargs,
         )
     elif doc_type == "quote":
         pdf_bytes = generate_quote_pdf(
@@ -285,6 +301,8 @@ def _build_document_pdf(doc: dict) -> tuple[str, str, bytes]:
             total=total,
             notes=notes,
             terms=terms,
+            tax_breakdown=tax_breakdown,
+            **business_kwargs,
         )
     else:
         pdf_bytes = generate_invoice_pdf(
@@ -297,8 +315,76 @@ def _build_document_pdf(doc: dict) -> tuple[str, str, bytes]:
             due_date=due_date,
             notes=notes,
             terms=terms,
+            tax_breakdown=tax_breakdown,
+            title="Purchase Order" if doc_type == "purchase_order" else "Invoice",
+            **business_kwargs,
         )
     return doc_type, doc_number, _ensure_pdf_bytes(pdf_bytes)
+
+
+def _format_due_date(value) -> str:
+    """Render the due date as a human date, never a raw datetime."""
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.strftime("%d %b %Y")
+    text = str(value)
+    try:
+        return datetime.fromisoformat(text).strftime("%d %b %Y")
+    except ValueError:
+        return text
+
+
+async def _business_profile(ctx) -> dict:
+    """Collect tenant branding for the PDF: name, contacts, logo, note."""
+    import base64
+    import json
+
+    import httpx
+    from sqlalchemy import select
+
+    from app.common.db.session import tenant_session
+    from app.tenancy.models import Tenant
+
+    user = ctx.user
+    async with tenant_session(user.user_id, str(user.business_id), getattr(user, "role", "")) as session:
+        result = await session.execute(select(Tenant).where(Tenant.id == user.business_id))
+        tenant = result.scalar_one_or_none()
+    if not tenant:
+        return {}
+
+    settings: dict = {}
+    if tenant.settings:
+        try:
+            settings = json.loads(tenant.settings) if isinstance(tenant.settings, str) else tenant.settings
+        except (ValueError, TypeError):
+            settings = {}
+
+    logo_url = settings.get("logo_url") or ""
+    logo_bytes = None
+    if logo_url.startswith("data:"):
+        try:
+            logo_bytes = base64.b64decode(logo_url.partition(",")[2])
+        except (ValueError, TypeError):
+            logo_bytes = None
+    elif logo_url:
+        try:
+            async with httpx.AsyncClient(timeout=5, follow_redirects=True) as client:
+                resp = await client.get(logo_url)
+                head = resp.content[:4]
+                is_image = head == b"\x89PNG" or head[:3] == b"\xff\xd8\xff"
+                if resp.status_code == 200 and is_image:
+                    logo_bytes = resp.content
+        except Exception:
+            logo_bytes = None
+
+    return {
+        "name": tenant.business_name,
+        "address": settings.get("address") or "",
+        "phone": tenant.owner_phone or "",
+        "note_on_document": settings.get("note_on_document") or "",
+        "logo_bytes": logo_bytes,
+    }
 
 
 @router.get(
@@ -314,7 +400,8 @@ async def document_pdf(doc_id: str, ctx: TenantDep):
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    doc_type, doc_number, pdf_bytes = _build_document_pdf(doc)
+    business = await _business_profile(ctx)
+    doc_type, doc_number, pdf_bytes = _build_document_pdf(doc, business)
     return ok(
         {
             "filename": f"{doc_type}_{doc_number}.pdf",
@@ -334,7 +421,8 @@ async def download_document(doc_id: str, ctx: TenantDep):
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    doc_type, doc_number, pdf_bytes = _build_document_pdf(doc)
+    business = await _business_profile(ctx)
+    doc_type, doc_number, pdf_bytes = _build_document_pdf(doc, business)
 
     return Response(
         content=pdf_bytes,
