@@ -173,16 +173,13 @@ async def _stream_response(
     full_answer = []
 
     try:
-        import anyio
+        from starlette.concurrency import iterate_in_threadpool
+
         from app.ai.llm import create_provider
 
         provider = create_provider()
 
-        def _sync_stream():
-            return list(provider.stream(prompt))
-
-        chunks = await anyio.to_thread.run_sync(_sync_stream)
-        for chunk in chunks:
+        async for chunk in iterate_in_threadpool(provider.stream(prompt)):
             full_answer.append(chunk)
             yield _sse_event("token", {"text": chunk})
 
