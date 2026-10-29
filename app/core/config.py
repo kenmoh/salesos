@@ -78,7 +78,7 @@ class ApiSettings(BaseSettings):
     access_token_expire_minutes: int = 600
     refresh_token_expire_days: int = 7
 
-    totp_issuer: str = "SalesOS"
+    totp_issuer: str = "StoreFlow"
     password_bcrypt_rounds: int = 12
 
     celery_broker_url: str = Field(default="", alias="RABBIT_MQ_URL")
