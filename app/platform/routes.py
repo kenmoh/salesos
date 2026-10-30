@@ -58,6 +58,10 @@ class ContactStatusRequest(BaseModel):
     status: str
 
 
+class WaitlistStatusRequest(BaseModel):
+    status: str
+
+
 class TenantUpdateRequest(BaseModel):
     status: str | None = None
     # Subscriptions are gone — tier changes parked; PATCH now ignores tier.
@@ -2679,6 +2683,41 @@ async def contact_mark(message_id: str, payload: ContactStatusRequest, ctx: Plat
     if row is None:
         raise HTTPException(status_code=404, detail="Message not found")
     return ok(contact_routes._message_as_dict(row))
+
+
+@router.get(
+    "/waitlist/signups",
+    dependencies=[Depends(require_platform_permission("platform:*"))],
+)
+async def waitlist_signups(
+    ctx: PlatformDep, page: int = 1, page_size: int = 50, status_filter: str | None = None
+):
+    from app.waitlist.routes import _signup_as_dict, platform_list_signups
+
+    items, total = await platform_list_signups(
+        ctx.session, page=page, page_size=page_size, status_filter=status_filter
+    )
+    return paginated(
+        [_signup_as_dict(s) for s in items], total=total, page=page, page_size=page_size
+    )
+
+
+@router.patch(
+    "/waitlist/signups/{signup_id}",
+    dependencies=[Depends(require_platform_permission("platform:*"))],
+)
+async def waitlist_mark(signup_id: str, payload: WaitlistStatusRequest, ctx: PlatformDep):
+    from app.waitlist import routes as waitlist_routes
+
+    try:
+        row = await waitlist_routes.platform_update_signup_status(
+            ctx.session, signup_id, payload.status
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if row is None:
+        raise HTTPException(status_code=404, detail="Signup not found")
+    return ok(waitlist_routes._signup_as_dict(row))
 
 
 @router.get(

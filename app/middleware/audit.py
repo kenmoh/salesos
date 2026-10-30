@@ -52,7 +52,7 @@ def _action(method: str, status: int) -> str:
 async def _write_audit_event(payload: dict) -> None:
     """Persist one audit event. Runs as a background task; never raises."""
     try:
-        async with _get_factory() as session:
+        async with _get_factory()() as session:
             async with session.begin():
                 await session.execute(
                     text("""
