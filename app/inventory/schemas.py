@@ -72,6 +72,9 @@ class TransferRequestCreateCommand(BaseModel):
     product_id: UUID
     requesting_store_id: UUID
     supplying_store_id: UUID
+    supplying_product_id: UUID
+    item_name: str
+    request_number: str
     requested_qty: Decimal = Field(..., gt=0)
     notes: str | None = None
     created_by: UUID | None = None
@@ -81,9 +84,19 @@ class TransferRequestCreateCommand(BaseModel):
 class TransferRequestApproveCommand(BaseModel):
     tenant_id: UUID
     request_id: UUID
-    approved_qty: Decimal = Field(..., ge=0)
-    rejection_reason: str | None = None
+    approved_qty: Decimal = Field(..., gt=0)
     approved_by: UUID | None = None
+    pin_verified_by: UUID | None = None
+    notes: str | None = None
+    correlation_id: str | None = None
+
+
+class TransferRequestRejectCommand(BaseModel):
+    tenant_id: UUID
+    request_id: UUID
+    rejected_by: UUID | None = None
+    pin_verified_by: UUID | None = None
+    rejection_reason: str | None = None
     notes: str | None = None
     correlation_id: str | None = None
 
@@ -101,6 +114,16 @@ class TransferRequestResult(BaseModel):
     rejection_reason: str | None
     created_by: UUID | None
     approved_by: UUID | None
+    request_number: str | None = None
+    item_name: str | None = None
+    supplying_product_id: UUID | None = None
+    approved_at: str | None = None
+    rejected_at: str | None = None
+    fulfilled_by: UUID | None = None
+    fulfilled_at: str | None = None
+    fulfilled_qty: float | None = None
+    pin_verified_by: UUID | None = None
+    decision_note: str | None = None
     created_at: str
     updated_at: str
 

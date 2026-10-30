@@ -260,43 +260,65 @@ class MinStockLevelResult(_Base):
 # ── Transfer Requests ─────────────────────────────────────────────────────────
 
 
-class TransferRequestCreated(_Base):
-    request_id: str = ""
-    product_id: str = ""
-    requesting_store_id: str = ""
-    supplying_store_id: str = ""
-    requested_qty: float = 0
-    status: str = "pending"
-
-
 class TransferRequestDetail(_Base):
     id: str = ""
+    request_number: str | None = None
+    item_name: str | None = None
     product_id: str = ""
+    supplying_product_id: str | None = None
     requesting_store_id: str = ""
     supplying_store_id: str = ""
+    requesting_store_name: str | None = None
+    supplying_store_name: str | None = None
     requested_qty: float = 0
     approved_qty: float | None = None
+    fulfilled_qty: float | None = None
     status: str = "pending"
     notes: str | None = None
+    decision_note: str | None = None
     rejection_reason: str | None = None
     created_by: str | None = None
+    created_by_name: str | None = None
     approved_by: str | None = None
+    approved_by_name: str | None = None
+    fulfilled_by: str | None = None
+    fulfilled_by_name: str | None = None
+    pin_verified_by: str | None = None
+    pin_verified_by_name: str | None = None
+    approved_at: datetime | None = None
+    rejected_at: datetime | None = None
+    fulfilled_at: datetime | None = None
     created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class TransferRequestCreated(TransferRequestDetail):
+    pass
 
 
 class TransferRequestApproved(_Base):
     request_id: str = ""
+    request_number: str | None = None
     status: str = "pending"
     approved_qty: float | None = None
 
 
+class TransferRequestRejected(_Base):
+    request_id: str = ""
+    request_number: str | None = None
+    status: str = "rejected"
+    rejection_reason: str | None = None
+
+
 class TransferFulfilled(_Base):
     request_id: str = ""
+    request_number: str | None = None
     status: str = "fulfilled"
     from_adjustment_id: str = ""
     to_adjustment_id: str = ""
     from_new_balance: float = 0
     to_new_balance: float = 0
+    fulfilled_qty: float = 0
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────

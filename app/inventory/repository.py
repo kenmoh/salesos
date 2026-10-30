@@ -176,18 +176,35 @@ async def get_transfer_request_by_id(
     return result.scalar_one_or_none()
 
 
+async def get_transfer_request_by_number(
+    session: AsyncSession, tenant_id: UUID, request_number: str
+) -> TransferRequest | None:
+    result = await session.execute(
+        select(TransferRequest).where(
+            TransferRequest.tenant_id == tenant_id,
+            TransferRequest.request_number == request_number,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def list_transfer_requests(
     session: AsyncSession,
     tenant_id: UUID,
     status: str | None = None,
     store_id: UUID | None = None,
+    direction: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[TransferRequest]:
     query = select(TransferRequest).where(TransferRequest.tenant_id == tenant_id)
     if status:
         query = query.where(TransferRequest.status == status)
-    if store_id:
+    if store_id and direction == "incoming":
+        query = query.where(TransferRequest.supplying_store_id == store_id)
+    elif store_id and direction == "outgoing":
+        query = query.where(TransferRequest.requesting_store_id == store_id)
+    elif store_id:
         query = query.where(
             (TransferRequest.requesting_store_id == store_id)
             | (TransferRequest.supplying_store_id == store_id)
@@ -202,11 +219,16 @@ async def count_transfer_requests(
     tenant_id: UUID,
     status: str | None = None,
     store_id: UUID | None = None,
+    direction: str | None = None,
 ) -> int:
     query = select(TransferRequest).where(TransferRequest.tenant_id == tenant_id)
     if status:
         query = query.where(TransferRequest.status == status)
-    if store_id:
+    if store_id and direction == "incoming":
+        query = query.where(TransferRequest.supplying_store_id == store_id)
+    elif store_id and direction == "outgoing":
+        query = query.where(TransferRequest.requesting_store_id == store_id)
+    elif store_id:
         query = query.where(
             (TransferRequest.requesting_store_id == store_id)
             | (TransferRequest.supplying_store_id == store_id)

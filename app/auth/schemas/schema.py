@@ -42,17 +42,26 @@ class StoreDistribute(Base):
 
 
 class TransferRequestCreate(Base):
-    product_id: UUID
-    requesting_store_id: UUID
+    item_name: str = Field(..., min_length=1, max_length=200)
     supplying_store_id: UUID
     requested_qty: Decimal = Field(..., gt=0)
     notes: str | None = None
 
 
 class TransferRequestApprove(Base):
-    approved_qty: Decimal = Field(..., ge=0)
+    approved_qty: Decimal = Field(..., gt=0)
+    notes: str | None = None
+    supervisor_pin: str | None = None
+
+
+class TransferRequestReject(Base):
     rejection_reason: str | None = None
     notes: str | None = None
+    supervisor_pin: str | None = None
+
+
+class TransferRequestFulfill(Base):
+    supervisor_pin: str | None = None
 
 
 class StoreProductAdd(Base):

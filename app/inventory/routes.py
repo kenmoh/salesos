@@ -1,5 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from uuid import UUID
 
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+
+from app.core.approval import require_supervisor_approval
 from app.core.dependencies import TenantDep, DbTenantDep, require_permission
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
 from app.auth.schemas.responses import (
@@ -23,6 +26,7 @@ from app.auth.schemas.responses import (
     TransferRequestApproved,
     TransferRequestCreated,
     TransferRequestDetail,
+    TransferRequestRejected,
 )
 from app.auth.schemas.schema import (
     CategoryCreate,
@@ -35,6 +39,8 @@ from app.auth.schemas.schema import (
     StoreProductUpdate,
     TransferRequestApprove,
     TransferRequestCreate,
+    TransferRequestFulfill,
+    TransferRequestReject,
 )
 import app.common.bridge as bridge
 from app.common import services
@@ -437,7 +443,7 @@ async def store_low_stock(store_id: str, ctx: DbTenantDep):
     response_model=DataResponse[DistributeResult],
     dependencies=[Depends(require_permission("inventory:transfer"))],
 )
-async def distribute_from_main(store_id: str, payload: StoreDistribute, ctx: TenantDep):
+async def distribute_stock(store_id: str, payload: StoreDistribute, ctx: TenantDep):
     try:
         result = await bridge.transfer_stock(
             tenant_id=ctx.user.business_id,
@@ -461,7 +467,11 @@ async def distribute_from_main(store_id: str, payload: StoreDistribute, ctx: Ten
                 detail="No stock balance found for this product in source store",
             )
         if detail.startswith("insufficient_stock"):
-            raise HTTPException(status_code=400, detail=detail)
+            available = detail.rsplit("_", 1)[-1]
+            raise HTTPException(
+                status_code=400,
+                detail=f"Not enough stock in this store. {available} available.",
+            )
         raise HTTPException(status_code=400, detail=detail)
 
 
@@ -511,17 +521,44 @@ async def set_min_stock_level(
         raise HTTPException(status_code=400, detail=detail)
 
 
+async def _actor_store_id(ctx) -> str | None:
+    """Return the store the caller is assigned to, if any.
+
+    Only users tied to a store are held to it. Owners and head-office staff
+    have no store assignment and act across the tenant.
+    """
+    from sqlalchemy import select
+
+    from app.identity.models import User
+
+    result = await ctx.session.execute(
+        select(User.store_id).where(User.id == UUID(ctx.user.user_id))
+    )
+    store_id = result.scalar_one_or_none()
+    return str(store_id) if store_id else None
+
+
+async def _assert_store_matches(ctx, expected_store_id: str, message: str) -> None:
+    """Reject callers whose assigned store is a different one."""
+    actor_store_id = await _actor_store_id(ctx)
+    if actor_store_id and actor_store_id != str(expected_store_id):
+        raise HTTPException(status_code=403, detail=message)
+
+
 @router.post(
     "/{store_id}/transfer-requests",
     status_code=201,
     response_model=DataResponse[TransferRequestCreated],
     dependencies=[Depends(require_permission("inventory:transfer_request"))],
 )
-async def create_transfer_request(store_id: str, payload: TransferRequestCreate, ctx: TenantDep):
+async def create_transfer_request(store_id: str, payload: TransferRequestCreate, ctx: DbTenantDep):
+    await _assert_store_matches(
+        ctx, store_id, "You can only request stock for your own store"
+    )
     try:
         result = await bridge.create_transfer_request(
             tenant_id=ctx.user.business_id,
-            product_id=str(payload.product_id),
+            item_name=payload.item_name,
             requesting_store_id=store_id,
             supplying_store_id=str(payload.supplying_store_id),
             requested_qty=payload.requested_qty,
@@ -535,13 +572,20 @@ async def create_transfer_request(store_id: str, payload: TransferRequestCreate,
             raise HTTPException(status_code=404, detail="Store not found")
         if detail == "cannot_request_from_self":
             raise HTTPException(status_code=400, detail="Cannot request from the same store")
-        if detail == "cannot_request_from_main":
-            raise HTTPException(status_code=400, detail="Cannot request stock from main store")
-        if detail == "supplying_balance_not_found":
+        if detail == "requesting_store_does_not_carry_item":
             raise HTTPException(
-                status_code=404,
-                detail="No stock balance found for this product in supplying store",
+                status_code=400,
+                detail=f"Your store does not carry an item called '{payload.item_name}'",
             )
+        if detail == "supplying_store_does_not_carry_item":
+            raise HTTPException(
+                status_code=400,
+                detail=f"The supplying store does not carry an item called '{payload.item_name}'",
+            )
+        if detail == "item_name_required":
+            raise HTTPException(status_code=400, detail="Choose the item to request")
+        if detail == "invalid_quantity":
+            raise HTTPException(status_code=400, detail="Quantity must be greater than zero")
         raise HTTPException(status_code=400, detail=detail)
 
 
@@ -554,6 +598,7 @@ async def list_transfer_requests(
     store_id: str,
     ctx: TenantDep,
     status: str | None = None,
+    direction: str | None = Query(default=None, pattern="^(incoming|outgoing)$"),
     page: int = 1,
     page_size: int = 50,
 ):
@@ -561,6 +606,7 @@ async def list_transfer_requests(
         tenant_id=ctx.user.business_id,
         status=status,
         store_id=store_id,
+        direction=direction,
         page=page,
         page_size=page_size,
     )
@@ -590,15 +636,37 @@ async def get_transfer_request(request_id: str, ctx: TenantDep):
     dependencies=[Depends(require_permission("inventory:transfer_approve"))],
 )
 async def approve_transfer_request(
-    request_id: str, payload: TransferRequestApprove, ctx: TenantDep
+    request_id: str, payload: TransferRequestApprove, ctx: DbTenantDep, request: Request
 ):
+    existing = await bridge.get_transfer_request(
+        tenant_id=ctx.user.business_id, request_id=request_id
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Transfer request not found")
+    if existing.get("created_by") and existing["created_by"] == ctx.user.user_id:
+        raise HTTPException(
+            status_code=400, detail="You cannot approve your own transfer request"
+        )
+    await _assert_store_matches(
+        ctx,
+        existing["supplying_store_id"],
+        "Only staff of the supplying store can approve this transfer",
+    )
+
+    pin_verified_by = await require_supervisor_approval(
+        ctx,
+        permission="inventory:transfer_approve",
+        supervisor_pin=payload.supervisor_pin,
+        request=request,
+    )
+
     try:
         result = await bridge.approve_transfer_request(
             tenant_id=ctx.user.business_id,
             request_id=request_id,
             approved_qty=payload.approved_qty,
-            rejection_reason=payload.rejection_reason,
             approved_by=ctx.user.user_id,
+            pin_verified_by=pin_verified_by,
             notes=payload.notes,
         )
         return ok(result)
@@ -607,9 +675,76 @@ async def approve_transfer_request(
         if detail == "request_not_found":
             raise HTTPException(status_code=404, detail="Transfer request not found")
         if detail.startswith("invalid_status"):
-            raise HTTPException(status_code=400, detail=detail)
+            raise HTTPException(
+                status_code=400, detail="This request has already been decided"
+            )
+        if detail == "approved_qty_exceeds_requested":
+            raise HTTPException(
+                status_code=400, detail="You cannot approve more than was requested"
+            )
+        if detail == "approved_qty_must_be_positive":
+            raise HTTPException(status_code=400, detail="Approved quantity must be greater than zero")
+        if detail == "supplying_balance_not_found":
+            raise HTTPException(
+                status_code=400, detail="The supplying store no longer stocks this item"
+            )
         if detail.startswith("insufficient_stock"):
-            raise HTTPException(status_code=400, detail=detail)
+            available = detail.rsplit("_", 1)[-1]
+            raise HTTPException(
+                status_code=400,
+                detail=f"Not enough stock to approve. {available} available.",
+            )
+        raise HTTPException(status_code=400, detail=detail)
+
+
+@router.patch(
+    "/transfer-requests/{request_id}/reject",
+    response_model=DataResponse[TransferRequestRejected],
+    dependencies=[Depends(require_permission("inventory:transfer_approve"))],
+)
+async def reject_transfer_request(
+    request_id: str, payload: TransferRequestReject, ctx: DbTenantDep, request: Request
+):
+    existing = await bridge.get_transfer_request(
+        tenant_id=ctx.user.business_id, request_id=request_id
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Transfer request not found")
+    if existing.get("created_by") and existing["created_by"] == ctx.user.user_id:
+        raise HTTPException(
+            status_code=400, detail="Reject your own request by cancelling it, not rejecting it"
+        )
+    await _assert_store_matches(
+        ctx,
+        existing["supplying_store_id"],
+        "Only staff of the supplying store can reject this transfer",
+    )
+
+    pin_verified_by = await require_supervisor_approval(
+        ctx,
+        permission="inventory:transfer_approve",
+        supervisor_pin=payload.supervisor_pin,
+        request=request,
+    )
+
+    try:
+        result = await bridge.reject_transfer_request(
+            tenant_id=ctx.user.business_id,
+            request_id=request_id,
+            rejected_by=ctx.user.user_id,
+            pin_verified_by=pin_verified_by,
+            rejection_reason=payload.rejection_reason,
+            notes=payload.notes,
+        )
+        return ok(result)
+    except ValueError as e:
+        detail = str(e)
+        if detail == "request_not_found":
+            raise HTTPException(status_code=404, detail="Transfer request not found")
+        if detail.startswith("invalid_status"):
+            raise HTTPException(
+                status_code=400, detail="This request has already been decided"
+            )
         raise HTTPException(status_code=400, detail=detail)
 
 
@@ -618,11 +753,40 @@ async def approve_transfer_request(
     response_model=DataResponse[TransferFulfilled],
     dependencies=[Depends(require_permission("inventory:transfer_fulfill"))],
 )
-async def fulfill_transfer_request(store_id: str, request_id: str, ctx: TenantDep):
+async def fulfill_transfer_request(
+    store_id: str,
+    request_id: str,
+    ctx: DbTenantDep,
+    request: Request,
+    payload: TransferRequestFulfill | None = None,
+):
+    existing = await bridge.get_transfer_request(
+        tenant_id=ctx.user.business_id, request_id=request_id
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Transfer request not found")
+    if str(existing["supplying_store_id"]) != store_id:
+        raise HTTPException(
+            status_code=400, detail="Only the supplying store can send this stock"
+        )
+    await _assert_store_matches(
+        ctx,
+        existing["supplying_store_id"],
+        "Only staff of the supplying store can send this stock",
+    )
+
+    await require_supervisor_approval(
+        ctx,
+        permission="inventory:transfer_fulfill",
+        supervisor_pin=payload.supervisor_pin if payload else None,
+        request=request,
+    )
+
     try:
         result = await bridge.fulfill_transfer_request(
             tenant_id=ctx.user.business_id,
             request_id=request_id,
+            fulfilled_by=ctx.user.user_id,
         )
         return ok(result)
     except ValueError as e:
@@ -630,7 +794,17 @@ async def fulfill_transfer_request(store_id: str, request_id: str, ctx: TenantDe
         if detail == "request_not_found":
             raise HTTPException(status_code=404, detail="Transfer request not found")
         if detail.startswith("invalid_status"):
-            raise HTTPException(status_code=400, detail=detail)
+            raise HTTPException(
+                status_code=400, detail="Only an approved request can be fulfilled"
+            )
+        if detail == "supplying_balance_not_found":
+            raise HTTPException(
+                status_code=400, detail="The supplying store no longer stocks this item"
+            )
         if detail.startswith("insufficient_stock"):
-            raise HTTPException(status_code=400, detail=detail)
+            available = detail.rsplit("_", 1)[-1]
+            raise HTTPException(
+                status_code=400,
+                detail=f"Not enough stock to send. {available} available.",
+            )
         raise HTTPException(status_code=400, detail=detail)

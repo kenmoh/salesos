@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import uuid4
 
 from app.common.events.outbox import OutboxWrite
@@ -23,8 +25,16 @@ from app.inventory.schemas import (
     ReserveStockCommand,
     TransferRequestApproveCommand,
     TransferRequestCreateCommand,
+    TransferRequestRejectCommand,
     TransferStockCommand,
 )
+
+
+def _decimal(value) -> Decimal:
+    """Coerce a quantity to Decimal without going through binary floats."""
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value))
 
 
 def group_movements_by_day(rows) -> list[dict]:
@@ -120,7 +130,7 @@ def plan_transfer_stock(
     from_balance: StockBalance,
     to_balance: StockBalance | None,
 ) -> tuple[StockAdjustment, StockAdjustment, StockBalance, StockBalance, list[OutboxWrite]]:
-    qty = float(command.qty)
+    qty = _decimal(command.qty)
 
     from_adjustment = StockAdjustment(
         id=uuid4(),
@@ -144,10 +154,10 @@ def plan_transfer_stock(
         created_by=command.created_by,
     )
 
-    from_balance.qty -= qty
+    from_balance.qty = _decimal(from_balance.qty) - qty
 
     if to_balance:
-        to_balance.qty += qty
+        to_balance.qty = _decimal(to_balance.qty) + qty
     else:
         to_balance = StockBalance(
             id=uuid4(),
@@ -272,33 +282,24 @@ def check_low_stock(
 
 def plan_create_transfer_request(
     command: TransferRequestCreateCommand,
-    supplying_balance: StockBalance | None,
-    requesting_is_warehouse: bool,
-    supplying_is_warehouse: bool,
 ) -> tuple[TransferRequest, OutboxWrite]:
     if command.requesting_store_id == command.supplying_store_id:
         raise ValueError("same_store")
-
-    if requesting_is_warehouse:
-        raise ValueError("main_cannot_request")
-
-    if supplying_is_warehouse:
-        raise ValueError("cannot_request_from_main")
-
-    if not supplying_balance:
-        raise ValueError("supplying_balance_not_found")
 
     request_id = uuid4()
     request = TransferRequest(
         id=request_id,
         tenant_id=command.tenant_id,
         product_id=command.product_id,
+        supplying_product_id=command.supplying_product_id,
         requesting_store_id=command.requesting_store_id,
         supplying_store_id=command.supplying_store_id,
-        requested_qty=float(command.requested_qty),
+        requested_qty=_decimal(command.requested_qty),
         status="pending",
         notes=command.notes,
         created_by=command.created_by,
+        request_number=command.request_number,
+        item_name=command.item_name,
     )
 
     event = transfer_requested_event(
@@ -325,44 +326,71 @@ def plan_approve_transfer_request(
     if request.status != "pending":
         raise ValueError(f"invalid_status:{request.status}")
 
-    if float(command.approved_qty) > 0:
-        if not supplying_balance:
-            raise ValueError("supplying_balance_not_found")
+    approved_qty = _decimal(command.approved_qty)
+    requested_qty = _decimal(request.requested_qty)
 
-        available = float(supplying_balance.qty) - float(supplying_balance.reserved_qty)
-        if available < float(command.approved_qty):
-            raise ValueError(f"insufficient_stock:available_{available}")
+    if approved_qty <= 0:
+        raise ValueError("approved_qty_must_be_positive")
 
-        request.approved_qty = float(command.approved_qty)
-        request.status = "approved"
-        request.approved_by = command.approved_by
-        request.notes = command.notes or request.notes
+    if approved_qty > requested_qty:
+        raise ValueError("approved_qty_exceeds_requested")
 
-        event = transfer_approved_event(
-            tenant_id=command.tenant_id,
-            request_id=command.request_id,
-            product_id=request.product_id,
-            requesting_store_id=request.requesting_store_id,
-            supplying_store_id=request.supplying_store_id,
-            requested_qty=str(request.requested_qty),
-            approved_qty=str(command.approved_qty),
-            correlation_id=command.correlation_id,
-        )
-    else:
-        request.status = "rejected"
-        request.rejection_reason = command.rejection_reason
-        request.approved_by = command.approved_by
-        request.notes = command.notes or request.notes
+    if not supplying_balance:
+        raise ValueError("supplying_balance_not_found")
 
-        event = transfer_rejected_event(
-            tenant_id=command.tenant_id,
-            request_id=command.request_id,
-            product_id=request.product_id,
-            requesting_store_id=request.requesting_store_id,
-            supplying_store_id=request.supplying_store_id,
-            rejection_reason=command.rejection_reason,
-            correlation_id=command.correlation_id,
-        )
+    available = _decimal(supplying_balance.qty) - _decimal(supplying_balance.reserved_qty)
+    if available < approved_qty:
+        raise ValueError(f"insufficient_stock:available_{available}")
+
+    request.approved_qty = approved_qty
+    request.status = "approved"
+    request.approved_by = command.approved_by
+    request.approved_at = datetime.now(UTC)
+    request.pin_verified_by = command.pin_verified_by
+    request.decision_note = command.notes or request.decision_note
+    request.notes = command.notes or request.notes
+
+    event = transfer_approved_event(
+        tenant_id=command.tenant_id,
+        request_id=command.request_id,
+        product_id=request.product_id,
+        requesting_store_id=request.requesting_store_id,
+        supplying_store_id=request.supplying_store_id,
+        requested_qty=str(request.requested_qty),
+        approved_qty=str(approved_qty),
+        correlation_id=command.correlation_id,
+    )
+
+    outbox = OutboxWrite(
+        event=event, aggregate_type="transfer_request", aggregate_id=str(command.request_id)
+    )
+    return request, outbox
+
+
+def plan_reject_transfer_request(
+    command: TransferRequestRejectCommand,
+    request: TransferRequest,
+) -> tuple[TransferRequest, OutboxWrite]:
+    if request.status != "pending":
+        raise ValueError(f"invalid_status:{request.status}")
+
+    request.status = "rejected"
+    request.rejection_reason = command.rejection_reason
+    request.approved_by = command.rejected_by
+    request.rejected_at = datetime.now(UTC)
+    request.pin_verified_by = command.pin_verified_by
+    request.decision_note = command.notes or request.decision_note
+    request.notes = command.notes or request.notes
+
+    event = transfer_rejected_event(
+        tenant_id=command.tenant_id,
+        request_id=command.request_id,
+        product_id=request.product_id,
+        requesting_store_id=request.requesting_store_id,
+        supplying_store_id=request.supplying_store_id,
+        rejection_reason=command.rejection_reason,
+        correlation_id=command.correlation_id,
+    )
 
     outbox = OutboxWrite(
         event=event, aggregate_type="transfer_request", aggregate_id=str(command.request_id)
@@ -375,6 +403,7 @@ def plan_fulfill_transfer_request(
     from_balance: StockBalance,
     to_balance: StockBalance | None,
     tenant_id,
+    fulfilled_by=None,
     correlation_id: str | None = None,
 ) -> tuple[
     StockAdjustment, StockAdjustment, StockBalance, StockBalance, TransferRequest, list[OutboxWrite]
@@ -382,43 +411,51 @@ def plan_fulfill_transfer_request(
     if request.status != "approved":
         raise ValueError(f"invalid_status:{request.status}")
 
-    qty = float(request.approved_qty)
+    qty = _decimal(request.approved_qty)
 
-    available = float(from_balance.qty) - float(from_balance.reserved_qty)
+    available = _decimal(from_balance.qty) - _decimal(from_balance.reserved_qty)
     if available < qty:
         raise ValueError(f"insufficient_stock:available_{available}")
+
+    # Each store carries its own product row for the same item name, so the
+    # outgoing side is booked against the supplying store's product and the
+    # incoming side against the requesting store's product.
+    from_product_id = request.supplying_product_id or request.product_id
+    to_product_id = request.product_id
+    reference = request.request_number or str(request.id)
+    note = f"Transfer {reference}: {request.item_name or 'item'} x {qty}"
 
     from_adjustment = StockAdjustment(
         id=uuid4(),
         tenant_id=tenant_id,
-        product_id=request.product_id,
+        product_id=from_product_id,
         store_id=request.supplying_store_id,
         reason="transfer_out",
         qty_change=-qty,
-        notes=f"Fulfill transfer request {request.id}",
-        created_by=request.approved_by,
+        notes=note,
+        created_by=fulfilled_by,
     )
 
     to_adjustment = StockAdjustment(
         id=uuid4(),
         tenant_id=tenant_id,
-        product_id=request.product_id,
+        product_id=to_product_id,
         store_id=request.requesting_store_id,
         reason="transfer_in",
         qty_change=qty,
-        notes=f"Fulfill transfer request {request.id}",
-        created_by=request.approved_by,
+        notes=note,
+        created_by=fulfilled_by,
     )
 
-    from_balance.qty -= qty
+    from_balance.qty = _decimal(from_balance.qty) - qty
 
     if to_balance:
-        to_balance.qty += qty
+        to_balance.qty = _decimal(to_balance.qty) + qty
     else:
         to_balance = StockBalance(
             id=uuid4(),
             tenant_id=tenant_id,
-            product_id=request.product_id,
+            product_id=to_product_id,
             store_id=request.requesting_store_id,
             qty=qty,
             reserved_qty=0,
@@ -426,6 +463,9 @@ def plan_fulfill_transfer_request(
         )
 
     request.status = "fulfilled"
+    request.fulfilled_qty = qty
+    request.fulfilled_by = fulfilled_by
+    request.fulfilled_at = datetime.now(UTC)
 
     event = transfer_fulfilled_event(
         tenant_id=tenant_id,
@@ -434,8 +474,8 @@ def plan_fulfill_transfer_request(
         from_store_id=request.supplying_store_id,
         to_store_id=request.requesting_store_id,
         qty=str(qty),
-        from_new_balance=str(float(from_balance.qty)),
-        to_new_balance=str(float(to_balance.qty)),
+        from_new_balance=str(from_balance.qty),
+        to_new_balance=str(to_balance.qty),
         correlation_id=correlation_id,
     )
 

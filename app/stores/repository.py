@@ -135,6 +135,38 @@ async def get_store_product(
     return result.scalar_one_or_none()
 
 
+async def get_store_product_by_name(
+    session: AsyncSession, tenant_id: UUID, store_id: UUID, name: str
+) -> StoreProduct | None:
+    """Retrieve a store's product by its store-specific name.
+
+    Items are identified per store: the same item can carry different names,
+    SKUs (CokeID) and even different catalog products in two stores, so the
+    name is what ties a request in one store to the matching item in another.
+
+    Args:
+        session: Async SQLAlchemy session.
+        tenant_id: The tenant UUID.
+        store_id: The store UUID.
+        name: The store-specific item name, matched case-insensitively.
+
+    Returns:
+        The matching StoreProduct or None.
+    """
+    result = await session.execute(
+        select(StoreProduct)
+        .where(
+            StoreProduct.tenant_id == tenant_id,
+            StoreProduct.store_id == store_id,
+            StoreProduct.name.ilike(name.strip()),
+            StoreProduct.status != "discontinued",
+        )
+        .order_by(StoreProduct.name)
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def list_store_products(
     session: AsyncSession,
     tenant_id: UUID,

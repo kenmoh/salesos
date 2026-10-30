@@ -3682,14 +3682,14 @@ async def transfer_stock(
     """Transfer stock of a product from one store to another.
 
     Moves a specified quantity of a product from the source store to the
-    destination store. The source store must be a warehouse, and must have
+    destination store. Any store can be the source, as long as it has
     sufficient available stock (quantity minus reserved quantity). Creates
     paired stock adjustment records for both the source and destination.
 
     Args:
         tenant_id: Unique identifier of the tenant.
         product_id: Unique identifier of the product to transfer.
-        from_store_id: Unique identifier of the source (warehouse) store.
+        from_store_id: Unique identifier of the source store.
         to_store_id: Unique identifier of the destination store.
         qty: Quantity to transfer.
         notes: Optional notes for the transfer.
@@ -3702,9 +3702,8 @@ async def transfer_stock(
         ``to_adjustment_id``, ``from_new_balance``, and ``to_new_balance``.
 
     Raises:
-        ValueError: If the source store is not a warehouse, the stores are
-            the same, the source balance is not found, or there is
-            insufficient stock.
+        ValueError: If either store is not found, the stores are the same,
+            the source balance is not found, or there is insufficient stock.
     """
     from app.inventory.schemas import TransferStockCommand
     from app.inventory.service import plan_transfer_stock
@@ -3728,9 +3727,6 @@ async def transfer_stock(
         if from_store_id == to_store_id:
             raise ValueError("same_store")
 
-        if not from_store.is_warehouse:
-            raise ValueError("only_main_can_distribute")
-
         from_balance = await get_stock_balance(session, UUID(product_id), UUID(from_store_id))
         if not from_balance:
             raise ValueError("source_balance_not_found")
@@ -3740,6 +3736,10 @@ async def transfer_stock(
             raise ValueError(f"insufficient_stock:available_{available}")
 
         to_balance = await get_stock_balance(session, UUID(product_id), UUID(to_store_id))
+
+        # Snapshot before the plan mutates the balances, for the movement log.
+        from_before = Decimal(str(from_balance.qty))
+        to_before = Decimal(str(to_balance.qty)) if to_balance else Decimal("0")
 
         command = TransferStockCommand(
             tenant_id=UUID(tenant_id),
@@ -3766,11 +3766,11 @@ async def transfer_stock(
             store_id=UUID(from_store_id),
             movement_type="transfer_out",
             qty_change=-qty,
-            balance_before=Decimal(str(from_balance.qty)) if from_balance else Decimal("0"),
+            balance_before=from_before,
             balance_after=from_bal.qty,
             reference_type="transfer",
             reference_id=from_adj.id,
-            reason="warehouse_distribution",
+            reason="store_transfer",
             notes=notes,
             created_by=UUID(created_by) if created_by else None,
         )
@@ -3781,11 +3781,11 @@ async def transfer_stock(
             store_id=UUID(to_store_id),
             movement_type="transfer_in",
             qty_change=qty,
-            balance_before=Decimal(str(to_balance.qty)) if to_balance else Decimal("0"),
+            balance_before=to_before,
             balance_after=to_bal.qty,
             reference_type="transfer",
             reference_id=to_adj.id,
-            reason="warehouse_distribution",
+            reason="store_transfer",
             notes=notes,
             created_by=UUID(created_by) if created_by else None,
         )
@@ -3806,9 +3806,114 @@ async def transfer_stock(
     }
 
 
+async def _next_transfer_request_number(session: AsyncSession, tenant_id: UUID) -> str:
+    """Allocate a short human-readable reference such as ``TR-3F9A21C4``.
+
+    The reference is what staff quote on the phone and write on the delivery
+    note, so it stays short and is unique per tenant.
+    """
+    from app.inventory.repository import get_transfer_request_by_number
+
+    for _ in range(8):
+        candidate = f"TR-{uuid4().hex[:8].upper()}"
+        if not await get_transfer_request_by_number(session, tenant_id, candidate):
+            return candidate
+    return f"TR-{uuid4().hex.upper()}"
+
+
+async def _transfer_request_names(
+    session: AsyncSession, tenant_id: UUID, requests: list
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Return ``({store_id: name}, {user_id: name})`` for a batch of requests.
+
+    Store names come from the same (inventory) session; actor names come from
+    the identity database. Fetching both in one pass keeps a transfer list to
+    a single query per source instead of one per row.
+    """
+    from app.identity.repository import get_users_by_tenant
+    from app.stores.models import Store
+
+    rows = (await session.execute(select(Store).where(Store.tenant_id == tenant_id))).scalars().all()
+    store_names = {str(store.id): store.name for store in rows}
+
+    user_ids: set[str] = set()
+    for request in requests:
+        for actor in (
+            request.created_by,
+            request.approved_by,
+            request.fulfilled_by,
+            request.pin_verified_by,
+        ):
+            if actor:
+                user_ids.add(str(actor))
+
+    actor_names: dict[str, str] = {}
+    if user_ids:
+        sdb = _get_sdb("identity")
+        async with sdb.session() as identity_session:
+            users = await get_users_by_tenant(identity_session, tenant_id)
+        actor_names = {
+            str(user.id): (user.full_name or user.email)
+            for user in users
+            if str(user.id) in user_ids
+        }
+
+    return store_names, actor_names
+
+
+def _transfer_request_view(
+    request, store_names: dict[str, str], actor_names: dict[str, str]
+) -> dict:
+    """Serialise a transfer request with the names a human needs to judge it."""
+
+    def _actor(value):
+        if not value:
+            return None, None
+        return str(value), actor_names.get(str(value))
+
+    created_by, created_by_name = _actor(request.created_by)
+    approved_by, approved_by_name = _actor(request.approved_by)
+    fulfilled_by, fulfilled_by_name = _actor(request.fulfilled_by)
+    pin_verified_by, pin_verified_by_name = _actor(request.pin_verified_by)
+
+    return {
+        "id": str(request.id),
+        "request_number": request.request_number,
+        "item_name": request.item_name,
+        "product_id": str(request.product_id),
+        "supplying_product_id": (
+            str(request.supplying_product_id) if request.supplying_product_id else None
+        ),
+        "requesting_store_id": str(request.requesting_store_id),
+        "supplying_store_id": str(request.supplying_store_id),
+        "requesting_store_name": store_names.get(str(request.requesting_store_id)),
+        "supplying_store_name": store_names.get(str(request.supplying_store_id)),
+        "requested_qty": float(request.requested_qty),
+        "approved_qty": float(request.approved_qty) if request.approved_qty is not None else None,
+        "fulfilled_qty": float(request.fulfilled_qty) if request.fulfilled_qty is not None else None,
+        "status": request.status,
+        "notes": request.notes,
+        "decision_note": request.decision_note,
+        "rejection_reason": request.rejection_reason,
+        "created_by": created_by,
+        "created_by_name": created_by_name,
+        "approved_by": approved_by,
+        "approved_by_name": approved_by_name,
+        "fulfilled_by": fulfilled_by,
+        "fulfilled_by_name": fulfilled_by_name,
+        "pin_verified_by": pin_verified_by,
+        "pin_verified_by_name": pin_verified_by_name,
+        "approved_at": request.approved_at.isoformat() if request.approved_at else None,
+        "rejected_at": request.rejected_at.isoformat() if request.rejected_at else None,
+        "fulfilled_at": request.fulfilled_at.isoformat() if request.fulfilled_at else None,
+        "created_at": request.created_at.isoformat() if request.created_at else None,
+        "updated_at": request.updated_at.isoformat() if request.updated_at else None,
+    }
+
+
 async def create_transfer_request(
     tenant_id: str,
-    product_id: str,
+    item_name: str,
     requesting_store_id: str,
     supplying_store_id: str,
     requested_qty: Decimal,
@@ -3816,129 +3921,139 @@ async def create_transfer_request(
     created_by: str | None = None,
     correlation_id: str | None = None,
 ) -> dict:
-    """Create a stock transfer request from one store to another.
+    """Create a stock transfer request between two stores.
 
-    Initiates a request for the supplying store to transfer a specified
-    quantity of a product to the requesting store. The request starts in
-    "pending" status and must be approved before fulfilment.
+    The requesting store asks the supplying store for an item by *name*.
+    Items have per-store identity — the "Coke" in one store has its own
+    catalog row, SKU (CokeID) and prices — so the name is what ties the
+    request to the matching item on both sides. Both product rows are
+    resolved now and stored on the request, so renaming an item later
+    cannot silently redirect the movement.
+
+    The request starts ``pending``. Only the supplying store can approve
+    it (possibly with a reduced quantity) or reject it with a reason, and
+    only an approved request can be fulfilled.
 
     Args:
         tenant_id: Unique identifier of the tenant.
-        product_id: Unique identifier of the product to transfer.
-        requesting_store_id: Unique identifier of the store requesting
-            stock.
-        supplying_store_id: Unique identifier of the store that will
-            supply the stock.
-        requested_qty: Quantity of stock requested.
-        notes: Optional notes for the transfer request.
+        item_name: Name of the item in the requesting store.
+        requesting_store_id: Store asking for the stock.
+        supplying_store_id: Store that will send the stock.
+        requested_qty: Quantity requested.
+        notes: Optional notes for the request.
         created_by: Optional identifier of the user creating the request.
-        correlation_id: Optional correlation identifier for distributed
-            tracing.
+        correlation_id: Optional correlation identifier for tracing.
 
     Returns:
-        A dictionary containing ``request_id``, ``status``, ``product_id``,
-        ``requesting_store_id``, ``supplying_store_id``, and
-        ``requested_qty``.
+        The serialised transfer request (request number, item, stores,
+        quantities, status and actors).
 
     Raises:
-        ValueError: If either store is not found or the requesting store
-            attempts to request from itself.
+        ValueError: If a store or item is missing, both stores are the
+            same, or the quantity is not positive.
     """
     from app.inventory.schemas import TransferRequestCreateCommand
     from app.inventory.service import plan_create_transfer_request
-    from app.inventory.repository import (
-        create_transfer_request as repo_create_transfer_request,
-        get_stock_balance,
-    )
-    from app.stores.repository import get_store_with_tenant
+    from app.inventory.repository import create_transfer_request as repo_create_transfer_request
+    from app.stores.repository import get_store_product_by_name, get_store_with_tenant
 
+    if requested_qty is None or Decimal(str(requested_qty)) <= 0:
+        raise ValueError("invalid_quantity")
+
+    name = (item_name or "").strip()
+    if not name:
+        raise ValueError("item_name_required")
+
+    tenant_uuid = UUID(tenant_id)
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
         requesting_store = await get_store_with_tenant(
-            session, UUID(requesting_store_id), UUID(tenant_id)
+            session, UUID(requesting_store_id), tenant_uuid
         )
         if not requesting_store:
             raise ValueError("requesting_store_not_found")
 
         supplying_store = await get_store_with_tenant(
-            session, UUID(supplying_store_id), UUID(tenant_id)
+            session, UUID(supplying_store_id), tenant_uuid
         )
         if not supplying_store:
             raise ValueError("supplying_store_not_found")
 
-        if requesting_store.id == UUID(supplying_store_id):
+        if requesting_store.id == supplying_store.id:
             raise ValueError("cannot_request_from_self")
 
-        supplying_balance = await get_stock_balance(
-            session, UUID(product_id), UUID(supplying_store_id)
+        requesting_item = await get_store_product_by_name(
+            session, tenant_uuid, requesting_store.id, name
+        )
+        if not requesting_item:
+            raise ValueError("requesting_store_does_not_carry_item")
+
+        supplying_item = await get_store_product_by_name(
+            session, tenant_uuid, supplying_store.id, name
+        )
+        if not supplying_item:
+            raise ValueError("supplying_store_does_not_carry_item")
+
+        command = TransferRequestCreateCommand(
+            tenant_id=tenant_uuid,
+            product_id=requesting_item.product_id,
+            supplying_product_id=supplying_item.product_id,
+            item_name=name,
+            request_number=await _next_transfer_request_number(session, tenant_uuid),
+            requesting_store_id=requesting_store.id,
+            supplying_store_id=supplying_store.id,
+            requested_qty=Decimal(str(requested_qty)),
+            notes=notes,
+            created_by=UUID(created_by) if created_by else None,
+            correlation_id=correlation_id,
         )
 
-    command = TransferRequestCreateCommand(
-        tenant_id=UUID(tenant_id),
-        product_id=UUID(product_id),
-        requesting_store_id=requesting_store.id,
-        supplying_store_id=UUID(supplying_store_id),
-        requested_qty=requested_qty,
-        notes=notes,
-        created_by=UUID(created_by) if created_by else None,
-        correlation_id=correlation_id,
-    )
-
-    sdb = _get_sdb("inventory")
-    async with sdb.session() as session:
-        request, outbox = plan_create_transfer_request(
-            command,
-            supplying_balance,
-            requesting_is_warehouse=requesting_store.is_warehouse,
-            supplying_is_warehouse=supplying_store.is_warehouse,
-        )
+        request, outbox = plan_create_transfer_request(command)
         await repo_create_transfer_request(session, request)
         session.add(outbox.to_model())
+        await session.flush()
+
+        store_names, actor_names = await _transfer_request_names(session, tenant_uuid, [request])
+        result = _transfer_request_view(request, store_names, actor_names)
+        supplying_store_key = str(supplying_store.id)
         await session.commit()
 
-    return {
-        "request_id": str(request.id),
-        "status": request.status,
-        "product_id": str(request.product_id),
-        "requesting_store_id": str(request.requesting_store_id),
-        "supplying_store_id": str(request.supplying_store_id),
-        "requested_qty": float(request.requested_qty),
-    }
+    await scope_bump(tenant_id, supplying_store_key, (CATALOG,))
+    return result
 
 
 async def approve_transfer_request(
     tenant_id: str,
     request_id: str,
     approved_qty: Decimal,
-    rejection_reason: str | None = None,
     approved_by: str | None = None,
+    pin_verified_by: str | None = None,
     notes: str | None = None,
     correlation_id: str | None = None,
 ) -> dict:
-    """Approve or reject a pending stock transfer request.
+    """Approve a pending transfer request, possibly for less than asked.
 
-    Processes a transfer request by either approving it with a specified
-    quantity (which may differ from the requested amount) or rejecting it
-    with a reason. Approval does not yet move stock; fulfilment is a
-    separate step.
+    The supplying store confirms it will send the stock. It may reduce the
+    quantity (never increase it) and add a note. Availability is checked
+    again here so a request approved days later cannot promise stock that
+    has since been sold. Approval does not move stock — fulfilment does.
 
     Args:
         tenant_id: Unique identifier of the tenant.
-        request_id: Unique identifier of the transfer request to approve.
-        approved_qty: Quantity approved for transfer.
-        rejection_reason: Optional reason if the request is being rejected
-            instead of approved.
-        approved_by: Optional identifier of the user approving the request.
-        notes: Optional additional notes for the approval.
-        correlation_id: Optional correlation identifier for distributed
-            tracing.
+        request_id: Unique identifier of the transfer request.
+        approved_qty: Quantity the supplying store agrees to send.
+        approved_by: User who made the decision.
+        pin_verified_by: Supervisor whose PIN authorised a non-owner.
+        notes: Optional decision note.
+        correlation_id: Optional correlation identifier for tracing.
 
     Returns:
-        A dictionary containing ``request_id``, ``status``, and
-        ``approved_qty``.
+        ``request_id``, ``status`` and ``approved_qty``.
 
     Raises:
-        ValueError: If the transfer request is not found.
+        ValueError: If the request is missing, not pending, the quantity is
+            not positive or above the requested amount, or the supplying
+            store no longer has enough stock.
     """
     from app.inventory.schemas import TransferRequestApproveCommand
     from app.inventory.service import plan_approve_transfer_request
@@ -3953,16 +4068,17 @@ async def approve_transfer_request(
         if not request or str(request.tenant_id) != tenant_id:
             raise ValueError("request_not_found")
 
+        supplying_product_id = request.supplying_product_id or request.product_id
         supplying_balance = await get_stock_balance(
-            session, request.product_id, request.supplying_store_id
+            session, supplying_product_id, request.supplying_store_id
         )
 
         command = TransferRequestApproveCommand(
             tenant_id=UUID(tenant_id),
             request_id=UUID(request_id),
-            approved_qty=approved_qty,
-            rejection_reason=rejection_reason,
+            approved_qty=Decimal(str(approved_qty)),
             approved_by=UUID(approved_by) if approved_by else None,
+            pin_verified_by=UUID(pin_verified_by) if pin_verified_by else None,
             notes=notes,
             correlation_id=correlation_id,
         )
@@ -3971,13 +4087,82 @@ async def approve_transfer_request(
         session.add(outbox.to_model())
         await session.commit()
 
-    return {
-        "request_id": str(updated_request.id),
-        "status": updated_request.status,
-        "approved_qty": float(updated_request.approved_qty)
-        if updated_request.approved_qty
-        else None,
-    }
+        result = {
+            "request_id": str(updated_request.id),
+            "request_number": updated_request.request_number,
+            "status": updated_request.status,
+            "approved_qty": (
+                float(updated_request.approved_qty)
+                if updated_request.approved_qty is not None
+                else None
+            ),
+        }
+
+    return result
+
+
+async def reject_transfer_request(
+    tenant_id: str,
+    request_id: str,
+    rejected_by: str | None = None,
+    pin_verified_by: str | None = None,
+    rejection_reason: str | None = None,
+    notes: str | None = None,
+    correlation_id: str | None = None,
+) -> dict:
+    """Reject a pending transfer request, optionally with a reason.
+
+    Rejection is final for that request: the requesting store has to raise
+    a new one. The reason is shown back to the requester, so it is the
+    place to say "we only have 3 left" or "request it from the warehouse".
+
+    Args:
+        tenant_id: Unique identifier of the tenant.
+        request_id: Unique identifier of the transfer request.
+        rejected_by: User who made the decision.
+        pin_verified_by: Supervisor whose PIN authorised a non-owner.
+        rejection_reason: Optional explanation for the requester.
+        notes: Optional internal note.
+        correlation_id: Optional correlation identifier for tracing.
+
+    Returns:
+        ``request_id``, ``status`` and ``rejection_reason``.
+
+    Raises:
+        ValueError: If the request is missing or no longer pending.
+    """
+    from app.inventory.schemas import TransferRequestRejectCommand
+    from app.inventory.service import plan_reject_transfer_request
+    from app.inventory.repository import get_transfer_request_by_id
+
+    sdb = _get_sdb("inventory")
+    async with sdb.session() as session:
+        request = await get_transfer_request_by_id(session, UUID(request_id))
+        if not request or str(request.tenant_id) != tenant_id:
+            raise ValueError("request_not_found")
+
+        command = TransferRequestRejectCommand(
+            tenant_id=UUID(tenant_id),
+            request_id=UUID(request_id),
+            rejected_by=UUID(rejected_by) if rejected_by else None,
+            pin_verified_by=UUID(pin_verified_by) if pin_verified_by else None,
+            rejection_reason=rejection_reason,
+            notes=notes,
+            correlation_id=correlation_id,
+        )
+
+        updated_request, outbox = plan_reject_transfer_request(command, request)
+        session.add(outbox.to_model())
+        await session.commit()
+
+        result = {
+            "request_id": str(updated_request.id),
+            "request_number": updated_request.request_number,
+            "status": updated_request.status,
+            "rejection_reason": updated_request.rejection_reason,
+        }
+
+    return result
 
 
 async def set_min_stock_level(
@@ -4032,30 +4217,29 @@ async def set_min_stock_level(
 async def fulfill_transfer_request(
     tenant_id: str,
     request_id: str,
+    fulfilled_by: str | None = None,
     correlation_id: str | None = None,
 ) -> dict:
-    """Fulfil an approved stock transfer request.
+    """Fulfil an approved transfer request, moving stock between stores.
 
-    Executes the stock movement for an approved transfer request. Decrements
-    stock from the supplying store and increments it at the requesting store,
-    creating paired adjustment records. The request status is updated to
-    "fulfilled".
+    Decrements the supplying store's balance for its own product row and
+    increments the requesting store's balance for *its* row — the same item
+    name, two different catalog products — and records paired adjustments
+    and movements referencing the request, so both stores' item histories
+    show where the stock came from or went.
 
     Args:
         tenant_id: Unique identifier of the tenant.
-        request_id: Unique identifier of the approved transfer request to
-            fulfil.
-        correlation_id: Optional correlation identifier for distributed
-            tracing.
+        request_id: Unique identifier of the approved request.
+        fulfilled_by: User who moved the stock.
+        correlation_id: Optional correlation identifier for tracing.
 
     Returns:
-        A dictionary containing ``request_id``, ``status``,
-        ``from_adjustment_id``, ``to_adjustment_id``,
-        ``from_new_balance``, and ``to_new_balance``.
+        ``request_id``, ``status``, adjustment ids and the new balances.
 
     Raises:
-        ValueError: If the transfer request is not found or the supplying
-            store's stock balance is missing.
+        ValueError: If the request is missing, not approved, or the
+            supplying store no longer has the approved quantity.
     """
     from app.inventory.service import plan_fulfill_transfer_request
     from app.inventory.repository import (
@@ -4065,27 +4249,39 @@ async def fulfill_transfer_request(
         upsert_stock_balance,
     )
 
+    tenant_uuid = UUID(tenant_id)
+    actor = UUID(fulfilled_by) if fulfilled_by else None
+
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
         request = await get_transfer_request_by_id(session, UUID(request_id))
         if not request or str(request.tenant_id) != tenant_id:
             raise ValueError("request_not_found")
 
+        from_product_id = request.supplying_product_id or request.product_id
+        to_product_id = request.product_id
+
         from_balance = await get_stock_balance(
-            session, request.product_id, request.supplying_store_id
+            session, from_product_id, request.supplying_store_id
         )
         if not from_balance:
             raise ValueError("supplying_balance_not_found")
 
         to_balance = await get_stock_balance(
-            session, request.product_id, request.requesting_store_id
+            session, to_product_id, request.requesting_store_id
         )
+
+        # Snapshot the balances before the plan mutates them, so the movement
+        # log records the true "before" values.
+        from_before = Decimal(str(from_balance.qty))
+        to_before = Decimal(str(to_balance.qty)) if to_balance else Decimal("0")
 
         from_adj, to_adj, from_bal, to_bal, updated_request, outbox = plan_fulfill_transfer_request(
             request=request,
             from_balance=from_balance,
             to_balance=to_balance,
-            tenant_id=UUID(tenant_id),
+            tenant_id=tenant_uuid,
+            fulfilled_by=actor,
             correlation_id=correlation_id,
         )
 
@@ -4093,40 +4289,47 @@ async def fulfill_transfer_request(
         await create_stock_adjustment(session, to_adj)
         await upsert_stock_balance(session, from_bal)
         await upsert_stock_balance(session, to_bal)
+
+        qty = Decimal(str(updated_request.fulfilled_qty))
+        note = from_adj.notes
+
         await _record_movement(
             session,
-            tenant_id=UUID(tenant_id),
-            product_id=request.product_id,
+            tenant_id=tenant_uuid,
+            product_id=from_product_id,
             store_id=request.supplying_store_id,
             movement_type="transfer_out",
-            qty_change=Decimal(str(-request.approved_qty)),
-            balance_before=Decimal(str(from_balance.qty)),
+            qty_change=-qty,
+            balance_before=from_before,
             balance_after=from_bal.qty,
             reference_type="transfer",
             reference_id=from_adj.id,
             reason="transfer_request_fulfilled",
-            created_by=None,
+            notes=note,
+            created_by=actor,
         )
         await _record_movement(
             session,
-            tenant_id=UUID(tenant_id),
-            product_id=request.product_id,
+            tenant_id=tenant_uuid,
+            product_id=to_product_id,
             store_id=request.requesting_store_id,
             movement_type="transfer_in",
-            qty_change=Decimal(str(request.approved_qty)),
-            balance_before=Decimal(str(to_balance.qty)) if to_balance else Decimal("0"),
+            qty_change=qty,
+            balance_before=to_before,
             balance_after=to_bal.qty,
             reference_type="transfer",
             reference_id=to_adj.id,
             reason="transfer_request_fulfilled",
-            created_by=None,
+            notes=note,
+            created_by=actor,
         )
         for write in outbox:
             session.add(write.to_model())
+
+        supplying_store_id = str(request.supplying_store_id)
+        requesting_store_id = str(request.requesting_store_id)
         await session.commit()
 
-    supplying_store_id = str(request.supplying_store_id)
-    requesting_store_id = str(request.requesting_store_id)
     await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{supplying_store_id}*")
     await scope_bump(tenant_id, supplying_store_id, (CATALOG,))
     await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{requesting_store_id}*")
@@ -4134,11 +4337,13 @@ async def fulfill_transfer_request(
 
     return {
         "request_id": str(updated_request.id),
+        "request_number": updated_request.request_number,
         "status": updated_request.status,
         "from_adjustment_id": str(from_adj.id),
         "to_adjustment_id": str(to_adj.id),
         "from_new_balance": float(from_bal.qty),
         "to_new_balance": float(to_bal.qty),
+        "fulfilled_qty": float(updated_request.fulfilled_qty),
     }
 
 
@@ -4146,67 +4351,58 @@ async def list_transfer_requests(
     tenant_id: str,
     status: str | None = None,
     store_id: str | None = None,
+    direction: str | None = None,
     page: int = 1,
     page_size: int = 50,
 ) -> dict:
-    """List stock transfer requests with optional filtering and pagination.
+    """List stock transfer requests with filtering and pagination.
 
-    Retrieves transfer requests from the inventory database, optionally
-    filtered by status and store identifier. Results are paginated.
+    Rows carry the store names, the item name and the people involved, so a
+    store can see at a glance who asked, who decided and who moved the
+    stock without extra lookups.
 
     Args:
         tenant_id: Unique identifier of the tenant.
-        status: Optional status filter (e.g. "pending", "approved",
-            "fulfilled", "rejected").
-        store_id: Optional store identifier to filter requests involving
-            that store (as either requester or supplier).
-        page: Page number for pagination (1-indexed).
-        page_size: Number of items per page.
+        status: Optional status filter ("pending", "approved", "fulfilled",
+            "rejected").
+        store_id: Optional store to focus on.
+        direction: Optional ``incoming`` (store is the supplier) or
+            ``outgoing`` (store is the requester); ``None`` means either.
+        page: Page number (1-indexed).
+        page_size: Items per page.
 
     Returns:
-        A dictionary containing ``items`` (list of transfer request
-        dictionaries), ``total`` count, ``page``, and ``page_size``.
+        ``items``, ``total``, ``page`` and ``page_size``.
     """
     from app.inventory.repository import (
         list_transfer_requests as repo_list_transfer_requests,
         count_transfer_requests,
     )
 
+    tenant_uuid = UUID(tenant_id)
+    store_uuid = UUID(store_id) if store_id else None
+
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
         items = await repo_list_transfer_requests(
             session,
-            tenant_id=UUID(tenant_id),
+            tenant_id=tenant_uuid,
             status=status,
-            store_id=UUID(store_id) if store_id else None,
+            store_id=store_uuid,
+            direction=direction,
             limit=page_size,
             offset=(page - 1) * page_size,
         )
         total = await count_transfer_requests(
             session,
-            tenant_id=UUID(tenant_id),
+            tenant_id=tenant_uuid,
             status=status,
-            store_id=UUID(store_id) if store_id else None,
+            store_id=store_uuid,
+            direction=direction,
         )
+        store_names, actor_names = await _transfer_request_names(session, tenant_uuid, items)
         return {
-            "items": [
-                {
-                    "id": str(r.id),
-                    "product_id": str(r.product_id),
-                    "requesting_store_id": str(r.requesting_store_id),
-                    "supplying_store_id": str(r.supplying_store_id),
-                    "requested_qty": float(r.requested_qty),
-                    "approved_qty": float(r.approved_qty) if r.approved_qty else None,
-                    "status": r.status,
-                    "notes": r.notes,
-                    "rejection_reason": r.rejection_reason,
-                    "created_by": str(r.created_by) if r.created_by else None,
-                    "approved_by": str(r.approved_by) if r.approved_by else None,
-                    "created_at": r.created_at.isoformat() if r.created_at else None,
-                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
-                }
-                for r in items
-            ],
+            "items": [_transfer_request_view(r, store_names, actor_names) for r in items],
             "total": total,
             "page": page,
             "page_size": page_size,
@@ -4214,45 +4410,26 @@ async def list_transfer_requests(
 
 
 async def get_transfer_request(tenant_id: str, request_id: str) -> dict | None:
-    """Retrieve a specific stock transfer request by its identifier.
-
-    Fetches the transfer request from the inventory database and validates
-    that it belongs to the specified tenant.
+    """Retrieve one stock transfer request by its identifier.
 
     Args:
-        tenant_id: Unique identifier of the tenant that owns the request.
-        request_id: Unique identifier of the transfer request to retrieve.
+        tenant_id: Tenant that must own the request.
+        request_id: Unique identifier of the request.
 
     Returns:
-        A dictionary containing the transfer request details including
-        ``id``, ``product_id``, ``requesting_store_id``,
-        ``supplying_store_id``, ``requested_qty``, ``approved_qty``,
-        ``status``, ``notes``, ``rejection_reason``, ``created_by``,
-        ``approved_by``, ``created_at``, and ``updated_at``, or ``None``
-        if the request does not exist.
+        The serialised request, or ``None`` when it does not exist for this
+        tenant.
     """
     from app.inventory.repository import get_transfer_request_by_id
 
+    tenant_uuid = UUID(tenant_id)
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
         request = await get_transfer_request_by_id(session, UUID(request_id))
         if not request or str(request.tenant_id) != tenant_id:
             return None
-        return {
-            "id": str(request.id),
-            "product_id": str(request.product_id),
-            "requesting_store_id": str(request.requesting_store_id),
-            "supplying_store_id": str(request.supplying_store_id),
-            "requested_qty": float(request.requested_qty),
-            "approved_qty": float(request.approved_qty) if request.approved_qty else None,
-            "status": request.status,
-            "notes": request.notes,
-            "rejection_reason": request.rejection_reason,
-            "created_by": str(request.created_by) if request.created_by else None,
-            "approved_by": str(request.approved_by) if request.approved_by else None,
-            "created_at": request.created_at.isoformat() if request.created_at else None,
-            "updated_at": request.updated_at.isoformat() if request.updated_at else None,
-        }
+        store_names, actor_names = await _transfer_request_names(session, tenant_uuid, [request])
+        return _transfer_request_view(request, store_names, actor_names)
 
 
 async def get_main_store_dashboard(tenant_id: str) -> dict:
