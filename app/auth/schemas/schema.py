@@ -81,6 +81,8 @@ class ProductCreateForStore(Base):
 class StoreProductUpdate(Base):
     name: str | None = Field(default=None, max_length=200)
     sku: str | None = None
+    description: str | None = Field(default=None, max_length=1000)
+    unit: str | None = Field(default=None, max_length=20)
     selling_price: Decimal | None = None
     cost_price: Decimal | None = None
     category_id: UUID | None = None

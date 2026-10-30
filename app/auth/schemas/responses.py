@@ -155,6 +155,8 @@ class StoreProductUpdated(_Base):
     store_id: str = ""
     name: str = ""
     sku: str | None = None
+    description: str | None = None
+    unit: str | None = None
     selling_price: float = 0
     cost_price: float = 0
     status: str = "active"

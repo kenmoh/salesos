@@ -58,9 +58,9 @@ class StoreFlowPDF(FPDF):
             self.cell(col_widths[0], 6, str(idx), border=1, align="C")
             self.cell(col_widths[1], 6, str(item.get("description", ""))[:35], border=1)
             self.cell(col_widths[2], 6, f"{qty:.1f}", border=1, align="C")
-            self.cell(col_widths[3], 6, f"₦{unit_price:,.2f}", border=1, align="R")
+            self.cell(col_widths[3], 6, f"NGN{unit_price:,.2f}", border=1, align="R")
             self.cell(col_widths[4], 6, f"{discount_pct:.0f}%", border=1, align="C")
-            self.cell(col_widths[5], 6, f"₦{line_total:,.2f}", border=1, align="R")
+            self.cell(col_widths[5], 6, f"NGN{line_total:,.2f}", border=1, align="R")
             self.ln()
 
     def totals_section(self, subtotal: float, tax: float = 0, total: float = 0):
@@ -69,17 +69,17 @@ class StoreFlowPDF(FPDF):
         x_start = self.w - 70
         self.set_x(x_start)
         self.cell(35, 7, "Subtotal:")
-        self.cell(35, 7, f"₦{subtotal:,.2f}", align="R", new_x="LMARGIN", new_y="NEXT")
+        self.cell(35, 7, f"NGN{subtotal:,.2f}", align="R", new_x="LMARGIN", new_y="NEXT")
 
         if tax > 0:
             self.set_x(x_start)
             self.cell(35, 7, "Tax:")
-            self.cell(35, 7, f"₦{tax:,.2f}", align="R", new_x="LMARGIN", new_y="NEXT")
+            self.cell(35, 7, f"NGN{tax:,.2f}", align="R", new_x="LMARGIN", new_y="NEXT")
 
         self.set_font("Helvetica", "B", 12)
         self.set_x(x_start)
         self.cell(35, 8, "Total:")
-        self.cell(35, 8, f"₦{total:,.2f}", align="R", new_x="LMARGIN", new_y="NEXT")
+        self.cell(35, 8, f"NGN{total:,.2f}", align="R", new_x="LMARGIN", new_y="NEXT")
 
     def notes_section(self, notes: str = "", terms: str = ""):
         if notes:

@@ -113,3 +113,22 @@ def test_format_due_date_renders_date_only():
     assert _format_due_date("2026-11-06T00:00:00+00:00") == "06 Nov 2026"
     assert _format_due_date("2026-11-06") == "06 Nov 2026"
     assert _format_due_date(None) == ""
+
+
+def test_the_pdf_services_stay_inside_what_the_core_fonts_can_encode():
+    """The Naira sign crashes fpdf2 rather than printing.
+
+    fpdf2's built-in fonts are latin-1 only, so a Naira sign (U+20A6) raises
+    FPDFUnicodeEncodingException instead of rendering. Amounts are written as
+    NGN for that reason; a sign sneaked back in would 500 the download.
+    """
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "app"
+    offenders = []
+    for path in root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if "\u20a6" in text and "pdf" in path.name:
+            offenders.append(str(path.relative_to(root)))
+
+    assert offenders == []

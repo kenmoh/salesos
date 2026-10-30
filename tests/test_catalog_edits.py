@@ -198,6 +198,88 @@ class TestStoreProductEditReachesCatalog:
         stmt = catalog_session.execute.call_args[0][0]
         assert stmt.compile().params["block_sale_after_expiry"] is True
 
+    async def test_a_description_and_unit_edit_reach_the_catalog_row(self):
+        from app.common import bridge
+        from app.stores import repository
+
+        inventory_session = _session()
+        catalog_session = _session()
+        sdb = MagicMock()
+        sdb.session.side_effect = [inventory_session, catalog_session]
+
+        result = MagicMock()
+        result.id = uuid4()
+        result.selling_price = Decimal("10")
+        result.cost_price = Decimal("5")
+
+        update = AsyncMock(return_value=result)
+        with (
+            patch.object(bridge, "_get_sdb", return_value=sdb),
+            patch.object(bridge, "cache", MagicMock(delete_pattern=AsyncMock())),
+            patch.object(bridge, "scope_bump", AsyncMock()),
+            patch.object(
+                repository, "get_store_with_tenant", AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(
+                repository, "get_store_product", AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(repository, "update_store_product", update),
+        ):
+            await bridge.update_store_product(
+                tenant_id=str(TENANT),
+                store_id=str(STORE),
+                product_id=str(PRODUCT),
+                description="A 50kg bag of jasmine rice",
+                unit="kg",
+            )
+
+        stmt = catalog_session.execute.call_args[0][0]
+        params = stmt.compile().params
+        assert params["description"] == "A 50kg bag of jasmine rice"
+        assert params["unit"] == "kg"
+        # store_products has neither column, so the store row must not be
+        # handed fields it cannot store.
+        assert "description" not in update.await_args.kwargs
+        assert "unit" not in update.await_args.kwargs
+
+    async def test_a_blank_unit_keeps_the_stored_one(self):
+        from app.common import bridge
+        from app.stores import repository
+
+        inventory_session = _session()
+        catalog_session = _session()
+        sdb = MagicMock()
+        sdb.session.side_effect = [inventory_session, catalog_session]
+
+        result = MagicMock()
+        result.id = uuid4()
+        result.selling_price = Decimal("10")
+        result.cost_price = Decimal("5")
+
+        with (
+            patch.object(bridge, "_get_sdb", return_value=sdb),
+            patch.object(bridge, "cache", MagicMock(delete_pattern=AsyncMock())),
+            patch.object(bridge, "scope_bump", AsyncMock()),
+            patch.object(
+                repository, "get_store_with_tenant", AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(
+                repository, "get_store_product", AsyncMock(return_value=MagicMock())
+            ),
+            patch.object(
+                repository, "update_store_product", AsyncMock(return_value=result)
+            ),
+        ):
+            await bridge.update_store_product(
+                tenant_id=str(TENANT),
+                store_id=str(STORE),
+                product_id=str(PRODUCT),
+                unit=None,
+            )
+
+        stmt = catalog_session.execute.call_args[0][0]
+        assert "unit" not in stmt.compile().params
+
     async def test_an_unknown_category_is_rejected_before_writing(self):
         from app.common import bridge
         from app.stores import repository

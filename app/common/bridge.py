@@ -3161,8 +3161,11 @@ async def update_store_product(
 
     _unset = object()
     tax_ids = kwargs.pop("tax_ids", None)
-    # Category and expiry live on the catalog row; store_products has neither.
+    # Category, description, unit and expiry live on the catalog row;
+    # store_products has none of them.
     category_id = kwargs.pop("category_id", _unset)
+    description = kwargs.pop("description", _unset)
+    unit = kwargs.pop("unit", _unset)
     expiry_date = kwargs.pop("expiry_date", _unset)
     expiry_warning_days = kwargs.pop("expiry_warning_days", _unset)
     block_sale_after_expiry = kwargs.pop("block_sale_after_expiry", _unset)
@@ -3229,6 +3232,8 @@ async def update_store_product(
     if (
         catalog_values
         or category_id is not _unset
+        or description is not _unset
+        or unit is not _unset
         or tax_ids is not None
         or expiry_date is not _unset
         or expiry_warning_days is not _unset
@@ -3237,6 +3242,11 @@ async def update_store_product(
         values = dict(catalog_values)
         if category_id is not _unset:
             values["category_id"] = UUID(str(category_id)) if category_id else None
+        if description is not _unset:
+            values["description"] = description
+        if unit is not _unset and unit is not None:
+            # catalog.products.unit is NOT NULL, so a blank unit keeps the old one.
+            values["unit"] = unit
         if tax_ids is not None:
             values["tax_ids"] = [str(UUID(str(t))) for t in tax_ids]
         if expiry_date is not _unset:
@@ -3262,6 +3272,8 @@ async def update_store_product(
         "selling_price": float(result.selling_price),
         "cost_price": float(result.cost_price),
         "status": result.status,
+        "description": description if description is not _unset else None,
+        "unit": unit if unit is not _unset else None,
         "expiry_date": expiry_date.isoformat() if expiry_date not in (_unset, None) else None,
     }
 
