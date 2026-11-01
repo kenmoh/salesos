@@ -120,7 +120,7 @@ class CreateEmployeeRequest(Base):
     email: EmailStr
     full_name: str = Field(..., min_length=2, max_length=100)
     phone: str | None = None
-    role: str = Field(default="viewer", min_length=1)
+    roles: list[str] = Field(default_factory=lambda: ["viewer"])
     password: str | None = None
     store_id: UUID | None = None
 

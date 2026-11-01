@@ -395,7 +395,7 @@ async def disable_totp(*, session, user_id, password, code):
 
 
 async def create_employee(
-    *, session, business_id, actor_id, email, full_name, phone, role, password, req
+    *, session, business_id, actor_id, email, full_name, phone, roles, password, req
 ):
     from app.core.security import hash_password as hp
     from app.identity.models import User as IdUser
@@ -415,23 +415,31 @@ async def create_employee(
     session.add(user)
     await session.flush()
 
-    role_result = await session.execute(
-        select(Role).where(
-            Role.name == role,
-            (Role.tenant_id == UUID(business_id)) | (Role.tenant_id.is_(None)),
+    role_names = list(roles) if roles else ["viewer"]
+    seen = set()
+    for role_name in role_names:
+        if not role_name or role_name in seen:
+            continue
+        seen.add(role_name)
+        role_result = await session.execute(
+            select(Role).where(
+                Role.name == role_name,
+                (Role.tenant_id == UUID(business_id)) | (Role.tenant_id.is_(None)),
+            )
         )
-    )
-    role_obj = role_result.scalar_one_or_none()
-    if role_obj:
-        ur = UserRole(
-            user_id=user.id, role_id=role_obj.id, assigned_by=UUID(actor_id) if actor_id else None
-        )
-        session.add(ur)
-        await session.flush()
+        role_obj = role_result.scalar_one_or_none()
+        if role_obj:
+            ur = UserRole(
+                user_id=user.id,
+                role_id=role_obj.id,
+                assigned_by=UUID(actor_id) if actor_id else None,
+            )
+            session.add(ur)
+            await session.flush()
 
     return {
         "user_id": str(user.id),
         "email": user.email,
         "full_name": user.full_name,
-        "role": role,
+        "roles": role_names,
     }

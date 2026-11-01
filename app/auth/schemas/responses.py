@@ -463,7 +463,7 @@ class EmployeeCreated(_Base):
     id: str = ""
     email: str = ""
     full_name: str | None = None
-    role: str | None = None
+    roles: list[str] = []
     store_id: str | None = None
 
 
@@ -472,6 +472,7 @@ class EmployeeListItem(_Base):
     email: str = ""
     full_name: str | None = None
     role: str | None = None
+    roles: list[str] = []
     is_active: bool = True
     status: str = "active"
     phone: str | None = None

@@ -514,7 +514,7 @@ async def create_employee(payload: CreateEmployeeRequest, request: Request, ctx:
         email=payload.email,
         full_name=payload.full_name,
         phone=payload.phone,
-        role=payload.role,
+        roles=payload.roles,
         password=payload.password,
         store_id=str(payload.store_id) if payload.store_id else None,
         req=request,
