@@ -4672,6 +4672,7 @@ async def create_distribution(
     lines: list[dict],
     notes: str | None = None,
     created_by: str | None = None,
+    pin_verified_by: str | None = None,
     correlation_id: str | None = None,
 ) -> dict:
     """Dispatch stock from a warehouse to one store.
@@ -4735,6 +4736,7 @@ async def create_distribution(
             to_store_id=to_store.id,
             status="in_transit",
             notes=notes,
+            pin_verified_by=UUID(pin_verified_by) if pin_verified_by else None,
             created_by=UUID(created_by) if created_by else None,
         )
 

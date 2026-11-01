@@ -489,7 +489,17 @@ async def distribute_stock(store_id: str, payload: StoreDistribute, ctx: TenantD
     response_model=DataResponse[DistributionCreated],
     dependencies=[Depends(require_permission("inventory:distribution_create"))],
 )
-async def create_distribution_endpoint(payload: DistributeCreate, ctx: TenantDep):
+async def create_distribution_endpoint(
+    payload: DistributeCreate, ctx: TenantDep, request: Request
+):
+    pin_verified_by = None
+    if not ctx.user.has_role("owner"):
+        pin_verified_by = await require_supervisor_approval(
+            ctx,
+            permission="inventory:distribution_create",
+            supervisor_pin=payload.supervisor_pin,
+            request=request,
+        )
     try:
         result = await bridge.create_distribution(
             tenant_id=ctx.user.business_id,
@@ -506,6 +516,7 @@ async def create_distribution_endpoint(payload: DistributeCreate, ctx: TenantDep
             ],
             notes=payload.notes,
             created_by=ctx.user.user_id,
+            pin_verified_by=pin_verified_by,
         )
         return ok(result)
     except ValueError as e:

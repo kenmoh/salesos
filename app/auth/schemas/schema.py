@@ -53,6 +53,7 @@ class DistributeCreate(Base):
     to_store_id: UUID
     lines: list[DistributeLineCreate] = Field(..., min_length=1)
     notes: str | None = None
+    supervisor_pin: str | None = None
 
 
 class DistributeLineReceive(BaseModel):
@@ -64,13 +65,11 @@ class DistributeLineReceive(BaseModel):
 
 
 class DistributeReceive(Base):
-    distribution_id: UUID
     lines: list[DistributeLineReceive] = Field(..., min_length=1)
     supervisor_pin: str | None = None
 
 
 class DistributeCancel(Base):
-    distribution_id: UUID
     cancel_reason: str | None = None
     supervisor_pin: str | None = None
 
