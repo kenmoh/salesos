@@ -2635,6 +2635,7 @@ async def get_store_products(
                 Product.expiry_date,
                 Product.expiry_warning_days,
                 Product.block_sale_after_expiry,
+                Product.unit,
                 Category.name.label("category_name"),
             )
             .join(Product, StockBalance.product_id == Product.id)
@@ -2680,6 +2681,7 @@ async def get_store_products(
                     "reorder_point": int(row.reorder_point) if row.reorder_point else 0,
                     "status": row.status,
                     "category": row.category_name,
+                    "unit": row.unit or "unit",
                     "qr_url": row.qr_url,
                     "expiry_date": row.expiry_date.isoformat()
                     if row.expiry_date
@@ -3353,7 +3355,7 @@ async def get_store_product(
                    Product.status, Product.qr_url, Product.tax_ids,
                    Product.expiry_date, Product.expiry_warning_days,
                    Product.block_sale_after_expiry, Product.category_id,
-                   Category.name.label("category_name"))
+                   Product.unit, Category.name.label("category_name"))
             .outerjoin(Category, Product.category_id == Category.id)
             .where(Product.id == UUID(product_id))
         )
@@ -3392,6 +3394,7 @@ async def get_store_product(
         "qr_url": qr_url,
         "category": category,
         "category_id": str(row.category_id) if row.category_id else None,
+        "unit": row.unit or "unit",
         "expiry_date": row.expiry_date.isoformat() if row.expiry_date else None,
         "expiry_warning_days": row.expiry_warning_days,
         "block_sale_after_expiry": row.block_sale_after_expiry,

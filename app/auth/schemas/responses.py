@@ -224,6 +224,7 @@ class StoreProductDetail(_Base):
     expiry_date: date | None = None
     expiry_warning_days: int | None = None
     block_sale_after_expiry: bool = False
+    unit: str = "unit"
     taxes: list[dict] = []
     history: list[StockMovementItem] = []
 
