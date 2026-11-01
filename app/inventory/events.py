@@ -2,6 +2,9 @@ from uuid import UUID
 
 from app.common.events import EventEnvelope
 from app.common.events.names import (
+    INVENTORY_DISTRIBUTION_CANCELLED,
+    INVENTORY_DISTRIBUTION_DISPATCHED,
+    INVENTORY_DISTRIBUTION_RECEIVED,
     INVENTORY_LOW_STOCK_DETECTED,
     INVENTORY_STOCK_ADJUSTED,
     INVENTORY_STOCK_COMMITTED,
@@ -233,5 +236,84 @@ def transfer_fulfilled_event(
             "qty": qty,
             "from_new_balance": from_new_balance,
             "to_new_balance": to_new_balance,
+        },
+    )
+
+
+def distribution_dispatched_event(
+    *,
+    tenant_id: UUID,
+    distribution_id: UUID,
+    distribution_number: str,
+    from_store_id: UUID,
+    to_store_id: UUID,
+    lines: list[dict],
+    correlation_id: str | None = None,
+) -> EventEnvelope:
+    return EventEnvelope(
+        event_type=INVENTORY_DISTRIBUTION_DISPATCHED,
+        tenant_id=tenant_id,
+        actor_id=None,
+        correlation_id=correlation_id,
+        payload={
+            "distribution_id": str(distribution_id),
+            "distribution_number": distribution_number,
+            "from_store_id": str(from_store_id),
+            "to_store_id": str(to_store_id),
+            "lines": lines,
+        },
+    )
+
+
+def distribution_received_event(
+    *,
+    tenant_id: UUID,
+    distribution_id: UUID,
+    distribution_number: str,
+    from_store_id: UUID,
+    to_store_id: UUID,
+    qty_received: str,
+    qty_damaged: str,
+    shortage: str,
+    correlation_id: str | None = None,
+) -> EventEnvelope:
+    return EventEnvelope(
+        event_type=INVENTORY_DISTRIBUTION_RECEIVED,
+        tenant_id=tenant_id,
+        actor_id=None,
+        correlation_id=correlation_id,
+        payload={
+            "distribution_id": str(distribution_id),
+            "distribution_number": distribution_number,
+            "from_store_id": str(from_store_id),
+            "to_store_id": str(to_store_id),
+            "qty_received": qty_received,
+            "qty_damaged": qty_damaged,
+            "shortage": shortage,
+        },
+    )
+
+
+def distribution_cancelled_event(
+    *,
+    tenant_id: UUID,
+    distribution_id: UUID,
+    distribution_number: str,
+    from_store_id: UUID,
+    to_store_id: UUID,
+    qty_returned: str,
+    correlation_id: str | None = None,
+) -> EventEnvelope:
+    return EventEnvelope(
+        event_type=INVENTORY_DISTRIBUTION_CANCELLED,
+        tenant_id=tenant_id,
+        actor_id=None,
+        correlation_id=correlation_id,
+        payload={
+            "distribution_id": str(distribution_id),
+            "distribution_number": distribution_number,
+            "from_store_id": str(from_store_id),
+            "to_store_id": str(to_store_id),
+            "qty_returned": qty_returned,
         },
     )

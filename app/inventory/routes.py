@@ -9,6 +9,11 @@ from app.auth.schemas.responses import (
     CategoryCreated,
     CategoryDetail,
     DistributeResult,
+    DistributionCancelled,
+    DistributionCreated,
+    DistributionListItem,
+    DistributionRead,
+    DistributionReceived,
     LowStockItem,
     MinStockLevelResult,
     ProductCreatedForStore,
@@ -31,6 +36,9 @@ from app.auth.schemas.responses import (
 from app.auth.schemas.schema import (
     CategoryCreate,
     CategoryUpdate,
+    DistributeCancel,
+    DistributeCreate,
+    DistributeReceive,
     InventoryAdjust,
     ProductCreateForStore,
     SetMinStockLevel,
@@ -471,6 +479,182 @@ async def distribute_stock(store_id: str, payload: StoreDistribute, ctx: TenantD
             raise HTTPException(
                 status_code=400,
                 detail=f"Not enough stock in this store. {available} available.",
+            )
+        raise HTTPException(status_code=400, detail=detail)
+
+
+@router.post(
+    "/distributions",
+    status_code=201,
+    response_model=DataResponse[DistributionCreated],
+    dependencies=[Depends(require_permission("inventory:distribution_create"))],
+)
+async def create_distribution_endpoint(payload: DistributeCreate, ctx: TenantDep):
+    try:
+        result = await bridge.create_distribution(
+            tenant_id=ctx.user.business_id,
+            from_store_id=str(payload.from_store_id),
+            to_store_id=str(payload.to_store_id),
+            lines=[
+                {
+                    "product_id": str(line.product_id),
+                    "item_name": line.item_name,
+                    "qty_dispatched": line.qty_dispatched,
+                    "condition_dispatched": line.condition_dispatched,
+                }
+                for line in payload.lines
+            ],
+            notes=payload.notes,
+            created_by=ctx.user.user_id,
+        )
+        return ok(result)
+    except ValueError as e:
+        detail = str(e)
+        if detail in ("from_store_not_found", "to_store_not_found"):
+            raise HTTPException(status_code=404, detail="Store not found")
+        if detail == "from_store_not_warehouse":
+            raise HTTPException(status_code=400, detail="The source store is not a warehouse")
+        if detail == "cannot_distribute_to_self":
+            raise HTTPException(status_code=400, detail="Cannot distribute to the same store")
+        if detail == "warehouse_balance_missing":
+            raise HTTPException(
+                status_code=404, detail="No stock balance for a line item in the warehouse"
+            )
+        if detail.startswith("insufficient_stock"):
+            raise HTTPException(status_code=400, detail=detail)
+        if detail == "line_balance_mismatch":
+            raise HTTPException(status_code=400, detail="Line does not match warehouse stock")
+        raise HTTPException(status_code=400, detail=detail)
+
+
+@router.get(
+    "/distributions",
+    response_model=PaginatedResponse[DistributionListItem],
+    dependencies=[Depends(require_permission("inventory:distribution_read"))],
+)
+async def list_distributions_endpoint(
+    ctx: TenantDep,
+    store_id: str | None = None,
+    direction: str | None = Query(default=None, pattern="^(incoming|outgoing)$"),
+    status: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+):
+    result = await bridge.list_distributions(
+        tenant_id=ctx.user.business_id,
+        store_id=store_id,
+        direction=direction,
+        status=status,
+        page=page,
+        page_size=page_size,
+    )
+    return paginated(
+        result["items"], total=result["total"], page=result["page"], page_size=result["page_size"]
+    )
+
+
+@router.get(
+    "/distributions/{distribution_id}",
+    response_model=DataResponse[DistributionRead],
+    dependencies=[Depends(require_permission("inventory:distribution_read"))],
+)
+async def get_distribution_endpoint(distribution_id: str, ctx: TenantDep):
+    result = await bridge.get_distribution(
+        tenant_id=ctx.user.business_id, distribution_id=distribution_id
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Distribution not found")
+    return ok(result)
+
+
+@router.post(
+    "/distributions/{distribution_id}/receive",
+    response_model=DataResponse[DistributionReceived],
+    dependencies=[Depends(require_permission("inventory:distribution_receive"))],
+)
+async def receive_distribution_endpoint(
+    distribution_id: str,
+    payload: DistributeReceive,
+    ctx: TenantDep,
+    request: Request,
+):
+    has_damage = any(line.qty_damaged > 0 for line in payload.lines)
+    pin_verified_by = None
+    if has_damage and not ctx.user.has_role("owner"):
+        pin_verified_by = await require_supervisor_approval(
+            ctx,
+            permission="inventory:distribution_receive",
+            supervisor_pin=payload.supervisor_pin,
+            request=request,
+        )
+    try:
+        result = await bridge.receive_distribution(
+            tenant_id=ctx.user.business_id,
+            distribution_id=distribution_id,
+            lines=[
+                {
+                    "item_id": str(line.item_id),
+                    "qty_received": line.qty_received,
+                    "qty_damaged": line.qty_damaged,
+                    "condition_received": line.condition_received,
+                    "receive_notes": line.receive_notes,
+                }
+                for line in payload.lines
+            ],
+            actor_id=ctx.user.user_id,
+            pin_verified_by=pin_verified_by,
+        )
+        return ok(result)
+    except ValueError as e:
+        detail = str(e)
+        if detail == "distribution_not_found":
+            raise HTTPException(status_code=404, detail="Distribution not found")
+        if detail == "distribution_not_in_transit":
+            raise HTTPException(status_code=400, detail="Distribution is not in transit")
+        if detail == "distribution_item_not_found":
+            raise HTTPException(status_code=404, detail="Distribution item not found")
+        if detail in ("invalid_quantity",) or detail.startswith("Receive exceeds dispatched"):
+            raise HTTPException(status_code=400, detail=detail)
+        raise HTTPException(status_code=400, detail=detail)
+
+
+@router.post(
+    "/distributions/{distribution_id}/cancel",
+    response_model=DataResponse[DistributionCancelled],
+    dependencies=[Depends(require_permission("inventory:distribution_create"))],
+)
+async def cancel_distribution_endpoint(
+    distribution_id: str,
+    payload: DistributeCancel,
+    ctx: TenantDep,
+    request: Request,
+):
+    pin_verified_by = None
+    if not ctx.user.has_role("owner"):
+        pin_verified_by = await require_supervisor_approval(
+            ctx,
+            permission="inventory:distribution_create",
+            supervisor_pin=payload.supervisor_pin,
+            request=request,
+        )
+    try:
+        result = await bridge.cancel_distribution(
+            tenant_id=ctx.user.business_id,
+            distribution_id=distribution_id,
+            actor_id=ctx.user.user_id,
+            cancel_reason=payload.cancel_reason,
+            pin_verified_by=pin_verified_by,
+        )
+        return ok(result)
+    except ValueError as e:
+        detail = str(e)
+        if detail == "distribution_not_found":
+            raise HTTPException(status_code=404, detail="Distribution not found")
+        if detail == "distribution_not_in_transit":
+            raise HTTPException(status_code=400, detail="Distribution is not in transit")
+        if detail == "warehouse_balance_missing":
+            raise HTTPException(
+                status_code=404, detail="No stock balance for a line item in the warehouse"
             )
         raise HTTPException(status_code=400, detail=detail)
 

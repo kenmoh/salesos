@@ -4,6 +4,9 @@ from uuid import uuid4
 
 from app.common.events.outbox import OutboxWrite
 from app.inventory.events import (
+    distribution_cancelled_event,
+    distribution_dispatched_event,
+    distribution_received_event,
     low_stock_detected_event,
     stock_adjusted_event,
     stock_committed_event,
@@ -15,13 +18,18 @@ from app.inventory.events import (
     transfer_requested_event,
 )
 from app.inventory.models import (
+    Distribution,
+    DistributionItem,
     StockAdjustment,
     StockBalance,
+    StockDamage,
+    StockMovement,
     StockReservation,
     TransferRequest,
 )
 from app.inventory.schemas import (
     AdjustStockCommand,
+    DistributionLineCreate,
     ReserveStockCommand,
     TransferRequestApproveCommand,
     TransferRequestCreateCommand,
@@ -483,3 +491,350 @@ def plan_fulfill_transfer_request(
         OutboxWrite(event=event, aggregate_type="transfer_request", aggregate_id=str(request.id))
     ]
     return from_adjustment, to_adjustment, from_balance, to_balance, request, outbox
+
+
+def plan_dispatch_distribution(
+    *,
+    distribution_id: UUID,
+    distribution_number: str,
+    tenant_id: UUID,
+    from_store_id: UUID,
+    to_store_id: UUID,
+    lines: list[DistributionLineCreate],
+    actor: UUID | None,
+    notes: str | None,
+    correlation_id: str | None,
+    warehouse_balances: list[StockBalance],
+) -> tuple[list[StockAdjustment], list[StockBalance], list[StockMovement], list[OutboxWrite]]:
+    """Plan dispatching stock from a warehouse to one store.
+
+    Warehouse balances are mutated in place; the bridge persists them.
+    """
+    if len(lines) != len(warehouse_balances):
+        raise ValueError("line_balance_mismatch")
+    if from_store_id == to_store_id:
+        raise ValueError("cannot_distribute_to_self")
+
+    adjustments: list[StockAdjustment] = []
+    movements: list[StockMovement] = []
+    line_summaries: list[dict] = []
+
+    for line, balance in zip(lines, warehouse_balances):
+        if balance.store_id != from_store_id or balance.product_id != line.product_id:
+            raise ValueError("line_balance_mismatch")
+
+        qty = _decimal(line.qty_dispatched)
+        if Decimal(str(balance.qty)) < qty:
+            raise ValueError(f"Insufficient stock for {line.item_name}")
+
+        before = Decimal(str(balance.qty))
+        after = before - qty
+
+        adjustment = StockAdjustment(
+            id=uuid4(),
+            tenant_id=tenant_id,
+            product_id=line.product_id,
+            store_id=from_store_id,
+            reason="distribution_out",
+            qty_change=-float(qty),
+            notes=f"{distribution_number}: dispatch {line.item_name} x{qty}"
+            + (f" ({notes})" if notes else ""),
+            created_by=actor,
+        )
+        balance.qty = float(after)
+        adjustments.append(adjustment)
+
+        movements.append(
+            StockMovement(
+                id=uuid4(),
+                tenant_id=tenant_id,
+                product_id=line.product_id,
+                store_id=from_store_id,
+                movement_type="distribution_out",
+                qty_change=-float(qty),
+                balance_before=float(before),
+                balance_after=float(after),
+                reference_type="distribution",
+                reference_id=adjustment.id,
+                reason="distribution_dispatched",
+                notes=f"{distribution_number}: {line.item_name}",
+                created_by=actor,
+            )
+        )
+        line_summaries.append(
+            {
+                "item_name": line.item_name,
+                "qty": str(qty),
+                "condition": line.condition_dispatched,
+            }
+        )
+
+    event = distribution_dispatched_event(
+        tenant_id=tenant_id,
+        distribution_id=distribution_id,
+        distribution_number=distribution_number,
+        from_store_id=from_store_id,
+        to_store_id=to_store_id,
+        lines=line_summaries,
+        correlation_id=correlation_id,
+    )
+    outbox = [
+        OutboxWrite(
+            event=event, aggregate_type="distribution", aggregate_id=str(distribution_id)
+        )
+    ]
+    return adjustments, warehouse_balances, movements, outbox
+
+
+def plan_receive_distribution(
+    *,
+    distribution: Distribution,
+    items: list[DistributionItem],
+    receive_lines: list[dict],
+    actor: UUID | None,
+    correlation_id: str | None,
+    destination_balances: list[StockBalance] | None = None,
+) -> tuple[
+    list[StockAdjustment],
+    list[StockBalance],
+    list[StockMovement],
+    list[StockDamage],
+    list[OutboxWrite],
+]:
+    """Plan receiving stock at the destination store.
+
+    ``receive_lines`` are pre-resolved by the bridge: each carries
+    ``item_id``, ``qty_received``, ``qty_damaged``, ``condition_received``,
+    ``receive_notes`` and the resolved ``destination_product_id``.
+
+    Existing destination balances passed via ``destination_balances`` are
+    reused so previously tracked stock, reserved quantities and pricing
+    are preserved rather than reset.
+    """
+    if distribution.status != "in_transit":
+        raise ValueError("distribution_not_in_transit")
+
+    by_item_id = {str(item.id): item for item in items}
+    adjustments: list[StockAdjustment] = []
+    movements: list[StockMovement] = []
+    balances: list[StockBalance] = []
+    damages: list[StockDamage] = []
+
+    total_received = Decimal("0")
+    total_damaged = Decimal("0")
+    total_dispatched = Decimal("0")
+
+    for line in receive_lines:
+        item = by_item_id.get(str(line["item_id"]))
+        if not item:
+            raise ValueError("distribution_item_not_found")
+        if str(item.distribution_id) != str(distribution.id):
+            raise ValueError("item_not_on_distribution")
+
+        received = _decimal(line["qty_received"])
+        damaged = _decimal(line["qty_damaged"])
+        dispatched = _decimal(item.qty_dispatched)
+        if received + damaged > dispatched:
+            raise ValueError(
+                f"Receive exceeds dispatched for {item.item_name}: "
+                f"received {received}, damaged {damaged}, dispatched {dispatched}"
+            )
+
+        destination_product_id = line["destination_product_id"]
+        balance = next(
+            (
+                b
+                for b in balances
+                if b.product_id == destination_product_id and b.store_id == distribution.to_store_id
+            ),
+            None,
+        )
+        if balance is None and destination_balances:
+            balance = next(
+                (
+                    b
+                    for b in destination_balances
+                    if b.product_id == destination_product_id and b.store_id == distribution.to_store_id
+                ),
+                None,
+            )
+            if balance is not None:
+                balances.append(balance)
+        if balance is None:
+            balance = StockBalance(
+                id=uuid4(),
+                tenant_id=distribution.tenant_id,
+                product_id=destination_product_id,
+                store_id=distribution.to_store_id,
+                qty=0,
+                reserved_qty=0,
+                unit_cost=None,
+            )
+            balances.append(balance)
+
+        before = Decimal(str(balance.qty))
+        after = before + received
+
+        adjustment = StockAdjustment(
+            id=uuid4(),
+            tenant_id=distribution.tenant_id,
+            product_id=destination_product_id,
+            store_id=distribution.to_store_id,
+            reason="distribution_in",
+            qty_change=float(received),
+            notes=(
+                f"{distribution.distribution_number}: received {received} of {dispatched} "
+                f"({damaged} damaged) {item.item_name}"
+            ),
+            created_by=actor,
+        )
+        balance.qty = float(after)
+        adjustments.append(adjustment)
+
+        movements.append(
+            StockMovement(
+                id=uuid4(),
+                tenant_id=distribution.tenant_id,
+                product_id=destination_product_id,
+                store_id=distribution.to_store_id,
+                movement_type="distribution_in",
+                qty_change=float(received),
+                balance_before=float(before),
+                balance_after=float(after),
+                reference_type="distribution",
+                reference_id=adjustment.id,
+                reason="distribution_received",
+                notes=f"{distribution.distribution_number}: {item.item_name}",
+                created_by=actor,
+            )
+        )
+
+        if damaged > 0:
+            damages.append(
+                StockDamage(
+                    id=uuid4(),
+                    tenant_id=distribution.tenant_id,
+                    distribution_id=distribution.id,
+                    distribution_item_id=item.id,
+                    store_id=distribution.to_store_id,
+                    product_id=destination_product_id,
+                    qty=float(damaged),
+                    condition=line.get("condition_received"),
+                    notes=line.get("receive_notes"),
+                    recorded_by=actor,
+                )
+            )
+
+        item.qty_received = float(received)
+        item.qty_damaged = float(damaged)
+        item.condition_received = line.get("condition_received")
+        item.receive_notes = line.get("receive_notes")
+        item.destination_product_id = destination_product_id
+
+        total_received += received
+        total_damaged += damaged
+        total_dispatched += dispatched
+
+    distribution.status = "received"
+    distribution.received_by = actor
+    distribution.received_at = datetime.now(UTC)
+
+    event = distribution_received_event(
+        tenant_id=distribution.tenant_id,
+        distribution_id=distribution.id,
+        distribution_number=distribution.distribution_number,
+        from_store_id=distribution.from_store_id,
+        to_store_id=distribution.to_store_id,
+        qty_received=str(total_received),
+        qty_damaged=str(total_damaged),
+        shortage=str(total_dispatched - total_received - total_damaged),
+        correlation_id=correlation_id,
+    )
+    outbox = [
+        OutboxWrite(
+            event=event, aggregate_type="distribution", aggregate_id=str(distribution.id)
+        )
+    ]
+    return adjustments, balances, movements, damages, outbox
+
+
+def plan_cancel_distribution(
+    *,
+    distribution: Distribution,
+    items: list[DistributionItem],
+    warehouse_balances: list[StockBalance],
+    actor: UUID | None,
+    cancel_reason: str | None,
+    correlation_id: str | None,
+) -> tuple[list[StockAdjustment], list[StockBalance], list[StockMovement], list[OutboxWrite]]:
+    """Plan cancelling an in-transit distribution, returning stock to warehouse."""
+    if distribution.status != "in_transit":
+        raise ValueError("distribution_not_in_transit")
+
+    adjustments: list[StockAdjustment] = []
+    movements: list[StockMovement] = []
+    total_returned = Decimal("0")
+
+    for item, balance in zip(items, warehouse_balances):
+        if balance.store_id != distribution.from_store_id or balance.product_id != item.source_product_id:
+            raise ValueError("line_balance_mismatch")
+
+        qty = _decimal(item.qty_dispatched)
+        before = Decimal(str(balance.qty))
+        after = before + qty
+
+        adjustment = StockAdjustment(
+            id=uuid4(),
+            tenant_id=distribution.tenant_id,
+            product_id=item.source_product_id,
+            store_id=distribution.from_store_id,
+            reason="distribution_cancelled",
+            qty_change=float(qty),
+            notes=(
+                f"{distribution.distribution_number}: cancelled return {item.item_name} x{qty}"
+                + (f" ({cancel_reason})" if cancel_reason else "")
+            ),
+            created_by=actor,
+        )
+        balance.qty = float(after)
+        adjustments.append(adjustment)
+
+        movements.append(
+            StockMovement(
+                id=uuid4(),
+                tenant_id=distribution.tenant_id,
+                product_id=item.source_product_id,
+                store_id=distribution.from_store_id,
+                movement_type="distribution_cancelled",
+                qty_change=float(qty),
+                balance_before=float(before),
+                balance_after=float(after),
+                reference_type="distribution",
+                reference_id=adjustment.id,
+                reason="distribution_cancelled",
+                notes=f"{distribution.distribution_number}: {item.item_name}",
+                created_by=actor,
+            )
+        )
+        total_returned += qty
+
+    distribution.status = "cancelled"
+    distribution.cancelled_by = actor
+    distribution.cancelled_at = datetime.now(UTC)
+    distribution.cancel_reason = cancel_reason
+
+    event = distribution_cancelled_event(
+        tenant_id=distribution.tenant_id,
+        distribution_id=distribution.id,
+        distribution_number=distribution.distribution_number,
+        from_store_id=distribution.from_store_id,
+        to_store_id=distribution.to_store_id,
+        qty_returned=str(total_returned),
+        correlation_id=correlation_id,
+    )
+    outbox = [
+        OutboxWrite(
+            event=event, aggregate_type="distribution", aggregate_id=str(distribution.id)
+        )
+    ]
+    return adjustments, warehouse_balances, movements, outbox

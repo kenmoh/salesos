@@ -1,12 +1,16 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
+import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
+    Distribution,
+    DistributionItem,
     StockAdjustment,
     StockBalance,
+    StockDamage,
     StockReservation,
     TransferRequest,
 )
@@ -288,3 +292,102 @@ async def update_stock_balance_min_level(
         balance.min_stock_level = min_stock_level
         await session.flush()
     return balance
+
+
+async def create_distribution(session: AsyncSession, distribution: Distribution) -> Distribution:
+    session.add(distribution)
+    await session.flush()
+    return distribution
+
+
+async def get_distribution_by_id(
+    session: AsyncSession, distribution_id: UUID
+) -> Distribution | None:
+    result = await session.execute(
+        select(Distribution).where(Distribution.id == distribution_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_distribution_by_number(
+    session: AsyncSession, tenant_id: UUID, distribution_number: str
+) -> Distribution | None:
+    result = await session.execute(
+        select(Distribution).where(
+            Distribution.tenant_id == tenant_id,
+            Distribution.distribution_number == distribution_number,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def create_distribution_item(
+    session: AsyncSession, item: DistributionItem
+) -> DistributionItem:
+    session.add(item)
+    await session.flush()
+    return item
+
+
+async def get_distribution_items(
+    session: AsyncSession, distribution_id: UUID
+) -> list[DistributionItem]:
+    result = await session.execute(
+        select(DistributionItem).where(DistributionItem.distribution_id == distribution_id)
+    )
+    return list(result.scalars().all())
+
+
+async def create_stock_damage(session: AsyncSession, damage: StockDamage) -> StockDamage:
+    session.add(damage)
+    await session.flush()
+    return damage
+
+
+async def list_distributions(
+    session: AsyncSession,
+    tenant_id: UUID,
+    store_id: UUID | None = None,
+    direction: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[Distribution]:
+    query = select(Distribution).where(Distribution.tenant_id == tenant_id)
+    if status:
+        query = query.where(Distribution.status == status)
+    if store_id:
+        if direction == "incoming":
+            query = query.where(Distribution.to_store_id == store_id)
+        elif direction == "outgoing":
+            query = query.where(Distribution.from_store_id == store_id)
+        else:
+            query = query.where(
+                sa.or_(Distribution.from_store_id == store_id, Distribution.to_store_id == store_id)
+            )
+    query = query.order_by(Distribution.created_at.desc()).limit(limit).offset(offset)
+    result = await session.execute(query)
+    return list(result.scalars().all())
+
+
+async def count_distributions(
+    session: AsyncSession,
+    tenant_id: UUID,
+    store_id: UUID | None = None,
+    direction: str | None = None,
+    status: str | None = None,
+) -> int:
+    query = select(sa.func.count()).select_from(Distribution).where(Distribution.tenant_id == tenant_id)
+    if status:
+        query = query.where(Distribution.status == status)
+    if store_id:
+        if direction == "incoming":
+            query = query.where(Distribution.to_store_id == store_id)
+        elif direction == "outgoing":
+            query = query.where(Distribution.from_store_id == store_id)
+        else:
+            query = query.where(
+                sa.or_(Distribution.from_store_id == store_id, Distribution.to_store_id == store_id)
+            )
+    result = await session.execute(query)
+    return int(result.scalar_one())

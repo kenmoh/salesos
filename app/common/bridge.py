@@ -391,6 +391,9 @@ async def create_tenant(
                 "coupons:delete",
                 "taxes:read",
                 "taxes:manage",
+                "inventory:distribution_create",
+                "inventory:distribution_receive",
+                "inventory:distribution_read",
             ],
             "cashier": [
                 "auth:login",
@@ -430,6 +433,9 @@ async def create_tenant(
                 "inventory:write",
                 "inventory:adjust",
                 "inventory:transfer",
+                "inventory:distribution_create",
+                "inventory:distribution_receive",
+                "inventory:distribution_read",
                 "warehouses:create",
                 "warehouses:read",
                 "warehouses:update",
@@ -444,6 +450,7 @@ async def create_tenant(
                 "products:read",
                 "categories:read",
                 "inventory:read",
+                "inventory:distribution_read",
                 "warehouses:read",
                 "sales:read",
                 "documents:read",
@@ -4430,6 +4437,628 @@ async def get_transfer_request(tenant_id: str, request_id: str) -> dict | None:
             return None
         store_names, actor_names = await _transfer_request_names(session, tenant_uuid, [request])
         return _transfer_request_view(request, store_names, actor_names)
+
+
+async def _next_distribution_number(session, tenant_id: UUID) -> str:
+    """Allocate ``DIST-XXXXXXXX``, unique per tenant."""
+    from app.inventory.repository import get_distribution_by_number
+
+    for _ in range(8):
+        candidate = f"DIST-{uuid4().hex[:8].upper()}"
+        if not await get_distribution_by_number(session, tenant_id, candidate):
+            return candidate
+    return f"DIST-{uuid4().hex.upper()}"
+
+
+async def _distribution_names(session, tenant_id: UUID, distributions: list):
+    """Return (store_id -> name, user_id -> name) for a batch of distributions."""
+    from app.identity.repository import get_users_by_tenant
+    from app.stores.models import Store
+
+    rows = (
+        await session.execute(select(Store).where(Store.tenant_id == tenant_id))
+    ).scalars().all()
+    store_names = {str(store.id): store.name for store in rows}
+
+    user_ids: set[str] = set()
+    for dist in distributions:
+        for actor in (
+            dist.created_by,
+            dist.dispatched_by,
+            dist.received_by,
+            dist.cancelled_by,
+            dist.pin_verified_by,
+        ):
+            if actor:
+                user_ids.add(str(actor))
+
+    actor_names: dict[str, str] = {}
+    if user_ids:
+        sdb = _get_sdb("identity")
+        async with sdb.session() as identity_session:
+            users = await get_users_by_tenant(identity_session, tenant_id)
+        actor_names = {
+            str(user.id): (user.full_name or user.email)
+            for user in users
+            if str(user.id) in user_ids
+        }
+    return store_names, actor_names
+
+
+def _distribution_view(
+    distribution, items: list, store_names: dict[str, str], actor_names: dict[str, str]
+) -> dict:
+    """Serialise one distribution with store and actor names."""
+
+    def _actor(value):
+        if not value:
+            return None, None
+        return str(value), actor_names.get(str(value))
+
+    created_by, created_by_name = _actor(distribution.created_by)
+    dispatched_by, dispatched_by_name = _actor(distribution.dispatched_by)
+    received_by, received_by_name = _actor(distribution.received_by)
+    cancelled_by, cancelled_by_name = _actor(distribution.cancelled_by)
+    pin_verified_by, pin_verified_by_name = _actor(distribution.pin_verified_by)
+
+    item_views = []
+    for item in items:
+        shortage = float(item.qty_dispatched) - float(item.qty_received) - float(item.qty_damaged)
+        item_views.append(
+            {
+                "id": str(item.id),
+                "item_name": item.item_name,
+                "source_product_id": str(item.source_product_id),
+                "destination_product_id": (
+                    str(item.destination_product_id) if item.destination_product_id else None
+                ),
+                "qty_dispatched": float(item.qty_dispatched),
+                "qty_received": float(item.qty_received),
+                "qty_damaged": float(item.qty_damaged),
+                "shortage": round(shortage, 2),
+                "condition_dispatched": item.condition_dispatched,
+                "condition_received": item.condition_received,
+                "damage_notes": item.damage_notes,
+                "receive_notes": item.receive_notes,
+                "notes": item.notes,
+                "created_at": item.created_at.isoformat() if item.created_at else None,
+            }
+        )
+
+    qty_dispatched = sum(float(i.qty_dispatched) for i in items)
+    qty_received = sum(float(i.qty_received) for i in items)
+    qty_damaged = sum(float(i.qty_damaged) for i in items)
+
+    return {
+        "id": str(distribution.id),
+        "distribution_number": distribution.distribution_number,
+        "from_store_id": str(distribution.from_store_id),
+        "to_store_id": str(distribution.to_store_id),
+        "from_store_name": store_names.get(str(distribution.from_store_id)),
+        "to_store_name": store_names.get(str(distribution.to_store_id)),
+        "status": distribution.status,
+        "notes": distribution.notes,
+        "dispatched_by": dispatched_by,
+        "dispatched_by_name": dispatched_by_name,
+        "dispatched_at": distribution.dispatched_at.isoformat() if distribution.dispatched_at else None,
+        "received_by": received_by,
+        "received_by_name": received_by_name,
+        "received_at": distribution.received_at.isoformat() if distribution.received_at else None,
+        "cancelled_by": cancelled_by,
+        "cancelled_by_name": cancelled_by_name,
+        "cancelled_at": distribution.cancelled_at.isoformat() if distribution.cancelled_at else None,
+        "cancel_reason": distribution.cancel_reason,
+        "pin_verified_by": pin_verified_by,
+        "pin_verified_by_name": pin_verified_by_name,
+        "created_by": created_by,
+        "created_by_name": created_by_name,
+        "created_at": distribution.created_at.isoformat() if distribution.created_at else None,
+        "updated_at": distribution.updated_at.isoformat() if distribution.updated_at else None,
+        "items": item_views,
+        "qty_dispatched": round(qty_dispatched, 2),
+        "qty_received": round(qty_received, 2),
+        "qty_damaged": round(qty_damaged, 2),
+        "shortage": round(qty_dispatched - qty_received - qty_damaged, 2),
+    }
+
+
+async def _resolve_destination_product(
+    session,
+    tenant_id: UUID,
+    store_id: UUID,
+    from_store_id: UUID,
+    item_name: str,
+    source_product_id: UUID,
+) -> UUID:
+    """Reuse an existing destination product by name, else create a fresh one.
+
+    The destination always gets its own catalog product (a new id) so the
+    warehouse product id is never reused as the store's product id.
+    """
+    from app.catalog.models import Category, Product
+    from app.catalog.ids import new_product_public_id
+    from app.stores.models import StoreProduct
+    from app.stores.repository import get_store_product_by_name
+    from app.stores.sku import generate_unique_sku
+
+    existing = await get_store_product_by_name(session, tenant_id, store_id, item_name)
+    if existing:
+        return existing.product_id
+
+    source_product = None
+    source_sp = (
+        await session.execute(
+            select(StoreProduct).where(
+                StoreProduct.product_id == source_product_id,
+                StoreProduct.store_id == from_store_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if source_sp:
+        source_product = (
+            await session.execute(select(Product).where(Product.id == source_product_id))
+        ).scalar_one_or_none()
+
+    category_id = None
+    if source_product and source_product.category_id:
+        source_category = (
+            await session.execute(
+                select(Category).where(Category.id == source_product.category_id)
+            )
+        ).scalar_one_or_none()
+        if source_category:
+            category = (
+                await session.execute(
+                    select(Category).where(
+                        Category.store_id == store_id, Category.name == source_category.name
+                    )
+                )
+            ).scalar_one_or_none()
+            if not category:
+                category = Category(
+                    tenant_id=tenant_id,
+                    store_id=store_id,
+                    name=source_category.name,
+                    description=source_category.description,
+                )
+                session.add(category)
+                await session.flush()
+            category_id = category.id
+
+    sku = await generate_unique_sku(session, tenant_id)
+    product = Product(
+        tenant_id=tenant_id,
+        public_id=new_product_public_id(),
+        name=item_name,
+        sku=sku,
+        description=source_product.description if source_product else None,
+        category_id=category_id,
+        unit=source_product.unit if source_product else "unit",
+        cost_price=float(source_product.cost_price) if source_product else 0,
+        selling_price=float(source_product.selling_price) if source_product else 0,
+        tax_ids=list(source_product.tax_ids or []) if source_product else [],
+        reorder_point=int(source_product.reorder_point) if source_product else 0,
+        image_url=source_product.image_url if source_product else None,
+        status="active",
+    )
+    session.add(product)
+    await session.flush()
+
+    store_product = StoreProduct(
+        tenant_id=tenant_id,
+        store_id=store_id,
+        product_id=product.id,
+        name=item_name,
+        sku=sku,
+        selling_price=float(source_product.selling_price) if source_product else 0,
+        cost_price=float(source_product.cost_price) if source_product else 0,
+        tax_id=source_sp.tax_id if source_sp else None,
+        reorder_point=int(source_product.reorder_point) if source_product else 0,
+        image_url=source_product.image_url if source_product else None,
+        status="active",
+    )
+    session.add(store_product)
+    await session.flush()
+    return product.id
+
+
+async def create_distribution(
+    tenant_id: str,
+    from_store_id: str,
+    to_store_id: str,
+    lines: list[dict],
+    notes: str | None = None,
+    created_by: str | None = None,
+    correlation_id: str | None = None,
+) -> dict:
+    """Dispatch stock from a warehouse to one store.
+
+    Creates the distribution (``in_transit``), reserved lines and paired
+    warehouse adjustments/movements in one transaction.
+    """
+    from app.inventory.repository import (
+        create_distribution as repo_create_distribution,
+        create_distribution_item,
+        get_distribution_by_number,
+        get_stock_balance,
+        upsert_stock_balance,
+    )
+    from app.inventory.models import Distribution, DistributionItem
+    from app.inventory.service import plan_dispatch_distribution
+    from app.inventory.schemas import DistributionLineCreate
+    from app.stores.repository import get_store_with_tenant
+
+    tenant_uuid = UUID(tenant_id)
+    line_objs = [
+        DistributionLineCreate(
+            product_id=UUID(line["product_id"]),
+            item_name=line["item_name"],
+            qty_dispatched=Decimal(str(line["qty_dispatched"])),
+            condition_dispatched=line.get("condition_dispatched"),
+        )
+        for line in lines
+    ]
+
+    sdb = _get_sdb("inventory")
+    async with sdb.session() as session:
+        from_store = await get_store_with_tenant(session, UUID(from_store_id), tenant_uuid)
+        if not from_store:
+            raise ValueError("from_store_not_found")
+        if not from_store.is_warehouse:
+            raise ValueError("from_store_not_warehouse")
+
+        to_store = await get_store_with_tenant(session, UUID(to_store_id), tenant_uuid)
+        if not to_store:
+            raise ValueError("to_store_not_found")
+        if from_store.id == to_store.id:
+            raise ValueError("cannot_distribute_to_self")
+
+        number = await _next_distribution_number(session, tenant_uuid)
+
+        warehouse_balances = []
+        for line in line_objs:
+            balance = await get_stock_balance(session, line.product_id, from_store.id)
+            if not balance:
+                raise ValueError("warehouse_balance_missing")
+            warehouse_balances.append(balance)
+
+        distribution_id = uuid4()
+        distribution = Distribution(
+            id=distribution_id,
+            tenant_id=tenant_uuid,
+            distribution_number=number,
+            from_store_id=from_store.id,
+            to_store_id=to_store.id,
+            status="in_transit",
+            notes=notes,
+            created_by=UUID(created_by) if created_by else None,
+        )
+
+        adjustments, balances, movements, outbox = plan_dispatch_distribution(
+            distribution_id=distribution_id,
+            distribution_number=number,
+            tenant_id=tenant_uuid,
+            from_store_id=from_store.id,
+            to_store_id=to_store.id,
+            lines=line_objs,
+            actor=UUID(created_by) if created_by else None,
+            notes=notes,
+            correlation_id=correlation_id,
+            warehouse_balances=warehouse_balances,
+        )
+
+        await repo_create_distribution(session, distribution)
+
+        items = []
+        for line in line_objs:
+            item = DistributionItem(
+                id=uuid4(),
+                tenant_id=tenant_uuid,
+                distribution_id=distribution_id,
+                source_product_id=line.product_id,
+                destination_product_id=None,
+                item_name=line.item_name,
+                qty_dispatched=float(line.qty_dispatched),
+                condition_dispatched=line.condition_dispatched,
+            )
+            await create_distribution_item(session, item)
+            items.append(item)
+
+        for adjustment in adjustments:
+            await create_stock_adjustment(session, adjustment)
+        for balance in balances:
+            await upsert_stock_balance(session, balance)
+        for movement in movements:
+            await _record_movement(
+                session,
+                tenant_id=tenant_uuid,
+                product_id=movement.product_id,
+                store_id=movement.store_id,
+                movement_type=movement.movement_type,
+                qty_change=movement.qty_change,
+                balance_before=movement.balance_before,
+                balance_after=movement.balance_after,
+                reference_type=movement.reference_type,
+                reference_id=movement.reference_id,
+                reason=movement.reason,
+                unit_cost=movement.unit_cost,
+                notes=movement.notes,
+                created_by=movement.created_by,
+            )
+        for write in outbox:
+            session.add(write.to_model())
+
+        store_names, actor_names = await _distribution_names(session, tenant_uuid, [distribution])
+        result = _distribution_view(distribution, items, store_names, actor_names)
+        await session.commit()
+
+    await scope_bump(tenant_id, from_store_id, (CATALOG,))
+    await scope_bump(tenant_id, to_store_id, (CATALOG,))
+    return result
+
+
+async def receive_distribution(
+    tenant_id: str,
+    distribution_id: str,
+    lines: list[dict],
+    actor_id: str | None = None,
+    pin_verified_by: str | None = None,
+    correlation_id: str | None = None,
+) -> dict:
+    """Receive stock at the destination store.
+
+    Adds qty_received to the destination stock, records qty_damaged in the
+    separate stock_damages audit ledger (never added to stock), resolves or
+    creates the destination product for each line, and marks the
+    distribution received.
+    """
+    from app.catalog.models import Category, Product
+    from app.catalog.ids import new_product_public_id
+    from app.inventory.repository import (
+        create_stock_adjustment,
+        create_stock_damage,
+        get_distribution_by_id,
+        get_distribution_items,
+        get_stock_balance,
+        upsert_stock_balance,
+    )
+    from app.inventory.service import plan_receive_distribution
+    from app.stores.models import StoreProduct
+    from app.stores.repository import get_store_product_by_name, get_store_with_tenant
+    from app.stores.sku import generate_unique_sku
+
+    tenant_uuid = UUID(tenant_id)
+    actor = UUID(actor_id) if actor_id else None
+    pin = UUID(pin_verified_by) if pin_verified_by else None
+
+    sdb = _get_sdb("inventory")
+    async with sdb.session() as session:
+        distribution = await get_distribution_by_id(session, UUID(distribution_id))
+        if not distribution or str(distribution.tenant_id) != tenant_id:
+            raise ValueError("distribution_not_found")
+        if distribution.status != "in_transit":
+            raise ValueError("distribution_not_in_transit")
+
+        items = await get_distribution_items(session, distribution.id)
+
+        receive_lines = []
+        for line in lines:
+            item = next((i for i in items if str(i.id) == str(line["item_id"])), None)
+            if not item:
+                raise ValueError("distribution_item_not_found")
+            received = Decimal(str(line["qty_received"]))
+            damaged = Decimal(str(line["qty_damaged"]))
+            if received < 0 or damaged < 0:
+                raise ValueError("invalid_quantity")
+
+            destination_product_id = await _resolve_destination_product(
+                session,
+                tenant_uuid,
+                distribution.to_store_id,
+                distribution.from_store_id,
+                item.item_name,
+                item.source_product_id,
+            )
+            item.destination_product_id = destination_product_id
+
+            receive_lines.append(
+                {
+                    "item_id": item.id,
+                    "qty_received": received,
+                    "qty_damaged": damaged,
+                    "condition_received": line.get("condition_received"),
+                    "receive_notes": line.get("receive_notes"),
+                    "destination_product_id": destination_product_id,
+                }
+            )
+
+        destination_balances = []
+        for line in receive_lines:
+            balance = await get_stock_balance(
+                session, line["destination_product_id"], distribution.to_store_id
+            )
+            if balance:
+                destination_balances.append(balance)
+
+        adjustments, balances, movements, damages, outbox = plan_receive_distribution(
+            distribution=distribution,
+            items=items,
+            receive_lines=receive_lines,
+            actor=actor,
+            correlation_id=correlation_id,
+            destination_balances=destination_balances,
+        )
+
+        for adjustment in adjustments:
+            await create_stock_adjustment(session, adjustment)
+        for balance in balances:
+            await upsert_stock_balance(session, balance)
+        for movement in movements:
+            await _record_movement(
+                session,
+                tenant_id=tenant_uuid,
+                product_id=movement.product_id,
+                store_id=movement.store_id,
+                movement_type=movement.movement_type,
+                qty_change=movement.qty_change,
+                balance_before=movement.balance_before,
+                balance_after=movement.balance_after,
+                reference_type=movement.reference_type,
+                reference_id=movement.reference_id,
+                reason=movement.reason,
+                unit_cost=movement.unit_cost,
+                notes=movement.notes,
+                created_by=movement.created_by,
+            )
+        for damage in damages:
+            await create_stock_damage(session, damage)
+        for write in outbox:
+            session.add(write.to_model())
+
+        distribution.pin_verified_by = pin
+        store_names, actor_names = await _distribution_names(session, tenant_uuid, [distribution])
+        result = _distribution_view(distribution, items, store_names, actor_names)
+        await session.commit()
+
+    await scope_bump(tenant_id, str(distribution.to_store_id), (CATALOG,))
+    return result
+
+
+async def cancel_distribution(
+    tenant_id: str,
+    distribution_id: str,
+    actor_id: str | None = None,
+    cancel_reason: str | None = None,
+    pin_verified_by: str | None = None,
+    correlation_id: str | None = None,
+) -> dict:
+    """Cancel an in-transit distribution and return stock to the warehouse."""
+    from app.inventory.repository import (
+        create_stock_adjustment,
+        get_distribution_by_id,
+        get_distribution_items,
+        get_stock_balance,
+        upsert_stock_balance,
+    )
+    from app.inventory.service import plan_cancel_distribution
+
+    tenant_uuid = UUID(tenant_id)
+    actor = UUID(actor_id) if actor_id else None
+
+    sdb = _get_sdb("inventory")
+    async with sdb.session() as session:
+        distribution = await get_distribution_by_id(session, UUID(distribution_id))
+        if not distribution or str(distribution.tenant_id) != tenant_id:
+            raise ValueError("distribution_not_found")
+        if distribution.status != "in_transit":
+            raise ValueError("distribution_not_in_transit")
+
+        items = await get_distribution_items(session, distribution.id)
+        warehouse_balances = []
+        for item in items:
+            balance = await get_stock_balance(
+                session, item.source_product_id, distribution.from_store_id
+            )
+            if not balance:
+                raise ValueError("warehouse_balance_missing")
+            warehouse_balances.append(balance)
+
+        adjustments, balances, movements, outbox = plan_cancel_distribution(
+            distribution=distribution,
+            items=items,
+            warehouse_balances=warehouse_balances,
+            actor=actor,
+            cancel_reason=cancel_reason,
+            correlation_id=correlation_id,
+        )
+
+        for adjustment in adjustments:
+            await create_stock_adjustment(session, adjustment)
+        for balance in balances:
+            await upsert_stock_balance(session, balance)
+        for movement in movements:
+            await _record_movement(
+                session,
+                tenant_id=tenant_uuid,
+                product_id=movement.product_id,
+                store_id=movement.store_id,
+                movement_type=movement.movement_type,
+                qty_change=movement.qty_change,
+                balance_before=movement.balance_before,
+                balance_after=movement.balance_after,
+                reference_type=movement.reference_type,
+                reference_id=movement.reference_id,
+                reason=movement.reason,
+                unit_cost=movement.unit_cost,
+                notes=movement.notes,
+                created_by=movement.created_by,
+            )
+        for write in outbox:
+            session.add(write.to_model())
+
+        distribution.pin_verified_by = UUID(pin_verified_by) if pin_verified_by else None
+        store_names, actor_names = await _distribution_names(session, tenant_uuid, [distribution])
+        result = _distribution_view(distribution, items, store_names, actor_names)
+        await session.commit()
+
+    await scope_bump(tenant_id, str(distribution.from_store_id), (CATALOG,))
+    return result
+
+
+async def list_distributions(
+    tenant_id: str,
+    store_id: str | None = None,
+    direction: str | None = None,
+    status: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> dict:
+    """List distributions with store scoping and pagination."""
+    from app.inventory.repository import count_distributions, list_distributions as repo_list_distributions
+
+    tenant_uuid = UUID(tenant_id)
+    store_uuid = UUID(store_id) if store_id else None
+
+    sdb = _get_sdb("inventory")
+    async with sdb.session() as session:
+        items = await repo_list_distributions(
+            session,
+            tenant_id=tenant_uuid,
+            store_id=store_uuid,
+            direction=direction,
+            status=status,
+            limit=page_size,
+            offset=(page - 1) * page_size,
+        )
+        total = await count_distributions(
+            session,
+            tenant_id=tenant_uuid,
+            store_id=store_uuid,
+            direction=direction,
+            status=status,
+        )
+        store_names, actor_names = await _distribution_names(session, tenant_uuid, items)
+        return {
+            "items": [_distribution_view(d, [], store_names, actor_names) for d in items],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+
+
+async def get_distribution(tenant_id: str, distribution_id: str) -> dict | None:
+    """Retrieve one distribution by its identifier."""
+    from app.inventory.repository import get_distribution_by_id, get_distribution_items
+
+    tenant_uuid = UUID(tenant_id)
+    sdb = _get_sdb("inventory")
+    async with sdb.session() as session:
+        distribution = await get_distribution_by_id(session, UUID(distribution_id))
+        if not distribution or str(distribution.tenant_id) != tenant_id:
+            return None
+        items = await get_distribution_items(session, distribution.id)
+        store_names, actor_names = await _distribution_names(session, tenant_uuid, [distribution])
+        return _distribution_view(distribution, items, store_names, actor_names)
 
 
 async def get_main_store_dashboard(tenant_id: str) -> dict:

@@ -321,6 +321,89 @@ class TransferFulfilled(_Base):
     fulfilled_qty: float = 0
 
 
+# ── Distributions ────────────────────────────────────────────────────────────
+
+
+class DistributionItemRead(_Base):
+    id: str = ""
+    item_name: str = ""
+    source_product_id: str = ""
+    destination_product_id: str | None = None
+    qty_dispatched: float = 0
+    qty_received: float = 0
+    qty_damaged: float = 0
+    shortage: float = 0
+    condition_dispatched: str | None = None
+    condition_received: str | None = None
+    damage_notes: str | None = None
+    receive_notes: str | None = None
+    notes: str | None = None
+    created_at: datetime | None = None
+
+
+class DistributionRead(_Base):
+    id: str = ""
+    distribution_number: str | None = None
+    from_store_id: str = ""
+    to_store_id: str = ""
+    from_store_name: str | None = None
+    to_store_name: str | None = None
+    status: str = "in_transit"
+    notes: str | None = None
+    dispatched_by: str | None = None
+    dispatched_at: datetime | None = None
+    received_by: str | None = None
+    received_at: datetime | None = None
+    cancelled_by: str | None = None
+    cancelled_at: datetime | None = None
+    cancel_reason: str | None = None
+    pin_verified_by: str | None = None
+    created_by: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    items: list[DistributionItemRead] = []
+    qty_dispatched: float = 0
+    qty_received: float = 0
+    qty_damaged: float = 0
+    shortage: float = 0
+
+
+class DistributionListItem(_Base):
+    id: str = ""
+    distribution_number: str | None = None
+    from_store_id: str = ""
+    to_store_id: str = ""
+    from_store_name: str | None = None
+    to_store_name: str | None = None
+    status: str = "in_transit"
+    notes: str | None = None
+    qty_dispatched: float = 0
+    qty_received: float = 0
+    qty_damaged: float = 0
+    shortage: float = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class DistributionCreated(DistributionRead):
+    pass
+
+
+class DistributionReceived(_Base):
+    distribution_id: str = ""
+    distribution_number: str | None = None
+    status: str = "received"
+    qty_received: float = 0
+    qty_damaged: float = 0
+    shortage: float = 0
+
+
+class DistributionCancelled(_Base):
+    distribution_id: str = ""
+    distribution_number: str | None = None
+    status: str = "cancelled"
+
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 

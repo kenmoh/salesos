@@ -41,6 +41,40 @@ class StoreDistribute(Base):
     notes: str | None = None
 
 
+class DistributeLineCreate(BaseModel):
+    product_id: UUID
+    item_name: str = Field(..., min_length=1, max_length=200)
+    qty_dispatched: Decimal = Field(..., gt=0)
+    condition_dispatched: str | None = None
+
+
+class DistributeCreate(Base):
+    from_store_id: UUID
+    to_store_id: UUID
+    lines: list[DistributeLineCreate] = Field(..., min_length=1)
+    notes: str | None = None
+
+
+class DistributeLineReceive(BaseModel):
+    item_id: UUID
+    qty_received: Decimal = Field(..., ge=0)
+    qty_damaged: Decimal = Field(..., ge=0)
+    condition_received: str | None = None
+    receive_notes: str | None = None
+
+
+class DistributeReceive(Base):
+    distribution_id: UUID
+    lines: list[DistributeLineReceive] = Field(..., min_length=1)
+    supervisor_pin: str | None = None
+
+
+class DistributeCancel(Base):
+    distribution_id: UUID
+    cancel_reason: str | None = None
+    supervisor_pin: str | None = None
+
+
 class TransferRequestCreate(Base):
     item_name: str = Field(..., min_length=1, max_length=200)
     supplying_store_id: UUID
