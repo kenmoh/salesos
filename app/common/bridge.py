@@ -4736,6 +4736,8 @@ async def create_distribution(
             to_store_id=to_store.id,
             status="in_transit",
             notes=notes,
+            dispatched_by=UUID(created_by) if created_by else None,
+            dispatched_at=datetime.now(UTC),
             pin_verified_by=UUID(pin_verified_by) if pin_verified_by else None,
             created_by=UUID(created_by) if created_by else None,
         )
