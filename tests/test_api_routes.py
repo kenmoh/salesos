@@ -1865,7 +1865,7 @@ class TestAuth:
             json={
                 "email": "e@e.com",
                 "full_name": "Emp",
-                "role": "cashier",
+                "roles": ["cashier", "manager"],
             },
         )
         assert resp.status_code == 201

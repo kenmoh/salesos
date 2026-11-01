@@ -419,7 +419,7 @@ async def disable_totp(*, session, user_id, password, code):
 
 
 async def create_employee(
-    *, session, business_id, actor_id, email, full_name, phone, role, password, store_id=None, req
+    *, session, business_id, actor_id, email, full_name, phone, roles, password, store_id=None, req
 ):
     from app.core.security import hash_password as hp
     from app.identity.models import User as IdUser
@@ -440,30 +440,41 @@ async def create_employee(
     session.add(user)
     await session.flush()
 
-    role_result = await session.execute(
-        select(Role).where(
-            Role.name == role,
-            (Role.tenant_id == UUID(business_id)) | (Role.tenant_id.is_(None)),
+    role_names = [name for name in (roles or ["viewer"]) if name]
+    seen: set[str] = set()
+    for role_name in role_names:
+        if role_name in seen:
+            continue
+        seen.add(role_name)
+        role_result = await session.execute(
+            select(Role).where(
+                Role.name == role_name,
+                (Role.tenant_id == UUID(business_id)) | (Role.tenant_id.is_(None)),
+            )
         )
-    )
-    role_obj = role_result.scalar_one_or_none()
-    if role_obj:
-        ur = UserRole(
-            user_id=user.id, role_id=role_obj.id, assigned_by=UUID(actor_id) if actor_id else None
-        )
-        session.add(ur)
-        await session.flush()
+        role_obj = role_result.scalar_one_or_none()
+        if role_obj:
+            ur = UserRole(
+                user_id=user.id, role_id=role_obj.id, assigned_by=UUID(actor_id) if actor_id else None
+            )
+            session.add(ur)
+            await session.flush()
 
     return {
+        "id": str(user.id),
         "user_id": str(user.id),
         "email": user.email,
         "full_name": user.full_name,
-        "role": role,
+        "roles": list(seen),
         "store_id": str(user.store_id) if user.store_id else None,
     }
 
 
-async def update_employee(*, session, business_id: str, user_id: str, full_name=None, phone=None, email=None, store_id=None):
+async def update_employee(
+    *, session, business_id: str, user_id: str, full_name=None, phone=None, email=None, store_id=None, roles=None
+):
+    from sqlalchemy import delete
+
     from app.identity.models import User as IdUser
 
     result = await session.execute(
@@ -486,12 +497,38 @@ async def update_employee(*, session, business_id: str, user_id: str, full_name=
     if store_id is not None:
         user.store_id = UUID(store_id) if store_id else None
 
+    if roles is not None:
+        role_names = [name for name in roles if name]
+        await session.execute(delete(UserRole).where(UserRole.user_id == user.id))
+        seen: set[str] = set()
+        for role_name in role_names:
+            if role_name in seen:
+                continue
+            seen.add(role_name)
+            role_result = await session.execute(
+                select(Role).where(
+                    Role.name == role_name,
+                    (Role.tenant_id == UUID(business_id)) | (Role.tenant_id.is_(None)),
+                )
+            )
+            role_obj = role_result.scalar_one_or_none()
+            if role_obj:
+                session.add(UserRole(user_id=user.id, role_id=role_obj.id))
+        await session.flush()
+
+    role_rows = await session.execute(
+        select(Role.name).join(UserRole, UserRole.role_id == Role.id).where(UserRole.user_id == user.id)
+    )
+    current_roles = [row[0] for row in role_rows.all()]
+
     await session.flush()
     return {
+        "id": str(user.id),
         "user_id": str(user.id),
         "email": user.email,
         "full_name": user.full_name,
         "phone": user.phone,
+        "roles": current_roles,
         "store_id": str(user.store_id) if user.store_id else None,
     }
 

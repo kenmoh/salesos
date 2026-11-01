@@ -135,6 +135,7 @@ class UpdateEmployeeRequest(Base):
     phone: str | None = None
     email: EmailStr | None = None
     store_id: UUID | None = None
+    roles: list[str] | None = None
 
 
 class EmployeeStatusRequest(Base):

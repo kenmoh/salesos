@@ -557,6 +557,7 @@ async def employees(ctx: DbTenantDep):
                 "full_name": r["full_name"],
                 "phone": r["phone"],
                 "role": r["role"] or "",
+                "roles": [name for name in (r["role"] or "").split(",") if name],
                 "status": r["status"],
                 "is_active": r["status"] == "active",
                 "last_login_at": r["last_login_at"].isoformat() if r["last_login_at"] else None,
@@ -594,6 +595,7 @@ async def update_employee(user_id: str, payload: UpdateEmployeeRequest, ctx: DbT
         phone=payload.phone,
         email=payload.email,
         store_id=str(payload.store_id) if payload.store_id else None,
+        roles=payload.roles,
     )
     return ok(result, message="Employee updated")
 

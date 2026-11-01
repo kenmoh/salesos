@@ -4682,6 +4682,7 @@ async def create_distribution(
     from app.inventory.repository import (
         create_distribution as repo_create_distribution,
         create_distribution_item,
+        create_stock_adjustment,
         get_distribution_by_number,
         get_stock_balance,
         upsert_stock_balance,
