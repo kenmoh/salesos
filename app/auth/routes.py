@@ -878,6 +878,7 @@ async def tenant_activity(
     ctx: DbTenantDep,
     action: str | None = None,
     user_id: str | None = None,
+    store_id: str | None = None,
     days: int = 90,
     page: int = 1,
     page_size: int = 50,
@@ -937,6 +938,7 @@ async def tenant_activity(
                 "status": "ok",
                 "resource": None,
                 "resource_id": None,
+                "store_id": str(details.get("store_id")) if isinstance(details, dict) and details.get("store_id") else None,
                 "approver": approver,
                 "ip_address": r.ip_address,
                 "user_agent": r.user_agent,
@@ -949,6 +951,7 @@ async def tenant_activity(
             AuditEvent.action,
             AuditEvent.resource_type,
             AuditEvent.resource_id,
+            AuditEvent.store_id,
             AuditEvent.details,
             AuditEvent.status_code,
             AuditEvent.ip_address,
@@ -971,6 +974,7 @@ async def tenant_activity(
                 "status": r.status_code,
                 "resource": r.resource_type,
                 "resource_id": r.resource_id,
+                "store_id": str(r.store_id) if r.store_id else None,
                 "approver": None,
                 "ip_address": r.ip_address,
                 "user_agent": None,
@@ -981,6 +985,8 @@ async def tenant_activity(
         rows = [r for r in rows if r["action"] == action]
     if user_id:
         rows = [r for r in rows if r["actor"] == user_id or r["approver"] == user_id]
+    if store_id:
+        rows = [r for r in rows if r.get("store_id") == store_id]
 
     rows.sort(key=lambda r: r["at"], reverse=True)
 

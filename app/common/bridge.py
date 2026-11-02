@@ -21,6 +21,7 @@ from app.common.scope_cache import (
     TENANT_SCOPE,
     scope_bump,
 )
+from app.auth.audit import write_audit_event
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -3801,6 +3802,25 @@ async def transfer_stock(
         )
         for write in outbox:
             session.add(write.to_model())
+
+        await write_audit_event(
+            session,
+            user_id=str(created_by) if created_by else None,
+            business_id=str(tenant_id),
+            store_id=str(from_store_id),
+            action="transfer_stock",
+            resource_type="transfer",
+            resource_id=None,
+            path="/inventory/distribute",
+            status_code=200,
+            details={
+                "from_store_id": str(from_store_id),
+                "to_store_id": str(to_store_id),
+                "product_id": str(product_id),
+                "qty": float(qty),
+                "notes": notes,
+            },
+        )
         await session.commit()
 
     await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{from_store_id}*")
@@ -4026,6 +4046,26 @@ async def create_transfer_request(
         store_names, actor_names = await _transfer_request_names(session, tenant_uuid, [request])
         result = _transfer_request_view(request, store_names, actor_names)
         supplying_store_key = str(supplying_store.id)
+
+        await write_audit_event(
+            session,
+            user_id=str(created_by) if created_by else None,
+            business_id=str(tenant_id),
+            store_id=str(requesting_store.id),
+            action="transfer_request_created",
+            resource_type="transfer_request",
+            resource_id=str(request.id),
+            path="/inventory/transfer-requests",
+            status_code=201,
+            details={
+                "request_number": request.request_number,
+                "item_name": name,
+                "requesting_store_id": str(requesting_store.id),
+                "supplying_store_id": str(supplying_store.id),
+                "requested_qty": float(requested_qty),
+            },
+        )
+
         await session.commit()
 
     await scope_bump(tenant_id, supplying_store_key, (CATALOG,))
@@ -4095,6 +4135,25 @@ async def approve_transfer_request(
 
         updated_request, outbox = plan_approve_transfer_request(command, request, supplying_balance)
         session.add(outbox.to_model())
+
+        await write_audit_event(
+            session,
+            user_id=str(approved_by) if approved_by else None,
+            business_id=str(tenant_id),
+            store_id=str(request.supplying_store_id),
+            action="transfer_request_approved",
+            resource_type="transfer_request",
+            resource_id=str(request_id),
+            path=f"/inventory/transfer-requests/{request_id}/approve",
+            status_code=200,
+            details={
+                "request_number": request.request_number,
+                "item_name": request.item_name,
+                "requesting_store_id": str(request.requesting_store_id),
+                "supplying_store_id": str(request.supplying_store_id),
+                "approved_qty": float(approved_qty) if approved_qty is not None else None,
+            },
+        )
         await session.commit()
 
         result = {
@@ -4163,6 +4222,25 @@ async def reject_transfer_request(
 
         updated_request, outbox = plan_reject_transfer_request(command, request)
         session.add(outbox.to_model())
+
+        await write_audit_event(
+            session,
+            user_id=str(rejected_by) if rejected_by else None,
+            business_id=str(tenant_id),
+            store_id=str(request.requesting_store_id),
+            action="transfer_request_rejected",
+            resource_type="transfer_request",
+            resource_id=str(request_id),
+            path=f"/inventory/transfer-requests/{request_id}/reject",
+            status_code=200,
+            details={
+                "request_number": request.request_number,
+                "item_name": request.item_name,
+                "requesting_store_id": str(request.requesting_store_id),
+                "supplying_store_id": str(request.supplying_store_id),
+                "rejection_reason": rejection_reason,
+            },
+        )
         await session.commit()
 
         result = {
@@ -4338,6 +4416,25 @@ async def fulfill_transfer_request(
 
         supplying_store_id = str(request.supplying_store_id)
         requesting_store_id = str(request.requesting_store_id)
+
+        await write_audit_event(
+            session,
+            user_id=str(fulfilled_by) if fulfilled_by else None,
+            business_id=str(tenant_id),
+            store_id=str(request.requesting_store_id),
+            action="transfer_request_fulfilled",
+            resource_type="transfer_request",
+            resource_id=str(request_id),
+            path=f"/inventory/transfer-requests/{request_id}/fulfill",
+            status_code=200,
+            details={
+                "request_number": request.request_number,
+                "item_name": request.item_name,
+                "supplying_store_id": str(request.supplying_store_id),
+                "requesting_store_id": str(request.requesting_store_id),
+                "fulfilled_qty": float(updated_request.fulfilled_qty) if updated_request.fulfilled_qty else None,
+            },
+        )
         await session.commit()
 
     await cache.delete_pattern(f"sf:cache:store_products:list:{tenant_id}:{supplying_store_id}*")
@@ -4798,6 +4895,25 @@ async def create_distribution(
 
         store_names, actor_names = await _distribution_names(session, tenant_uuid, [distribution])
         result = _distribution_view(distribution, items, store_names, actor_names)
+
+        await write_audit_event(
+            session,
+            user_id=str(created_by) if created_by else None,
+            business_id=str(tenant_id),
+            store_id=str(from_store.id),
+            action="distribution_created",
+            resource_type="distribution",
+            resource_id=str(distribution_id),
+            path=f"/inventory/distributions",
+            status_code=201,
+            details={
+                "distribution_number": number,
+                "from_store_id": str(from_store.id),
+                "to_store_id": str(to_store.id),
+                "item_count": len(line_objs),
+            },
+        )
+
         await session.commit()
 
     await scope_bump(tenant_id, from_store_id, (CATALOG,))
@@ -4926,6 +5042,24 @@ async def receive_distribution(
         distribution.pin_verified_by = pin
         store_names, actor_names = await _distribution_names(session, tenant_uuid, [distribution])
         result = _distribution_view(distribution, items, store_names, actor_names)
+
+        await write_audit_event(
+            session,
+            user_id=str(actor_id) if actor_id else None,
+            business_id=str(tenant_id),
+            store_id=str(distribution.to_store_id),
+            action="distribution_received",
+            resource_type="distribution",
+            resource_id=str(distribution_id),
+            path=f"/inventory/distributions/{distribution_id}/receive",
+            status_code=200,
+            details={
+                "distribution_number": distribution.distribution_number,
+                "to_store_id": str(distribution.to_store_id),
+                "lines_count": len(receive_lines),
+            },
+        )
+
         await session.commit()
 
     await scope_bump(tenant_id, str(distribution.to_store_id), (CATALOG,))
@@ -5007,6 +5141,24 @@ async def cancel_distribution(
         distribution.pin_verified_by = UUID(pin_verified_by) if pin_verified_by else None
         store_names, actor_names = await _distribution_names(session, tenant_uuid, [distribution])
         result = _distribution_view(distribution, items, store_names, actor_names)
+
+        await write_audit_event(
+            session,
+            user_id=str(actor_id) if actor_id else None,
+            business_id=str(tenant_id),
+            store_id=str(distribution.from_store_id),
+            action="distribution_cancelled",
+            resource_type="distribution",
+            resource_id=str(distribution_id),
+            path=f"/inventory/distributions/{distribution_id}/cancel",
+            status_code=200,
+            details={
+                "distribution_number": distribution.distribution_number,
+                "from_store_id": str(distribution.from_store_id),
+                "cancel_reason": cancel_reason,
+            },
+        )
+
         await session.commit()
 
     await scope_bump(tenant_id, str(distribution.from_store_id), (CATALOG,))
