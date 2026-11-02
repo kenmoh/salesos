@@ -312,6 +312,20 @@ async def get_permissions_for_role(session: AsyncSession, role_id: UUID) -> list
     return list(result.scalars().all())
 
 
+async def get_permission_by_name(session: AsyncSession, name: str) -> Permission | None:
+    """Get a permission by its name.
+
+    Args:
+        session: Database session.
+        name: Permission name (e.g. "inventory:read").
+
+    Returns:
+        Permission if found, None otherwise.
+    """
+    result = await session.execute(select(Permission).where(Permission.name == name))
+    return result.scalar_one_or_none()
+
+
 async def get_effective_permissions(session: AsyncSession, user_id: UUID) -> list[Permission]:
     """Get all permissions effective for a user (via roles).
 

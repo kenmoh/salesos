@@ -82,6 +82,26 @@ def _get_sdb(service: str) -> ServiceDatabase:
     return _databases[service]
 
 
+async def _resolve_permission_ids(session: AsyncSession, permission_ids: list[str]) -> list[UUID]:
+    """Resolve permission identifiers (UUIDs or names) to permission UUIDs.
+
+    Accepts either permission UUIDs or permission names (e.g. ``inventory:read``).
+    Raises ``ValueError`` if any identifier cannot be resolved.
+    """
+    from app.identity.repository import get_permission_by_name
+
+    resolved: list[UUID] = []
+    for pid in permission_ids:
+        try:
+            resolved.append(UUID(pid))
+        except ValueError:
+            perm = await get_permission_by_name(session, pid)
+            if perm is None:
+                raise ValueError(f"Unknown permission: {pid}")
+            resolved.append(perm.id)
+    return resolved
+
+
 def _sale_blocked_by_expiry(product) -> bool:
     """True only for an opted-in product whose expiry day has fully passed.
 
@@ -9974,7 +9994,8 @@ async def create_role_for_tenant(
         )
 
         if permission_ids:
-            await set_role_permissions(session, role.id, [UUID(pid) for pid in permission_ids])
+            resolved = await _resolve_permission_ids(session, permission_ids)
+            await set_role_permissions(session, role.id, resolved)
 
         await session.commit()
 
@@ -10181,7 +10202,8 @@ async def set_role_permissions_for_tenant(
         before = [p.name for p in await get_permissions_for_role(session, role_uid)]
         holders = await _role_holders(session, role_uid)
 
-        await repo_set_permissions(session, role_uid, [UUID(pid) for pid in permission_ids])
+        resolved = await _resolve_permission_ids(session, permission_ids)
+        await repo_set_permissions(session, role_uid, resolved)
         after = [p.name for p in await get_permissions_for_role(session, role_uid)]
 
         session.add(
