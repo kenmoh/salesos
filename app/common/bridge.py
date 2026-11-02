@@ -4606,7 +4606,13 @@ async def _distribution_names(session, tenant_id: UUID, distributions: list):
 
 
 def _distribution_view(
-    distribution, items: list, store_names: dict[str, str], actor_names: dict[str, str]
+    distribution,
+    items: list,
+    store_names: dict[str, str],
+    actor_names: dict[str, str],
+    qty_dispatched: float | None = None,
+    qty_received: float | None = None,
+    qty_damaged: float | None = None,
 ) -> dict:
     """Serialise one distribution with store and actor names."""
 
@@ -4645,9 +4651,21 @@ def _distribution_view(
             }
         )
 
-    qty_dispatched = sum(float(i.qty_dispatched) for i in items)
-    qty_received = sum(float(i.qty_received) for i in items)
-    qty_damaged = sum(float(i.qty_damaged) for i in items)
+    qty_dispatched = (
+        float(qty_dispatched)
+        if qty_dispatched is not None
+        else sum(float(i.qty_dispatched) for i in items)
+    )
+    qty_received = (
+        float(qty_received)
+        if qty_received is not None
+        else sum(float(i.qty_received) for i in items)
+    )
+    qty_damaged = (
+        float(qty_damaged)
+        if qty_damaged is not None
+        else sum(float(i.qty_damaged) for i in items)
+    )
 
     return {
         "id": str(distribution.id),
@@ -5194,6 +5212,7 @@ async def list_distributions(
     page_size: int = 50,
 ) -> dict:
     """List distributions with store scoping and pagination."""
+    from app.inventory.models import DistributionItem
     from app.inventory.repository import count_distributions, list_distributions as repo_list_distributions
 
     tenant_uuid = UUID(tenant_id)
@@ -5218,8 +5237,35 @@ async def list_distributions(
             status=status,
         )
         store_names, actor_names = await _distribution_names(session, tenant_uuid, items)
+        # Compute aggregates per distribution via SQL (items are not eager-loaded,
+        # so passing [] to _distribution_view would zero out every total).
+        agg_rows = await session.execute(
+            select(
+                DistributionItem.distribution_id,
+                func.coalesce(func.sum(DistributionItem.qty_dispatched), 0).label("qd"),
+                func.coalesce(func.sum(DistributionItem.qty_received), 0).label("qr"),
+                func.coalesce(func.sum(DistributionItem.qty_damaged), 0).label("qdmg"),
+            )
+            .where(DistributionItem.distribution_id.in_([d.id for d in items]))
+            .group_by(DistributionItem.distribution_id)
+        )
+        agg_map = {str(r.distribution_id): r for r in agg_rows.all()}
+        view_items = []
+        for d in items:
+            agg = agg_map.get(str(d.id))
+            view_items.append(
+                _distribution_view(
+                    d,
+                    [],
+                    store_names,
+                    actor_names,
+                    qty_dispatched=float(agg.qd) if agg else 0.0,
+                    qty_received=float(agg.qr) if agg else 0.0,
+                    qty_damaged=float(agg.qdmg) if agg else 0.0,
+                )
+            )
         return {
-            "items": [_distribution_view(d, [], store_names, actor_names) for d in items],
+            "items": view_items,
             "total": total,
             "page": page,
             "page_size": page_size,
