@@ -2575,6 +2575,7 @@ class CommissionCreate(BaseModel):
     cash_amount: float | None = None
     min_threshold: float = 0
     max_pending_balance: float = 1000
+    document_fee: float = 0
 
 
 class CommissionUpdate(BaseModel):
@@ -2584,6 +2585,7 @@ class CommissionUpdate(BaseModel):
     cash_amount: float | None = None
     min_threshold: float | None = None
     max_pending_balance: float | None = None
+    document_fee: float | None = None
 
 
 def _get_client_ip(request: Request) -> str | None:
@@ -2615,6 +2617,7 @@ async def create_commission(payload: CommissionCreate, request: Request, ctx: Pl
         cash_amount=payload.cash_amount,
         min_threshold=payload.min_threshold,
         max_pending_balance=payload.max_pending_balance,
+        document_fee=payload.document_fee,
     )
     ctx.session.add(commission)
     await ctx.session.flush()
@@ -2632,6 +2635,7 @@ async def create_commission(payload: CommissionCreate, request: Request, ctx: Pl
             "cash_amount": payload.cash_amount,
             "min_threshold": payload.min_threshold,
             "max_pending_balance": payload.max_pending_balance,
+            "document_fee": payload.document_fee,
         },
         ip_address=_get_client_ip(request),
     )
@@ -2647,6 +2651,7 @@ async def create_commission(payload: CommissionCreate, request: Request, ctx: Pl
             ),
             "min_threshold": float(commission.min_threshold),
             "max_pending_balance": float(commission.max_pending_balance),
+            "document_fee": float(commission.document_fee) if commission.document_fee is not None else 0,
             "created_at": commission.created_at.isoformat(),
             "updated_at": commission.updated_at.isoformat(),
         }
@@ -2741,6 +2746,7 @@ async def list_commissions(ctx: PlatformDep):
                 "cash_amount": float(c.cash_amount) if c.cash_amount is not None else None,
                 "min_threshold": float(c.min_threshold),
                 "max_pending_balance": float(c.max_pending_balance),
+                "document_fee": float(c.document_fee) if c.document_fee is not None else 0,
                 "created_at": c.created_at.isoformat(),
                 "updated_at": c.updated_at.isoformat(),
             }
@@ -2777,6 +2783,7 @@ async def get_commission(commission_id: str, ctx: PlatformDep):
             ),
             "min_threshold": float(commission.min_threshold),
             "max_pending_balance": float(commission.max_pending_balance),
+            "document_fee": float(commission.document_fee) if commission.document_fee is not None else 0,
             "created_at": commission.created_at.isoformat(),
             "updated_at": commission.updated_at.isoformat(),
         }
@@ -2824,6 +2831,9 @@ async def update_commission(
     if payload.max_pending_balance is not None:
         changes["max_pending_balance"] = payload.max_pending_balance
         commission.max_pending_balance = payload.max_pending_balance
+    if payload.document_fee is not None:
+        changes["document_fee"] = payload.document_fee
+        commission.document_fee = payload.document_fee
 
     await ctx.session.flush()
 
@@ -2848,6 +2858,7 @@ async def update_commission(
             ),
             "min_threshold": float(commission.min_threshold),
             "max_pending_balance": float(commission.max_pending_balance),
+            "document_fee": float(commission.document_fee) if commission.document_fee is not None else 0,
             "created_at": commission.created_at.isoformat(),
             "updated_at": commission.updated_at.isoformat(),
         }

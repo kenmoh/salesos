@@ -1,4 +1,4 @@
-"""Alembic environment for SalesOS — async mode.
+"""Alembic environment for StoreFlow — async mode.
 
 All domain models are imported so that ``StoreFlowBase.metadata`` contains
 every table, enabling ``--autogenerate`` to produce complete migrations.

@@ -144,6 +144,30 @@ async def deactivate_stale_push_tokens(session: AsyncSession, token_ids: list[UU
     await session.flush()
 
 
+async def has_recent_low_stock_notification(
+    session: AsyncSession, tenant_id: UUID, product_id: str, hours: int = 24
+) -> bool:
+    """True when the tenant was already alerted about this product's low
+    stock within the last ``hours`` hours.
+
+    Every sale that dips a product below its threshold re-emits
+    ``inventory.low_stock_detected``, so the handler checks the last in-app
+    low-stock notification for the product before sending anything again.
+    """
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
+    result = await session.execute(
+        select(InAppNotification.id)
+        .where(
+            InAppNotification.tenant_id == tenant_id,
+            InAppNotification.type == "inventory",
+            InAppNotification.meta["product_id"].astext == product_id,
+            InAppNotification.created_at >= cutoff,
+        )
+        .limit(1)
+    )
+    return result.first() is not None
+
+
 # ── In-App Notifications ────────────────────────────────────────────────────
 
 

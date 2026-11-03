@@ -1,19 +1,26 @@
 """Platform fee calculation and ledger management.
 
 This module handles the calculation of platform commission fees for transactions,
-tracking pending fee balances, and managing fee ledger entries.
+the flat fee per created document, tracking pending fee balances, and managing
+fee ledger entries.
 
-The fee calculation follows a tiered rule system where:
+Sales commission follows a tiered rule system where:
 1. Rules are ordered by minimum threshold (descending)
 2. The first rule where the sale total >= threshold is applied
 3. Fees can be either flat (fixed amount) or percentage-based
 
+Documents carry their own charge: a flat ``document_fee`` booked at creation
+for every type, not a share of the document's value.
+
 Typical usage:
-    from app.platform.fee_calculator import calculate_platform_fee
+    from app.platform.fee_calculator import calculate_platform_fee, book_document_fee
 
     # Calculate fee for a 5000 NGN sale
     result = await calculate_platform_fee(session, 5000.0)
     # Returns: {"platform_fee": 100.0, "settlement_amount": 4900.0, ...}
+
+    # Book the flat fee for a created document
+    await book_document_fee(session, tenant_id=..., document_id=...)
 """
 
 from __future__ import annotations
@@ -64,7 +71,7 @@ def sale_fee_base(sale) -> float:
 # Payment methods whose money arrives without an external processor. The full
 # rate bundles the processor's share, which these collections never incurred,
 # so they are charged the platform-only rate (rule.cash_amount) instead.
-NO_PROCESSOR_METHODS = frozenset({"cash", "converted", "receipt", "document"})
+NO_PROCESSOR_METHODS = frozenset({"cash", "document"})
 
 
 def rate_for_rule(rule, method: str | None) -> Decimal:
@@ -92,9 +99,8 @@ async def calculate_platform_fee(
         sale_total: Commission base in Nigerian Naira (pre-tax,
             post-discount sale value).
         method: Payment method that produced the money (e.g. "cash",
-            "card"), or a document type ("receipt", "converted") when the
-            fee is booked for a non-sale collection. Methods without an
-            external processor are charged the rule's cash_amount.
+            "card"). Methods without an external processor are charged the
+            rule's cash_amount.
 
     Returns:
         Dict containing:
@@ -268,72 +274,79 @@ async def assert_fee_headroom(session: AsyncSession, tenant_id: UUID) -> None:
         raise ValueError("fee_balance_exceeded")
 
 
-async def record_platform_fee(
-    session: AsyncSession,
-    *,
-    tenant_id: UUID,
-    total: float,
-    sale_id: UUID | None = None,
-    document_id: UUID | None = None,
-    payment_method: str = "document",
-    status: str = "pending",
-) -> dict | None:
-    """Book the platform's commission for something that earned it.
+async def get_document_fee(session: AsyncSession) -> float:
+    """Get the flat NGN fee charged for every document created.
 
-    The fee was only ever charged when a sale reached "completed", which left
-    two paths earning revenue for the tenant with nothing booked against them: a
-    converted document, whose sale is pending forever because nothing pays it,
-    and a standalone receipt, which is not a sale at all. Both are charged here,
-    when the document is created.
+    Reads ``document_fee`` from the newest commission rule. The fee is not
+    tiered: one document costs the same regardless of its value. Zero (the
+    default) disables the charge.
 
-    The existing row for the same sale or document is checked first. Without
-    that, a converted sale charged here would be charged again when it is later
-    paid in full and completes through the normal payment path.
+    Args:
+        session: Database session for querying commission rules.
 
-    Exactly one of ``sale_id`` / ``document_id`` identifies what the fee is for.
-
-    Returns the fee result, or None when no rule matched or a fee already
-    exists.
+    Returns:
+        Flat document fee in Nigerian Naira (defaults to 0.0).
     """
-    from sqlalchemy import or_
+    from app.platform.models import PlatformCommission
 
+    result = await session.execute(
+        select(PlatformCommission.document_fee)
+        .order_by(desc(PlatformCommission.created_at), desc(PlatformCommission.id))
+        .limit(1)
+    )
+    val = result.scalar()
+    return float(val) if val else 0.0
+
+
+async def book_document_fee(
+    session: AsyncSession, *, tenant_id: UUID, document_id: UUID, fee_amount: float | None = None
+) -> dict | None:
+    """Book the flat rate charged for a created document.
+
+    Every document — quote, invoice, receipt, purchase order, draft or not —
+    costs the tenant ``document_fee`` at creation. The row lands in the
+    ledger as pending, so it joins the tenant's outstanding balance and is
+    collected by the same settlement flow as sale commissions. Voiding the
+    document later does not refund it: the document was issued.
+
+    Args:
+        session: Database session for the tenant's documents database.
+        tenant_id: Unique identifier of the tenant business.
+        document_id: The document the fee bills for.
+        fee_amount: Precomputed flat fee; read from the commission rules
+            when omitted.
+
+    Returns:
+        A dict with rule-independent fee details, or None when the flat fee
+        is zero (document creation is not charged).
+    """
     from app.platform.models import PlatformFeeLedger
 
-    if not sale_id and not document_id:
-        raise ValueError("a platform fee must reference a sale or a document")
-
-    existing = (
-        await session.execute(
-            select(PlatformFeeLedger.id).where(
-                PlatformFeeLedger.tenant_id == tenant_id,
-                or_(
-                    PlatformFeeLedger.sale_id == sale_id
-                    if sale_id
-                    else False,
-                    PlatformFeeLedger.document_id == document_id
-                    if document_id
-                    else False,
-                ),
-            ).limit(1)
-        )
-    ).scalar_one_or_none()
-    if existing:
+    fee = fee_amount if fee_amount is not None else await get_document_fee(session)
+    if fee <= 0:
         return None
 
-    fee_result = await calculate_platform_fee(session, total, method=payment_method)
-    if fee_result["platform_fee"] <= 0:
-        return None
+    fee_result = {
+        "rule_id": None,
+        "label": "document_fee",
+        "fee_type": "flat",
+        "rate": fee,
+        "sale_total": 0.0,
+        "platform_fee": fee,
+        "settlement_amount": 0.0,
+        "fee_category": "document",
+    }
 
     session.add(
         PlatformFeeLedger(
-            tenant_id=tenant_id,
-            sale_id=sale_id,
-            document_id=document_id,
-            amount=float(Decimal(str(fee_result["platform_fee"])).quantize(Decimal("0.01"))),
-            fee_type=fee_result["fee_type"],
-            rate=fee_result["rate"],
-            payment_method=payment_method,
-            status=status,
+            tenant_id=UUID(str(tenant_id)),
+            document_id=UUID(str(document_id)),
+            amount=float(Decimal(str(fee)).quantize(Decimal("0.01"))),
+            fee_type="flat",
+            rate=float(Decimal(str(fee)).quantize(Decimal("0.01"))),
+            payment_method="document",
+            fee_category="document",
+            status="pending",
         )
     )
     return fee_result

@@ -15,7 +15,7 @@ class CommonSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    app_name: str = "SalesOS"
+    app_name: str = "StoreFlow"
     app_version: str = "0.1.0"
     env: Literal["development", "staging", "production"] = "development"
     debug: bool = False

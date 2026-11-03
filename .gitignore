@@ -17,3 +17,7 @@ store_flow_legacy/
 
 uvicorn.log
 uvicorn2.log
+
+.frebuff
+.kilo
+.idea

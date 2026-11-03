@@ -1,5 +1,6 @@
 import json
 import logging
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,6 +9,7 @@ from app.notifications.repository import (
     create_in_app_notification,
     create_notification,
     get_active_push_tokens,
+    has_recent_low_stock_notification,
 )
 from app.notifications.schemas import NotificationSendCommand
 from app.notifications.service import plan_send_notification
@@ -36,36 +38,41 @@ def _is_type_enabled(prefs: dict[str, bool], ntype: str) -> bool:
     return prefs.get(ntype, True)
 
 
-def _send_push_for_notification(
+async def _send_push_for_notification(
     session: AsyncSession,
     tenant_id,
     title: str,
     body: str,
     data: dict | None = None,
 ) -> None:
-    """Send push notifications to all active devices for a tenant."""
+    """Send push notifications to all active devices for a tenant.
+
+    The consumer awaits handlers inside its own running event loop, so the
+    token lookup is a plain ``await`` and the blocking Expo HTTP call is
+    pushed to the default executor — ``asyncio.run`` from a handler frame
+    would raise ``RuntimeError`` and requeue the event forever.
+    """
     import asyncio
+
     from app.notifications.push import send_push_batch
 
-    async def _get_tokens():
-        return await get_active_push_tokens(session, tenant_id)
-
-    tokens = asyncio.run(_get_tokens())
+    tokens = await get_active_push_tokens(session, UUID(str(tenant_id)))
     if not tokens:
         return
 
     token_values = [t.token for t in tokens]
-    result = send_push_batch(token_values, title, body, data or {})
+    result = await asyncio.get_running_loop().run_in_executor(
+        None, send_push_batch, token_values, title, body, data or {}
+    )
 
     # Deactivate tokens for devices that are no longer registered
     if result.get("failed_tokens"):
         from app.notifications.repository import deactivate_stale_push_tokens
-        from uuid import UUID
 
         stale_ids = [
             t.id for t in tokens if t.token in result["failed_tokens"]
         ]
-        asyncio.run(deactivate_stale_push_tokens(session, stale_ids))
+        await deactivate_stale_push_tokens(session, stale_ids)
 
 
 async def handle_tenant_created(envelope: EventEnvelope, session: AsyncSession) -> None:
@@ -146,6 +153,12 @@ async def handle_low_stock_detected(envelope: EventEnvelope, session: AsyncSessi
     if not _is_type_enabled(prefs, "inventory"):
         return
 
+    # Low stock repeats with every sale, so only send once per product per day
+    if product_id and await has_recent_low_stock_notification(
+        session, UUID(str(tenant_id)), str(product_id)
+    ):
+        return
+
     # Email notification
     command = NotificationSendCommand(
         tenant_id=tenant_id,
@@ -173,7 +186,7 @@ async def handle_low_stock_detected(envelope: EventEnvelope, session: AsyncSessi
     )
 
     # Push notification
-    _send_push_for_notification(
+    await _send_push_for_notification(
         session=session,
         tenant_id=tenant_id,
         title="Low Stock Alert",
@@ -216,7 +229,7 @@ async def handle_sale_confirmed(envelope: EventEnvelope, session: AsyncSession) 
         },
     )
 
-    _send_push_for_notification(
+    await _send_push_for_notification(
         session=session,
         tenant_id=tenant_id,
         title="Sale Completed",
@@ -259,7 +272,7 @@ async def handle_payment_received(envelope: EventEnvelope, session: AsyncSession
         },
     )
 
-    _send_push_for_notification(
+    await _send_push_for_notification(
         session=session,
         tenant_id=tenant_id,
         title="Payment Received",
@@ -297,7 +310,7 @@ async def handle_out_of_stock(envelope: EventEnvelope, session: AsyncSession) ->
         },
     )
 
-    _send_push_for_notification(
+    await _send_push_for_notification(
         session=session,
         tenant_id=tenant_id,
         title="Out of Stock",

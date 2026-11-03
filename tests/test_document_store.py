@@ -310,7 +310,6 @@ class TestConversionCarriesTheStore:
             store_id=store_id,
             linked_sale_id=None,
             doc_number="INV-1",
-            # The conversion books the platform's fee against the document total.
             total=100,
         )
 
@@ -319,8 +318,6 @@ class TestConversionCarriesTheStore:
         session.__aenter__ = AsyncMock(return_value=session)
         session.__aexit__ = AsyncMock(return_value=False)
         session.commit = AsyncMock()
-        # Conversion now books the platform fee, which queries the fee ledger,
-        # so execute has to be awaitable and report "no existing fee".
         empty = MagicMock()
         empty.scalar_one_or_none = MagicMock(return_value=None)
         session.execute = AsyncMock(return_value=empty)

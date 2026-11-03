@@ -1,4 +1,4 @@
-"""Celery background tasks for the SalesOS worker.
+"""Celery background tasks for the StoreFlow worker.
 
 This module defines background tasks that are NOT covered by the
 RabbitMQ event-driven system. These are typically:

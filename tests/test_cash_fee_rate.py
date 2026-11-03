@@ -1,11 +1,12 @@
 """Cash collections were billed the external processor's share of the fee.
 
 The full commission (3.5%) bundles a 2% gateway cost on top of the platform's
-1.5%, but money a customer hands over at the counter — or via a receipt or a
-converted document — goes through no processor, so only the platform's share
-should be charged. The rule's ``cash_amount`` now holds that platform-only
-rate, and every fee path (single payment, batch, split, documents) picks the
-rate by how the money actually arrived.
+1.5%, but money a customer hands over at the counter goes through no processor,
+so only the platform's share should be charged. The rule's ``cash_amount`` now
+holds that platform-only rate, and every commission path (single payment,
+batch, split) picks the rate by how the money actually arrived. Documents are
+not on this path at all: they are charged a flat rate at creation, not a share
+of their value.
 """
 
 from types import SimpleNamespace
@@ -76,11 +77,12 @@ class TestCalculatePlatformFeeMethodRates:
         fee = await calculate_platform_fee(session, 1000.0, method="cash")
         assert fee["platform_fee"] == 35.0
 
-    async def test_receipts_and_converted_docs_are_processorless(self):
-        session = _session(_result(rows=[_rule()]))
-        for method in ("receipt", "converted"):
-            fee = await calculate_platform_fee(session, 1000.0, method=method)
-            assert fee["platform_fee"] == 15.0, method
+    async def test_the_document_method_is_processorless(self):
+        """The flat document fee has no gateway behind it, so it sits with the
+        processorless methods even though nothing computes it from a rule."""
+        assert "document" in fee_calculator.NO_PROCESSOR_METHODS
+        assert "converted" not in fee_calculator.NO_PROCESSOR_METHODS
+        assert "receipt" not in fee_calculator.NO_PROCESSOR_METHODS
 
     async def test_flat_cash_rules_use_the_cash_flat_amount(self):
         session = _session(_result(rows=[_rule(amount=100, cash_amount=45, fee_type="flat")]))
@@ -117,29 +119,50 @@ class TestCalculateFeeShares:
         assert result["total_fee"] == 35.0
 
 
-class TestRecordPlatformFeeUsesTheMethod:
-    async def test_a_booked_fee_carries_the_method_to_the_calculator(self):
-        """A standalone receipt books its fee at the platform-only rate."""
-        from app.platform.fee_calculator import record_platform_fee
+class TestBookDocumentFee:
+    async def test_a_flat_fee_is_booked_as_a_document_row(self):
+        from app.platform.fee_calculator import book_document_fee
 
-        session = _session(
-            _result(row=None),  # no existing fee for the document
-            _result(rows=[_rule()]),
-        )
-        await record_platform_fee(
-            session,
-            tenant_id=uuid4(),
-            total=1000.0,
-            document_id=uuid4(),
-            payment_method="receipt",
+        tenant = uuid4()
+        document = uuid4()
+        session = _session()  # fee_amount is given, no rate lookup runs
+
+        fee = await book_document_fee(
+            session, tenant_id=tenant, document_id=document, fee_amount=200.0
         )
 
-        fee_row = session.add.call_args
-        assert fee_row is not None
-        recorded = fee_row.args[0]
-        assert recorded.amount == 15.0  # 1.5%, not the 3.5% full rate
-        assert recorded.rate == 1.5
-        assert recorded.payment_method == "receipt"
+        assert fee["platform_fee"] == 200.0
+        assert fee["fee_category"] == "document"
+        row = session.add.call_args.args[0]
+        assert row.amount == 200.0
+        assert row.rate == 200.0
+        assert row.fee_type == "flat"
+        assert row.payment_method == "document"
+        assert row.fee_category == "document"
+        assert row.status == "pending"
+        assert row.document_id == document
+        assert row.sale_id is None
+
+    async def test_a_zero_rate_books_nothing(self):
+        from app.platform.fee_calculator import book_document_fee
+
+        session = _session()
+        fee = await book_document_fee(
+            session, tenant_id=uuid4(), document_id=uuid4(), fee_amount=0
+        )
+        assert fee is None
+        session.add.assert_not_called()
+
+    async def test_the_rate_is_read_from_the_commission_rules(self):
+        """With no precomputed amount the flat fee comes from the rules."""
+        from app.platform.fee_calculator import book_document_fee
+
+        session = _session(_result(row=200.0))
+        fee = await book_document_fee(
+            session, tenant_id=uuid4(), document_id=uuid4()
+        )
+        assert fee["platform_fee"] == 200.0
+        assert session.add.call_args.args[0].amount == 200.0
 
 
 class TestRateForRule:

@@ -1,4 +1,4 @@
-"""SalesOS API entry point.
+"""StoreFlow API entry point.
 
 This module creates the FastAPI application, configures middleware,
 and registers all route modules.
@@ -21,44 +21,26 @@ logging.basicConfig(
     level=logging.DEBUG if settings.debug else logging.INFO,
     format="%(asctime)s %(levelname)-8s %(name)s - %(message)s",
 )
-logger = logging.getLogger("salesos")
+logger = logging.getLogger("storeflow")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("SalesOS %s starting [env=%s]", settings.app_version, settings.env)
+    logger.info("StoreFlow %s starting [env=%s]", settings.app_version, settings.env)
     settings.validate_production_secrets()
 
-    # Start background worker subprocesses
-    import subprocess
-    import sys
-    import os
-
-    child_procs: list[subprocess.Popen] = []
-
-    def spawn(label: str, args: list[str], quiet: bool = True) -> None:
-        try:
-            proc = subprocess.Popen(
-                args,
-                cwd=os.getcwd(),
-                stdout=subprocess.DEVNULL if quiet else None,
-                stderr=subprocess.DEVNULL if quiet else None,
-            )
-            child_procs.append(proc)
-            logger.info("%s started (pid=%s)", label, proc.pid)
-        except Exception as e:
-            logger.warning("Failed to start %s: %s", label, e)
-
-    spawn(
-        "Celery worker",
-        [sys.executable, "-m", "celery", "-A", "app.worker.celery_app", "worker",
-         "--loglevel=info", "--pool=solo", "--concurrency=1"],
-    )
-    # Outbox relay + event consumer drive document → accounting side effects
-    # (AR/journals on invoice status changes). Logs are inherited so
-    # RabbitMQ connection problems are visible in the API logs.
-    spawn("Outbox relay", [sys.executable, "-m", "app.worker.outbox_runner"], quiet=False)
-    spawn("Event consumer", [sys.executable, "-m", "app.worker.consumer_runner"], quiet=False)
+    # NOTE: Background workers (Celery, outbox relay, event consumer) are NOT
+    # started here. Spawning long-running worker subprocesses from the FastAPI
+    # lifespan is not production-safe: there is no supervision, restarts, or
+    # clean signal handling, and worker failures are silent. Run them as
+    # separate managed processes (systemd, supervisord, Kubernetes Jobs, etc.):
+    #
+    #   celery -A app.worker.celery_app worker --pool=solo --concurrency=1
+    #   python -m app.worker.outbox_runner
+    #   python -m app.worker.consumer_runner
+    #
+    # The API process only serves HTTP. It publishes domain events to the
+    # outbox_events table; the outbox relay publishes them to RabbitMQ.
 
     # Live event stream. The subscriber lives here rather than in the consumer
     # subprocess because it feeds SSE connections held by this process.
@@ -76,26 +58,13 @@ async def lifespan(app: FastAPI):
     redis_keepalive.cancel()
 
     await broker.shutdown()
-
-    # Shutdown background workers
-    for proc in reversed(child_procs):
-        if proc.poll() is None:
-            logger.info("Stopping child process (pid=%s)", proc.pid)
-            proc.terminate()
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-    logger.info("Background workers stopped")
-
-    logger.info("SalesOS shutting down")
+    logger.info("StoreFlow shutting down")
     await close_redis()
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="SalesOS API",
+        title="StoreFlow API",
         description="SaaS POS, Inventory, Invoicing and Accounting for the Nigerian market.",
         version=settings.app_version,
         docs_url="/docs" if not settings.is_production else None,
@@ -133,7 +102,7 @@ def create_app() -> FastAPI:
     app.add_middleware(GZipMiddleware, minimum_size=1000)
     if settings.is_production:
         app.add_middleware(
-            TrustedHostMiddleware, allowed_hosts=["api.salesos.ng", "*.salesos.ng"]
+            TrustedHostMiddleware, allowed_hosts=["storeflowapi.servi-pal.com", "*.servi-pal.com"]
         )
 
     from app.middleware.csrf import CSRFTokenMiddleware

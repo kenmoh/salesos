@@ -94,6 +94,7 @@ def sale_confirmed_event(
             "sale_id": str(sale_id),
             "sale_number": sale_number,
             "total": total,
+            "tenant_id": str(tenant_id),
         },
     )
 

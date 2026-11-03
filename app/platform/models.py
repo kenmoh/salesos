@@ -126,6 +126,9 @@ class PlatformCommission(StoreFlowBase):
             to ``amount``.
         min_threshold: Minimum sale total for this rule to apply.
         max_pending_balance: Cash fee threshold before blocking (default 1000 NGN).
+        document_fee: Flat NGN charge booked on every document created
+            (quote, invoice, receipt, purchase order). 0 disables it. The
+            newest rule's value wins.
     """
 
     __tablename__ = "platform_commissions"
@@ -138,6 +141,7 @@ class PlatformCommission(StoreFlowBase):
     cash_amount: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
     min_threshold: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     max_pending_balance: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False, default=1000)
+    document_fee: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
@@ -164,6 +168,10 @@ class PlatformFeeLedger(StoreFlowBase):
     - pending: Fee not yet deducted
     - deducted: Fee deducted from tenant settlement
 
+    fee_category separates what a row bills for: "commission" is the share
+    of a sale's value, "document" is the flat rate charged per document
+    created. Both settle through the same settlement flow.
+
     Attributes:
         tenant_identifier: Reference to the tenant business.
         sale_identifier: Reference to the sale that generated this fee.
@@ -187,6 +195,7 @@ class PlatformFeeLedger(StoreFlowBase):
     document_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), nullable=True, index=True
     )
+    fee_category: Mapped[str] = mapped_column(String(20), nullable=False, default="commission")
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
     fee_type: Mapped[str] = mapped_column(String(10), nullable=False)
     rate: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)

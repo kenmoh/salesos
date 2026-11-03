@@ -28,7 +28,7 @@ class ApiSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    app_name: str = "SalesOS"
+    app_name: str = "StoreFlow"
     app_version: str = "0.1.0"
     env: Literal["development", "staging", "production"] = "development"
     debug: bool = False
@@ -88,7 +88,7 @@ class ApiSettings(BaseSettings):
     smtp_port: int = 587
     smtp_user: str = "noreply@salesos.ng"
     smtp_password: str = ""
-    email_from_name: str = "SalesOS"
+    email_from_name: str = "StoreFlow"
 
     resend_api_key: str = Field(default="", alias="RESEND_API_KEY")
     resend_from_email: str = Field(default="noreply@salesos.ng", alias="RESEND_FROM_EMAIL")
@@ -96,7 +96,7 @@ class ApiSettings(BaseSettings):
     logfire_token: str = Field(default="", alias="LOGFIRE_TOKEN")
 
     termii_api_key: str = Field(default="", alias="TERMII_API_KEY")
-    termii_from: str = Field(default="SalesOS", alias="TERMII_FROM")
+    termii_from: str = Field(default="StoreFlow", alias="TERMII_FROM")
     termii_base_url: str = Field(
         default="https://api.termii.com/api", alias="TERMII_BASE_URL"
     )
@@ -187,6 +187,9 @@ class ApiSettings(BaseSettings):
             missing.append("FLW_SECRET_KEY")
         if not self.database_url or "localhost" in self.database_url:
             missing.append("DATABASE_URL (must not be localhost)")
+
+        if not self.rabbitmq_url:
+            missing.append("RABBIT_MQ_URL")
 
         if missing:
             logger.critical(

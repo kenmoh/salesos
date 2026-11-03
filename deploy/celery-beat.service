@@ -1,0 +1,20 @@
+[Unit]
+Description=StoreFlow Celery Beat (scheduled tasks)
+After=network.target
+
+[Service]
+Type=simple
+User=salesos
+WorkingDirectory=/opt/salesos
+EnvironmentFile=/opt/salesos/.env
+ExecStartPre=/opt/salesos/.venv/bin/pip install -q -r requirements.txt
+ExecStart=/opt/salesos/.venv/bin/celery -A app.worker.celery_app beat \
+  --loglevel=info \
+  --hostname=beat.%h
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,9 +1,10 @@
-"""Two revenue paths earned the tenant money and nothing was booked for either.
+"""Documents are charged a flat rate per creation; sales pay a share.
 
-A converted document leaves its sale pending forever — nothing pays it — and the
-platform fee was only ever charged when a sale reached "completed", so the
-commission on that revenue was never taken. A standalone receipt is not a sale at
-all and escaped it likewise.
+Every document — quote, invoice, receipt or purchase order, draft or not —
+books the platform's flat ``document_fee`` at creation, so the charge cannot
+depend on the document's total or on what later becomes of it. Converted sales
+are merely sales: they are not booked a fee on conversion, and if one is ever
+completed through the payments module the normal sale commission applies.
 
 The same gap showed up in the tenant's own books: an unpaid sale produced no
 journal, so revenue and the receivable were both absent until payment. Sales are
@@ -33,26 +34,11 @@ def _session():
     return session
 
 
-class _Result:
-    def first(self):
-        return self._row
-
-    def scalar_one_or_none(self):
-        return self._row
-
-
-def _rows(session, mapping):
-    """Answer every execute() with the same single row."""
-    async def execute(*args, **kwargs):
-        return _Result()
-    session.execute = AsyncMock(side_effect=execute)
-    _Result._row = mapping
-
-
-class TestFeeOnBothPaths:
-    async def test_a_converted_sale_is_charged(self):
-        """A converted sale is never paid, so nothing would ever complete it and
-        the commission would never be taken."""
+class TestFeeOnDocuments:
+    async def test_a_converted_sale_is_not_charged(self):
+        """Conversion turns a document into a sale; the flat fee was already
+        taken at creation and the sale, if ever completed by a payment, is
+        charged as a sale like any other."""
         from app.common import bridge
 
         session = _session()
@@ -95,8 +81,8 @@ class TestFeeOnBothPaths:
                 ),
             ),
             patch(
-                "app.platform.fee_calculator.record_platform_fee",
-                AsyncMock(return_value={"platform_fee": 5.5}),
+                "app.platform.fee_calculator.book_document_fee",
+                AsyncMock(return_value=None),
             ) as charge,
         ):
             sdb.return_value.session.return_value = session
@@ -106,19 +92,11 @@ class TestFeeOnBothPaths:
                 cashier_id=str(uuid4()),
             )
 
-        charge.assert_awaited_once()
-        assert charge.await_args.kwargs["sale_id"] == SALE
-        assert charge.await_args.kwargs["total"] == 100.0
+        charge.assert_not_awaited()
 
-    async def test_a_fee_needs_a_sale_or_a_document(self):
-        from app.platform.fee_calculator import record_platform_fee
-
-        session = _session()
-        with pytest.raises(ValueError, match="sale or a document"):
-            await record_platform_fee(session, tenant_id=TENANT, total=100)
-
-    async def test_a_receipt_is_charged(self):
-        """A standalone receipt is revenue the tenant collected."""
+    async def test_every_document_is_charged_at_creation(self):
+        """A standalone receipt is one of the four types, and the flat fee is
+        taken when the document exists — not only when it leaves draft."""
         from app.common import bridge
 
         session = _session()
@@ -160,8 +138,12 @@ class TestFeeOnBothPaths:
                 AsyncMock(return_value=1000.0),
             ),
             patch(
-                "app.platform.fee_calculator.record_platform_fee",
-                AsyncMock(return_value={"platform_fee": 27.5}),
+                "app.platform.fee_calculator.get_document_fee",
+                AsyncMock(return_value=200.0),
+            ),
+            patch(
+                "app.platform.fee_calculator.book_document_fee",
+                AsyncMock(return_value={"platform_fee": 200.0}),
             ) as charge,
         ):
             sdb.return_value.session.return_value = session
@@ -175,9 +157,10 @@ class TestFeeOnBothPaths:
         charge.assert_awaited_once()
         assert charge.await_args.kwargs["document_id"] == doc.id
 
-    async def test_a_receipt_for_an_existing_sale_is_not_charged_again(self):
-        """It is a receipt *for* a sale that is charged when the sale completes;
-        charging again would bill the tenant twice for the same money."""
+    async def test_a_document_linked_to_a_sale_is_still_charged(self):
+        """A receipt written for an existing sale still costs its flat fee:
+        the fee bills the document's creation, while the sale it belongs to
+        is charged a share only when that sale completes."""
         from app.common import bridge
 
         session = _session()
@@ -217,8 +200,8 @@ class TestFeeOnBothPaths:
                 AsyncMock(return_value=1000.0),
             ),
             patch(
-                "app.platform.fee_calculator.record_platform_fee",
-                AsyncMock(return_value={"platform_fee": 27.5}),
+                "app.platform.fee_calculator.book_document_fee",
+                AsyncMock(return_value={"platform_fee": 200.0}),
             ) as charge,
         ):
             sdb.return_value.session.return_value = session
@@ -230,22 +213,8 @@ class TestFeeOnBothPaths:
                 linked_sale_id=str(doc.linked_sale_id),
             )
 
-        charge.assert_not_awaited()
-
-    async def test_a_second_fee_for_the_same_sale_is_refused(self):
-        """A converted sale charged on conversion must not be charged again when
-        it is later paid in full."""
-        from app.platform.fee_calculator import record_platform_fee
-
-        session = _session()
-        _rows(session, uuid4())  # an existing ledger row is found
-
-        result = await record_platform_fee(
-            session, tenant_id=TENANT, total=100.0, sale_id=SALE
-        )
-
-        assert result is None
-        session.add.assert_not_called()
+        charge.assert_awaited_once()
+        assert charge.await_args.kwargs["document_id"] == doc.id
 
 
 class TestUnpaidSalesAreBooked:

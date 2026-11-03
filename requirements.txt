@@ -26,3 +26,9 @@ langchain-core>=0.3.0
 langchain-groq>=0.2.0
 langchain-openai>=0.2.0
 langchain-anthropic>=0.2.0
+
+
+
+ cd /opt/storeflow sudo uv sync --frozen
+
+

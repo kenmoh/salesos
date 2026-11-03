@@ -7795,7 +7795,9 @@ async def record_payment(
 
         sale = await get_sale_by_id(session, UUID(sale_id))
         fee_result = None
+        was_completed = False
         if sale:
+            was_completed = sale.status == "completed"
             sale.amount_paid = float(sale.amount_paid) + float(amount)
             sale_balance = float(sale.total) - float(sale.amount_paid)
 
@@ -7831,6 +7833,24 @@ async def record_payment(
             reference=reference,
             gateway_reference=reference,
         )
+
+        if sale and sale.status == "completed" and not was_completed:
+            from app.common.events.outbox import OutboxWrite
+            from app.sales.events import sale_confirmed_event
+
+            outbox.append(
+                OutboxWrite(
+                    event=sale_confirmed_event(
+                        tenant_id=UUID(business_id),
+                        sale_id=UUID(sale_id),
+                        sale_number=sale.sale_number,
+                        total=str(sale.total),
+                    ),
+                    aggregate_type="sale",
+                    aggregate_id=str(sale.id),
+                )
+            )
+
         for write in outbox:
             session.add(write.to_model())
 
@@ -7920,6 +7940,7 @@ async def record_split_payment(
         if not sale:
             raise ValueError("sale_not_found")
 
+        was_completed = sale.status == "completed"
         total_batch = sum(Decimal(str(p["amount"])) for p in payments)
 
         results = []
@@ -7992,6 +8013,23 @@ async def record_split_payment(
                         ),
                     )
                     session.add(ledger)
+
+            if not was_completed:
+                from app.common.events.outbox import OutboxWrite
+                from app.sales.events import sale_confirmed_event
+
+                session.add(
+                    OutboxWrite(
+                        event=sale_confirmed_event(
+                            tenant_id=UUID(business_id),
+                            sale_id=UUID(sale_id),
+                            sale_number=sale.sale_number,
+                            total=str(sale.total),
+                        ),
+                        aggregate_type="sale",
+                        aggregate_id=str(sale.id),
+                    ).to_model()
+                )
 
         if sale:
             # Post the cash leg and draw down the receivable row, if the sale
@@ -9610,20 +9648,9 @@ async def convert_document_to_sale(
             correlation_id=correlation_id,
         )
 
-        # The platform's commission is booked when a sale completes, and a
-        # converted sale is never paid, so nothing would ever be charged for the
-        # revenue this document just earned. Charge it in the same transaction as
-        # the document update, and record_platform_fee refuses a second charge if
-        # the sale is later paid in full.
-        from app.platform.fee_calculator import record_platform_fee
-
-        await record_platform_fee(
-            session,
-            tenant_id=UUID(tenant_id),
-            total=float(doc.total or 0),
-            sale_id=UUID(sale_result["id"]),
-            payment_method="converted",
-        )
+        # The platform fees documents by flat rate at creation, not by share
+        # of total, so conversion owes nothing here. What the sale earns from
+        # here on is charged by the sale completion path like any other sale.
 
         await update_document_status(session, doc.id, "accepted")
         doc.linked_sale_id = UUID(sale_result["id"])
@@ -9769,20 +9796,16 @@ async def create_document(
         for write in outbox:
             session.add(write.to_model())
 
-        # A receipt is revenue the tenant has collected, so the platform earns
-        # its commission on it. One that is linked to an existing sale is a
-        # receipt *for* that sale, which is charged when the sale completes —
-        # charging again would bill the tenant twice for the same money.
-        if doc_model.doc_type == "receipt" and not doc_model.linked_sale_id:
-            from app.platform.fee_calculator import record_platform_fee
+        # Every document costs the tenant a flat rate at creation, whatever
+        # its type and whatever else happens to it later. The row lands as
+        # pending, joining the tenant's outstanding balance until settlement.
+        from app.platform.fee_calculator import book_document_fee
 
-            await record_platform_fee(
-                session,
-                tenant_id=UUID(tenant_id),
-                total=float(doc_model.total or 0),
-                document_id=doc_model.id,
-                payment_method="receipt",
-            )
+        await book_document_fee(
+            session,
+            tenant_id=UUID(tenant_id),
+            document_id=doc_model.id,
+        )
 
         await session.commit()
 
