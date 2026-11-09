@@ -519,3 +519,92 @@ def task_cleanup_in_app_notifications() -> dict:
         result["deleted_unread"],
     )
     return result
+
+
+@celery_app.task(name="app.worker.tasks.task_queue_health")
+def task_queue_health() -> dict:
+    """Probe broker queue depth/consumers and outbox backlog, emit Logfire
+    spans so alerts can fire on stalled queues or stranded messages."""
+    import asyncio
+    import base64
+    import json
+    import re
+    import urllib.request
+    from urllib.parse import quote
+
+    import logfire
+    from app.common.db.engine import create_service_database
+    from app.common.settings import get_common_settings
+    from sqlalchemy import text
+
+    settings = get_common_settings()
+    results: dict[str, object] = {}
+
+    # --- Broker side -------------------------------------------------------
+    queues: list[dict] = []
+    m = re.match(
+        r"amqps?://([^:]+):([^@]+)@([^:/]+)(?::(\d+))?/([^?]+)",
+        settings.rabbitmq_url or "",
+    )
+    if m:
+        user, pwd, host, _port, vhost = m.groups()
+        url = f"https://{host}/api/queues/{quote(vhost or '/', safe='')}"
+        try:
+            request = urllib.request.Request(url)
+            request.add_header(
+                "Authorization",
+                "Basic "
+                + base64.b64encode(f"{user}:{pwd}".encode()).decode(),
+            )
+            with urllib.request.urlopen(request, timeout=10) as resp:
+                queues = json.loads(resp.read().decode())
+        except Exception as exc:  # noqa: BLE001 - never crash the beat schedule
+            logger.error("Queue health probe failed: %s", exc)
+
+    target_queues = [
+        q
+        for q in queues
+        if q.get("name", "").endswith(".events")
+        or q.get("name") in ("celery", "analytics")
+    ]
+    for q in target_queues:
+        with logfire.span(
+            "queue.health",
+            queue=q.get("name"),
+            depth=int(q.get("messages") or 0),
+            ready=int(q.get("messages_ready") or 0),
+            unacked=int(q.get("messages_unacknowledged") or 0),
+            consumers=int(q.get("consumers") or 0),
+        ):
+            pass
+    results["queues_probed"] = len(target_queues)
+
+    # --- Outbox backlog (admin URL bypasses tenant RLS) ------------------
+    if settings.admin_database_url:
+        try:
+            sdb = create_service_database(settings.admin_database_url)
+
+            async def _probe():
+                async with sdb.session() as session:
+                    row = await session.execute(
+                        text(
+                            "SELECT count(*), coalesce(max(EXTRACT(epoch FROM (now() - created_at))), 0)"
+                            " FROM outbox_events WHERE status = 'pending'"
+                        )
+                    )
+                    count, oldest = row.first() or (0, 0)
+                    return int(count), float(oldest or 0)
+
+            pending, oldest = asyncio.run(_probe())
+            with logfire.span(
+                "outbox.monitor",
+                pending_count=pending,
+                oldest_pending_seconds=oldest,
+            ):
+                pass
+            results["pending_outbox"] = pending
+            results["oldest_pending_seconds"] = oldest
+        except Exception as exc:  # noqa: BLE001 - never crash the beat schedule
+            logger.error("Outbox health probe failed: %s", exc)
+
+    return results

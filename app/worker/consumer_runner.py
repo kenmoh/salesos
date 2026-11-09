@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.common.messagebus.consumer import EventConsumer
 from app.common.messagebus.setup import SERVICE_QUEUES
+from app.common.observability import configure_worker_telemetry
 from app.common.settings import get_common_settings
 
 from app.worker.handlers import apply_service_handlers
@@ -30,6 +31,8 @@ def _session_factory(schema: str) -> async_sessionmaker[AsyncSession]:
 
 
 async def main():
+    configure_worker_telemetry("event-consumer")
+
     if not settings.rabbitmq_url:
         raise SystemExit("RABBIT_MQ_URL is not set — cannot start event consumers")
 

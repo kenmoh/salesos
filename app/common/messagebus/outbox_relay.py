@@ -1,8 +1,10 @@
 import asyncio
 import logging
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
+import logfire
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -69,9 +71,15 @@ class OutboxRelay:
         )
         try:
             while self._running:
+                span: Any = None
                 try:
-                    await self._poll(session_factory)
+                    span = logfire.span("outbox.tick")
+                    with span:
+                        published = await self._poll(session_factory)
+                        span.set_attribute("published_count", published)
                 except Exception as exc:
+                    if span is not None:
+                        span.set_attribute("published_count", 0)
                     logger.error("Error polling outbox: %s", exc)
                 await asyncio.sleep(self.poll_interval)
         finally:
@@ -106,7 +114,7 @@ class OutboxRelay:
         except Exception as exc:
             logger.warning("SSE notify failed for %s: %s", envelope.event_type, exc)
 
-    async def _poll(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    async def _poll(self, session_factory: async_sessionmaker[AsyncSession]) -> int:
         async with session_factory() as session:
             async with session.begin():
                 result = await session.execute(
@@ -164,3 +172,5 @@ class OutboxRelay:
 
                 if events:
                     logger.info("Published %d outbox events", len(events))
+
+                return len(events)

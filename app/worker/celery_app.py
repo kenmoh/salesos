@@ -52,5 +52,14 @@ celery_app.conf.update(
             "task": "app.worker.tasks.task_cleanup_in_app_notifications",
             "schedule": crontab(minute=0, hour="*/1"),  # Every hour
         },
+        "queue-health": {
+            "task": "app.worker.tasks.task_queue_health",
+            "schedule": crontab(minute="*/5"),  # Every 5 minutes
+        },
     },
 )
+
+# Logfire telemetry for the workers (no-op when no write token configured)
+from app.common.observability import configure_worker_telemetry
+
+configure_worker_telemetry("celery-worker")

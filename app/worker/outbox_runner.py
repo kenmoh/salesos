@@ -9,6 +9,7 @@ import logging
 
 from app.common.messagebus.outbox_relay import OutboxRelay
 from app.common.messagebus.publisher import EventPublisher
+from app.common.observability import configure_worker_telemetry
 from app.common.settings import get_common_settings
 
 logging.basicConfig(
@@ -21,6 +22,8 @@ settings = get_common_settings()
 
 
 async def main():
+    configure_worker_telemetry("outbox-relay")
+
     if not settings.rabbitmq_url:
         raise SystemExit("RABBIT_MQ_URL is not set — cannot start outbox relay")
 

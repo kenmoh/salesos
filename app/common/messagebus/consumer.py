@@ -4,6 +4,7 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 
 import aio_pika
+import logfire
 from aio_pika.abc import AbstractIncomingMessage
 from app.common.events.envelope import EventEnvelope
 from app.common.events.inbox import InboxEvent
@@ -61,15 +62,30 @@ class EventConsumer:
             async with queue.iterator() as queue_iter:
                 async for message in queue_iter:
                     async with message.process(ignore_processed=True):
+                        span: Any = None
                         try:
-                            await self._handle_message(message)
+                            span = logfire.span(
+                                "event.consume",
+                                service=self.service_name,
+                                queue=self.queue_name,
+                            )
+                            with span:
+                                await self._handle_message(message)
+                                span.set_attribute("outcome", "processed")
                         except Exception:
+                            if span is not None:
+                                span.set_attribute("outcome", "failed")
                             # A failed event must not kill the runner: the
                             # process context acks the message and we keep
-                            # consuming. The failure is already logged in
-                            # _handle_message.
+                            # consuming.
                             logger.exception(
                                 "Dropping unprocessable event after handler failure"
+                            )
+                            logfire.span(
+                                "event.failed",
+                                service=self.service_name,
+                                queue=self.queue_name,
+                                outcome="runner-drop",
                             )
 
     async def stop(self) -> None:
@@ -81,6 +97,12 @@ class EventConsumer:
             envelope = EventEnvelope(**body)
         except Exception as exc:
             logger.error("Failed to parse event message: %s", exc)
+            logfire.span(
+                "event.failed",
+                service=self.service_name,
+                queue=self.queue_name,
+                outcome="parse-error",
+            )
             return
 
         async with self.database_session_factory() as session:
@@ -124,6 +146,14 @@ class EventConsumer:
                         logger.debug("Processed event %s", envelope.event_type)
                     except Exception as exc:
                         logger.error("Handler failed for event %s: %s", envelope.event_type, exc)
+                        logfire.span(
+                            "event.failed",
+                            service=self.service_name,
+                            queue=self.queue_name,
+                            event_id=str(envelope.event_id),
+                            event_type=envelope.event_type,
+                            outcome="handler-failed",
+                        )
                         raise
 
                 session.add(
