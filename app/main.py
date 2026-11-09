@@ -189,6 +189,10 @@ def create_app() -> FastAPI:
 
     app.include_router(notif_router, prefix=prefix)
 
+    from app.feedback.routes import router as feedback_router
+
+    app.include_router(feedback_router, prefix=prefix)
+
     # --- Health / Readiness ---
 
     @app.get("/health", tags=["System"], include_in_schema=False)
