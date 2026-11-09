@@ -271,6 +271,7 @@ def plan_commit_stock(
 def check_low_stock(
     balance: StockBalance,
     reorder_point: float,
+    product_name: str | None = None,
     correlation_id: str | None = None,
 ) -> list[OutboxWrite] | None:
     available = balance.qty - balance.reserved_qty
@@ -281,6 +282,7 @@ def check_low_stock(
         tenant_id=balance.tenant_id,
         product_id=balance.product_id,
         store_id=balance.store_id,
+        product_name=product_name,
         current_qty=str(available),
         reorder_point=str(threshold),
         correlation_id=correlation_id,

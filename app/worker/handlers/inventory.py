@@ -77,11 +77,15 @@ async def handle_sale_created(envelope: EventEnvelope, session: AsyncSession) ->
         # Evaluate low stock for the sale's store balance whether or not a
         # reservation could be placed (an oversold item is low stock too).
         product_row = await session.execute(
-            select(Product.reorder_point).where(Product.id == item.product_id)
+            select(Product.name, Product.reorder_point).where(
+                Product.id == item.product_id
+            )
         )
+        product_name, product_reorder_point = product_row.first() or (None, None)
         low_stock_outbox = check_low_stock(
             balance,
-            reorder_point=float(product_row.scalar() or 0),
+            reorder_point=float(product_reorder_point or 0),
+            product_name=product_name,
             correlation_id=envelope.correlation_id,
         )
         if low_stock_outbox:
