@@ -136,7 +136,9 @@ async def handle_user_created(envelope: EventEnvelope, session: AsyncSession) ->
 
 
 async def handle_low_stock_detected(envelope: EventEnvelope, session: AsyncSession) -> None:
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     product_name = envelope.payload.get("product_name", "Unknown")
     product_id = envelope.payload.get("product_id")
     current_qty = envelope.payload.get("current_qty", 0)

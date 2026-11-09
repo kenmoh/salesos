@@ -126,6 +126,7 @@ def low_stock_detected_event(
         actor_id=None,
         correlation_id=correlation_id,
         payload={
+            "tenant_id": str(tenant_id),
             "product_id": str(product_id),
             "store_id": str(store_id),
             "current_qty": current_qty,
