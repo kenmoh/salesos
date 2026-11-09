@@ -1,30 +1,62 @@
 # StoreFlow VM Deployment
-# ======================
-# Architecture:
-#   - FastAPI Cloud: web app only (HTTP)
-#   - Oracle VM (1 GB): Celery worker, outbox relay, event consumer, (+beat)
-#   - CloudAMQP: RabbitMQ broker (existing)
-#   - Cloud Redis: Celery backend + cache (existing)
-#   - Neon: Postgres (existing)
 
-# Prerequisites on Oracle VM:
-#   - Ubuntu 22.04 LTS
-#   - 1 GB RAM + 2 GB swap (see deploy/swap_setup.sh)
-#   - Outbound HTTPS to CloudAMQP, Cloud Redis, Neon
+Architecture:
 
-# Deployment steps (run on the VM):
-#   1. git clone <salesos-repo> /opt/salesos
-#   2. sudo bash /opt/salesos/deploy/deploy_vm.sh
-#   3. Edit /opt/salesos/.env with real credentials
-#   4. python3 -m venv /opt/salesos/.venv
-#   5. /opt/salesos/.venv/bin/pip install -r /opt/salesos/requirements.txt
-#   6. sudo systemctl enable --now celery-worker
-#   7. sudo systemctl enable --now outbox-relay
-#   8. sudo systemctl enable --now event-consumer
-#   9. (optional) sudo systemctl enable --now celery-beat
+- FastAPI Cloud: web app only (HTTP)
+- Oracle VM (1 GB, IP `130.162.165.234`, user `ubuntu`): Celery worker, beat, outbox relay, event consumer
+- CloudAMQP: RabbitMQ broker (existing)
+- Cloud Redis (Layerbase): Celery result backend + cache (existing)
+- Neon: Postgres (existing)
 
-# Verify:
-#   sudo journalctl -u celery-worker -f
-#   sudo journalctl -u outbox-relay -f
-#   sudo journalctl -u event-consumer -f
-#   free -m   # check swap is active
+## Repo on the VM
+
+```
+/opt/storeflow   (venv: /opt/storeflow/.venv, env: /opt/storeflow/.env)
+```
+
+SSH (from Windows):
+
+```
+ssh -i "C:/Users/kenne/Downloads/ssh-key-2026-11-03.key" ubuntu@130.162.165.234
+```
+
+## Deploy / update steps
+
+```
+cd /opt/storeflow
+git pull
+bash uv sync --frozen          # use: uv sync --frozen (uv in ~/.local/bin)
+sudo cp deploy/*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now celery-worker outbox-relay event-consumer celery-beat
+```
+
+One-shot alternative after a fresh clone:
+
+```
+sudo bash deploy/deploy_vm.sh
+```
+
+## .env notes
+
+- `CELERY_RESULT_BACKEND` must end with `?ssl_cert_reqs=CERT_NONE`
+  (redis-py refuses a bare `rediss://` URL — see the MITM warning in beat logs).
+- `RABBIT_MQ_URL` doubles as the Celery broker via alias `celery_broker_url`.
+
+## Watching logs
+
+On the VM:
+
+```
+bash deploy/watch.sh                  # status of all services + last lines
+bash deploy/watch.sh event-consumer   # follow one service
+```
+
+From Windows:
+
+```
+ssh -i "C:/Users/kenne/Downloads/ssh-key-2026-11-03.key" ubuntu@130.162.165.234 "cd /opt/storeflow && bash deploy/watch.sh"
+ssh -i "C:/Users/kenne/Downloads/ssh-key-2026-11-03.key" ubuntu@130.162.165.234 "sudo journalctl -u event-consumer -f"
+```
+
+Monitor memory with `free -m` (952 MB RAM + 2 GB swap; expect ~500 MB used).
