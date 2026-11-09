@@ -85,6 +85,7 @@ def plan_sale_creation(
     event = sale_created_event(
         tenant_id=command.tenant_id,
         sale_id=sale_id,
+        store_id=command.store_id,
         sale_number=sale_number,
         total=str(sale.total),
         cashier_id=command.cashier_id,

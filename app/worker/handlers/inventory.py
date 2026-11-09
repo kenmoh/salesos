@@ -12,6 +12,7 @@ Handlers:
 from decimal import Decimal
 from uuid import UUID, uuid4
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.events.envelope import EventEnvelope
@@ -28,10 +29,14 @@ async def handle_sale_created(envelope: EventEnvelope, session: AsyncSession) ->
         session: Database session for inventory operations.
     """
     sale_id = envelope.payload.get("sale_id")
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
+    store_id = envelope.payload.get("store_id")
     if not sale_id or not tenant_id:
         return
 
+    from app.catalog.models import Product
     from app.inventory.repository import (
         create_reservation,
         get_stock_balances_by_product,
@@ -41,41 +46,48 @@ async def handle_sale_created(envelope: EventEnvelope, session: AsyncSession) ->
     from app.sales.repository import get_sale_items
 
     # SaleItem has no RLS, so reading via the caller's event session (already
-    # scoped to the event's tenant) is correct. Creating a separate service
-    # session here broke: CommonSettings has no per-service URLs, and extra
-    # engines per event do nothing but pool waste.
+    # scoped to the event's tenant) is correct.
     sale_items = await get_sale_items(session, UUID(sale_id))
 
     for item in sale_items:
         balances = await get_stock_balances_by_product(session, item.product_id)
-        if balances:
-            balance = balances[0]
-            item_qty = item.qty if isinstance(item.qty, Decimal) else Decimal(str(item.qty))
-            available = balance.qty - balance.reserved_qty
-            if available >= item_qty:
-                reservation = StockReservation(
-                    id=uuid4(),
-                    tenant_id=UUID(tenant_id),
-                    product_id=item.product_id,
-                    store_id=balance.store_id,
-                    sale_id=UUID(sale_id),
-                    qty=item_qty,
-                    status="active",
-                )
-                balance.reserved_qty += item_qty
-                await create_reservation(session, reservation)
+        balance = None
+        if store_id:
+            balance = next((b for b in balances if str(b.store_id) == store_id), None)
+        if balance is None:
+            balance = balances[0] if balances else None
+        if not balance:
+            continue
 
-                # Check for low stock after reservation
-                low_stock_outbox = check_low_stock(
-                    balance,
-                    reorder_point=float(item.reorder_point) if hasattr(item, 'reorder_point') else 0,
-                    correlation_id=envelope.correlation_id,
-                )
-                if low_stock_outbox:
-                    # Write low stock event to outbox
-                    from app.common.events.outbox import OutboxWrite
-                    for outbox_event in low_stock_outbox:
-                        session.add(outbox_event.to_model())
+        item_qty = item.qty if isinstance(item.qty, Decimal) else Decimal(str(item.qty))
+        available = balance.qty - balance.reserved_qty
+        if available >= item_qty:
+            reservation = StockReservation(
+                id=uuid4(),
+                tenant_id=UUID(tenant_id),
+                product_id=item.product_id,
+                store_id=balance.store_id,
+                sale_id=UUID(sale_id),
+                qty=item_qty,
+                status="active",
+            )
+            balance.reserved_qty += item_qty
+            await create_reservation(session, reservation)
+
+        # Evaluate low stock for the sale's store balance whether or not a
+        # reservation could be placed (an oversold item is low stock too).
+        product_row = await session.execute(
+            select(Product.reorder_point).where(Product.id == item.product_id)
+        )
+        low_stock_outbox = check_low_stock(
+            balance,
+            reorder_point=float(product_row.scalar() or 0),
+            correlation_id=envelope.correlation_id,
+        )
+        if low_stock_outbox:
+            from app.common.events.outbox import OutboxWrite
+            for outbox_event in low_stock_outbox:
+                session.add(outbox_event.to_model())
 
     await session.flush()
 
@@ -91,7 +103,9 @@ async def handle_product_created(envelope: EventEnvelope, session: AsyncSession)
     """
     from sqlalchemy import text
 
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     product_id = envelope.payload.get("product_id")
     if not tenant_id or not product_id:
         return

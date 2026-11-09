@@ -275,7 +275,7 @@ def check_low_stock(
 ) -> list[OutboxWrite] | None:
     available = balance.qty - balance.reserved_qty
     threshold = max(reorder_point, balance.min_stock_level)
-    if available > 0 and available >= threshold:
+    if available > threshold:
         return None
     event = low_stock_detected_event(
         tenant_id=balance.tenant_id,

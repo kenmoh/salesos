@@ -28,6 +28,7 @@ def sale_created_event(
     *,
     tenant_id: UUID,
     sale_id: UUID,
+    store_id: UUID,
     sale_number: str,
     total: str,
     cashier_id: UUID,
@@ -39,6 +40,7 @@ def sale_created_event(
     Args:
         tenant_id: Business/tenant identifier.
         sale_id: Unique sale identifier.
+        store_id: Store the sale was made at.
         sale_number: Human-readable sale number.
         total: Sale total amount as string.
         cashier_id: User who created the sale.
@@ -55,6 +57,7 @@ def sale_created_event(
         correlation_id=correlation_id,
         payload={
             "sale_id": str(sale_id),
+            "store_id": str(store_id),
             "sale_number": sale_number,
             "total": total,
             "cashier_id": str(cashier_id),
