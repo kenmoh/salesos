@@ -7,7 +7,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/opt/storeflow
 EnvironmentFile=/opt/storeflow/.env
-ExecStart=/opt/storeflow/.venv/bin/celery -A app.worker.celery_app beat --loglevel=info --hostname=beat.%h
+ExecStart=/opt/storeflow/.venv/bin/celery -A app.worker.celery_app beat --loglevel=info
 Restart=always
 RestartSec=5
 StandardOutput=journal
