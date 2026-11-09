@@ -75,7 +75,9 @@ async def handle_document_status_changed(
     customer_name = envelope.payload.get("customer_name", "Unknown Customer")
     customer_id = envelope.payload.get("customer_id")
     due_date_str = envelope.payload.get("due_date")
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
 
     if not all([doc_type, new_status, document_id, tenant_id]):
         return

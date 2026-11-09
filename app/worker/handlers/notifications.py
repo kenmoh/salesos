@@ -76,7 +76,9 @@ async def _send_push_for_notification(
 
 
 async def handle_tenant_created(envelope: EventEnvelope, session: AsyncSession) -> None:
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     owner_email = envelope.payload.get("owner_email")
     business_name = envelope.payload.get("business_name")
     if not tenant_id or not owner_email:
@@ -106,7 +108,9 @@ async def handle_tenant_created(envelope: EventEnvelope, session: AsyncSession) 
 
 
 async def handle_user_created(envelope: EventEnvelope, session: AsyncSession) -> None:
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     email = envelope.payload.get("email")
     full_name = envelope.payload.get("full_name")
     if not tenant_id or not email:
@@ -199,7 +203,9 @@ async def handle_low_stock_detected(envelope: EventEnvelope, session: AsyncSessi
 
 async def handle_sale_confirmed(envelope: EventEnvelope, session: AsyncSession) -> None:
     """Send in-app + push notification when a sale is confirmed."""
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     sale_number = envelope.payload.get("sale_number", "")
     total = envelope.payload.get("total", 0)
     store_name = envelope.payload.get("store_name", "")
@@ -242,7 +248,9 @@ async def handle_sale_confirmed(envelope: EventEnvelope, session: AsyncSession) 
 
 async def handle_payment_received(envelope: EventEnvelope, session: AsyncSession) -> None:
     """Send in-app + push notification when payment is received."""
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     amount = envelope.payload.get("amount", 0)
     method = envelope.payload.get("method", "cash")
     sale_number = envelope.payload.get("sale_number", "")
@@ -285,7 +293,9 @@ async def handle_payment_received(envelope: EventEnvelope, session: AsyncSession
 
 async def handle_out_of_stock(envelope: EventEnvelope, session: AsyncSession) -> None:
     """Send in-app + push notification when a product is out of stock."""
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     product_name = envelope.payload.get("product_name", "Unknown")
     product_id = envelope.payload.get("product_id")
     if not tenant_id:

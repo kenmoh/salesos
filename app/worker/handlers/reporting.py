@@ -7,7 +7,9 @@ async def handle_sale_receipt_created(envelope: EventEnvelope, session: AsyncSes
     from app.reporting.repository import upsert_daily_summary
     from app.reporting.service import plan_upsert_daily_summary
 
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     total = envelope.payload.get("total")
     if not tenant_id or not total:
         return
@@ -43,7 +45,9 @@ async def handle_payment_succeeded(envelope: EventEnvelope, session: AsyncSessio
     from app.reporting.repository import upsert_payment_method_summary
     from app.reporting.service import plan_upsert_payment_method_summary
 
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     amount = envelope.payload.get("amount")
     method = envelope.payload.get("method", "unknown")
     if not tenant_id or not amount:
@@ -61,7 +65,9 @@ async def handle_stock_adjusted(envelope: EventEnvelope, session: AsyncSession) 
     """Update store inventory summary when stock is adjusted."""
     from sqlalchemy import text
 
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     store_id = envelope.payload.get("store_id")
     product_id = envelope.payload.get("product_id")
     if not tenant_id or not store_id or not product_id:
@@ -84,7 +90,9 @@ async def handle_stock_reserved(envelope: EventEnvelope, session: AsyncSession) 
     """Update reserved quantity in store inventory summary."""
     from sqlalchemy import text
 
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     store_id = envelope.payload.get("store_id")
     product_id = envelope.payload.get("product_id")
     qty = envelope.payload.get("qty", 0)
@@ -105,7 +113,9 @@ async def handle_stock_committed(envelope: EventEnvelope, session: AsyncSession)
     """Update committed quantity in store inventory summary."""
     from sqlalchemy import text
 
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     store_id = envelope.payload.get("store_id")
     product_id = envelope.payload.get("product_id")
     qty = envelope.payload.get("qty", 0)
@@ -124,9 +134,12 @@ async def handle_stock_committed(envelope: EventEnvelope, session: AsyncSession)
 
 async def handle_stock_released(envelope: EventEnvelope, session: AsyncSession) -> None:
     """Update released quantity in store inventory summary."""
-    from sqlalchemy import text
+    import logging
 
-    tenant_id = envelope.payload.get("tenant_id")
+    logger = logging.getLogger("storeflow.worker.reporting")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     store_id = envelope.payload.get("store_id")
     product_id = envelope.payload.get("product_id")
     qty = envelope.payload.get("qty", 0)
@@ -147,7 +160,9 @@ async def handle_journal_posted(envelope: EventEnvelope, session: AsyncSession) 
     """Update financial summaries when a journal entry is posted."""
     from sqlalchemy import text
 
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     store_id = envelope.payload.get("store_id")
     total_debit = envelope.payload.get("total_debit", 0)
     total_credit = envelope.payload.get("total_credit", 0)
@@ -186,6 +201,8 @@ async def handle_tier_changed(envelope: EventEnvelope, session: AsyncSession) ->
     """Update tenant tier in cache when tier changes."""
     import logging
     logger = logging.getLogger("storeflow.worker.reporting")
-    tenant_id = envelope.payload.get("tenant_id")
+    tenant_id = envelope.payload.get("tenant_id") or (
+        str(envelope.tenant_id) if envelope.tenant_id else None
+    )
     new_tier = envelope.payload.get("new_tier")
     logger.info("Tier changed for tenant %s: %s", tenant_id, new_tier)
