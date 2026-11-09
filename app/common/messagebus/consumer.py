@@ -8,7 +8,7 @@ from aio_pika.abc import AbstractIncomingMessage
 from app.common.events.envelope import EventEnvelope
 from app.common.events.inbox import InboxEvent
 from app.common.messagebus.publisher import EXCHANGE_NAME, EXCHANGE_TYPE
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 logger = logging.getLogger("storeflow.messagebus.consumer")
 
@@ -61,7 +61,16 @@ class EventConsumer:
             async with queue.iterator() as queue_iter:
                 async for message in queue_iter:
                     async with message.process(ignore_processed=True):
-                        await self._handle_message(message)
+                        try:
+                            await self._handle_message(message)
+                        except Exception:
+                            # A failed event must not kill the runner: the
+                            # process context acks the message and we keep
+                            # consuming. The failure is already logged in
+                            # _handle_message.
+                            logger.exception(
+                                "Dropping unprocessable event after handler failure"
+                            )
 
     async def stop(self) -> None:
         self._running = False
@@ -93,7 +102,15 @@ class EventConsumer:
                     },
                 )
 
-                already_processed = await session.get(InboxEvent, envelope.event_id)
+                # The inbox is keyed by (event_id, service_name): every
+                # consumer that subscribes to the same event tracks its own
+                # processing, so concurrent deliveries cannot collide.
+                already_processed = await session.scalar(
+                    select(InboxEvent).where(
+                        InboxEvent.event_id == envelope.event_id,
+                        InboxEvent.service_name == self.service_name,
+                    )
+                )
                 if already_processed:
                     logger.debug("Skipping duplicate event %s", envelope.event_id)
                     return
@@ -101,23 +118,18 @@ class EventConsumer:
                 handler = self._handlers.get(envelope.event_type)
                 if handler is None:
                     logger.debug("No handler for event type %s", envelope.event_type)
-                    inbox = InboxEvent(
-                        event_id=envelope.event_id,
-                        event_type=envelope.event_type,
-                    )
-                    session.add(inbox)
-                    await session.commit()
-                    return
+                else:
+                    try:
+                        await handler(envelope, session)
+                        logger.debug("Processed event %s", envelope.event_type)
+                    except Exception as exc:
+                        logger.error("Handler failed for event %s: %s", envelope.event_type, exc)
+                        raise
 
-                try:
-                    await handler(envelope, session)
-                    inbox = InboxEvent(
+                session.add(
+                    InboxEvent(
                         event_id=envelope.event_id,
+                        service_name=self.service_name,
                         event_type=envelope.event_type,
                     )
-                    session.add(inbox)
-                    await session.commit()
-                    logger.debug("Processed event %s", envelope.event_type)
-                except Exception as exc:
-                    logger.error("Handler failed for event %s: %s", envelope.event_type, exc)
-                    raise
+                )
