@@ -9,6 +9,7 @@ Handlers:
     - handle_product_created: Stub for future product sync
 """
 
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,31 +40,29 @@ async def handle_sale_created(envelope: EventEnvelope, session: AsyncSession) ->
     from app.inventory.service import check_low_stock
     from app.sales.repository import get_sale_items
 
-    from app.common.db.engine import create_service_database
-    from app.common.settings import get_common_settings
-
-    settings = get_common_settings()
-    sdb_sales = create_service_database(settings.database_url_sales)
-
-    async with sdb_sales.session() as sales_session:
-        sale_items = await get_sale_items(sales_session, UUID(sale_id))
+    # SaleItem has no RLS, so reading via the caller's event session (already
+    # scoped to the event's tenant) is correct. Creating a separate service
+    # session here broke: CommonSettings has no per-service URLs, and extra
+    # engines per event do nothing but pool waste.
+    sale_items = await get_sale_items(session, UUID(sale_id))
 
     for item in sale_items:
         balances = await get_stock_balances_by_product(session, item.product_id)
         if balances:
             balance = balances[0]
+            item_qty = item.qty if isinstance(item.qty, Decimal) else Decimal(str(item.qty))
             available = balance.qty - balance.reserved_qty
-            if available >= float(item.qty):
+            if available >= item_qty:
                 reservation = StockReservation(
                     id=uuid4(),
                     tenant_id=UUID(tenant_id),
                     product_id=item.product_id,
                     store_id=balance.store_id,
                     sale_id=UUID(sale_id),
-                    qty=float(item.qty),
+                    qty=item_qty,
                     status="active",
                 )
-                balance.reserved_qty += float(item.qty)
+                balance.reserved_qty += item_qty
                 await create_reservation(session, reservation)
 
                 # Check for low stock after reservation
