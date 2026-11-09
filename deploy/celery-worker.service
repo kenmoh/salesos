@@ -7,7 +7,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/opt/storeflow
 EnvironmentFile=/opt/storeflow/.env
-ExecStart=/opt/storeflow/.venv/bin/celery -A app.worker.celery_app worker --loglevel=info --pool=solo --concurrency=1 --without-mingle --without-gossip --hostname=worker.%h
+ExecStart=/opt/storeflow/.venv/bin/celery -A app.worker.celery_app worker --loglevel=info --pool=solo --concurrency=1 --without-mingle --without-gossip --hostname=worker.%h -Q celery,analytics
 Restart=always
 RestartSec=5
 StandardOutput=journal
