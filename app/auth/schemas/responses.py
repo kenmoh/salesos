@@ -129,6 +129,7 @@ class ProductCreatedForStore(_Base):
     sku: str | None = None
     selling_price: float = 0
     qty: float = 0
+    auto_calc_tax: bool = False
 
 
 class StoreProductListItem(_Base):
@@ -145,6 +146,7 @@ class StoreProductListItem(_Base):
     expiry_date: date | None = None
     expiry_warning_days: int | None = None
     block_sale_after_expiry: bool = False
+    auto_calc_tax: bool = False
     #: The taxes this product carries -- name, rate, account -- so a cart can
     #: show what it will be charged before the customer pays for it.
     taxes: list[dict] = []
@@ -181,6 +183,7 @@ class StockBalanceItem(_Base):
     available: float = 0
     min_stock_level: float = 0
     unit_cost: float | None = None
+    auto_calc_tax: bool = False
 
 
 class StockMovementItem(_Base):

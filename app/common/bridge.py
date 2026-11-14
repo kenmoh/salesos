@@ -2795,6 +2795,7 @@ async def create_product_for_store(
     cost_price: Decimal = Decimal("0"),
     selling_price: Decimal = Decimal("0"),
     tax_ids: list[str] | None = None,
+    auto_calc_tax: bool = False,
     reorder_point: int = 0,
     image_url: str | None = None,
     qty: float = 0,
@@ -2846,6 +2847,7 @@ async def create_product_for_store(
             expiry_date=expiry_date,
             expiry_warning_days=expiry_warning_days,
             block_sale_after_expiry=block_sale_after_expiry,
+            auto_calc_tax=auto_calc_tax,
         )
         session.add(product)
         await session.flush()
@@ -3212,6 +3214,7 @@ async def update_store_product(
         "reorder_point",
         "image_url",
         "status",
+        "auto_calc_tax",
     }
     catalog_values = {k: v for k, v in kwargs.items() if k in catalog_fields}
 
@@ -8435,6 +8438,10 @@ async def initiate_payment(
                 unit_price=float(snap["unit_price"]),
                 discount_pct=0.0,
                 taxes=list(product_taxes.get(str(item.product_id)) or []),
+                tax_inclusive=any(
+                    t.get("tax_inclusive")
+                    for t in product_taxes.get(str(item.product_id)) or []
+                ),
             )
             for item, snap in zip(raw_items, snapshot_items)
         ]

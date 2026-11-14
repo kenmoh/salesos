@@ -164,6 +164,7 @@ def plan_document_creation(
                 unit_price=float(i.unit_price),
                 discount_pct=float(i.discount_pct),
                 taxes=_line_taxes(i),
+                tax_inclusive=any(t.get("tax_inclusive") for t in _line_taxes(i)),
             )
             for i in command.items
         ]
@@ -204,9 +205,10 @@ def plan_document_creation(
 
     # Create line items
     items = []
-    for line, line_taxes, tax_rate, line_total in zip(
-        command.items, calc.line_taxes, calc.line_rates, calc.line_bases
+    for line, line_taxes, tax_rate, line_base, line_customer_total in zip(
+        command.items, calc.line_taxes, calc.line_rates, calc.line_bases, calc.line_totals
     ):
+        line_inclusive = any(t.get("tax_inclusive") for t in line_taxes)
         item = DocumentItem(
             id=uuid4(),
             document_id=doc_id,
@@ -217,7 +219,7 @@ def plan_document_creation(
             discount_pct=float(line.discount_pct),
             tax_rate=tax_rate if line_taxes else None,
             tax_breakdown=line_taxes or None,
-            line_total=line_total,
+            line_total=line_customer_total if line_inclusive else line_base,
         )
         items.append(item)
 

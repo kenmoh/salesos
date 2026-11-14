@@ -86,8 +86,16 @@ def upgrade():
     op.drop_table("inbox_events")
     op.rename_table("inbox_events_new", "inbox_events")
 
+    # Tax-inclusive selling price: products may opt into having their tax
+    # deducted from the selling price at sale time instead of added on top.
+    op.add_column(
+        "products",
+        sa.Column("auto_calc_tax", sa.Boolean(), nullable=False, server_default=sa.false()),
+    )
+
 
 def downgrade():
+    op.drop_column("products", "auto_calc_tax")
     op.create_table(
         "inbox_events_old",
         sa.Column("event_id", sa.UUID(), nullable=False),

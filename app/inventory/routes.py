@@ -193,6 +193,7 @@ async def create_product_for_store(store_id: str, payload: ProductCreateForStore
             cost_price=payload.cost_price,
             selling_price=payload.selling_price,
             tax_ids=[str(t) for t in payload.tax_ids],
+            auto_calc_tax=payload.auto_calc_tax,
             reorder_point=payload.reorder_point,
             image_url=payload.image_url,
             qty=payload.qty,

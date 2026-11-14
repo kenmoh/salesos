@@ -88,6 +88,10 @@ class Product(StoreFlowBase):
     tax_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     reorder_point: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     track_inventory: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    #: When true, selling_price is treated as tax-inclusive: tax is deducted
+    #: from the selling price at sale time so the customer still pays exactly
+    #: selling_price. Default False keeps tax exclusive (added on top).
+    auto_calc_tax: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     #: Optional best-before date; inventory screens flag rows past it.
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)

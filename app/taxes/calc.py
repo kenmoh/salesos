@@ -59,6 +59,9 @@ class TaxLine:
     unit_price: float
     discount_pct: float = 0.0
     taxes: list[dict] = field(default_factory=list)
+    #: When true, unit_price is treated as tax-inclusive: tax is deducted
+    #: from the price so the customer still pays exactly unit_price * qty.
+    tax_inclusive: bool = False
 
 
 @dataclass
@@ -76,6 +79,9 @@ class TaxComputation:
     #: What each line actually charges, after its own discount and its share of
     #: the cart discount, before tax. Summing these gives ``taxable``.
     line_bases: list[float]
+    #: What each line actually charges the customer for, after tax deduction
+    #: on inclusive lines. Summing these gives the customer-facing total.
+    line_totals: list[float]
 
 
 def _round(value: float) -> float:
@@ -152,13 +158,17 @@ def compute_taxes(
     line_tax_totals: list[float] = []
     line_rates: list[float] = []
     line_bases: list[float] = []
+    #: What each line actually charges the customer for, after any tax
+    #: deduction on inclusive lines. Exclusive lines charge base + tax.
+    line_totals: list[float] = []
 
     for line, gross, line_discount, share in zip(lines, grosses, line_discounts, shares):
-        base = max(gross - line_discount - share, 0.0)
-        line_bases.append(base)
+        gross_after_discount = max(gross - line_discount - share, 0.0)
 
         applied: list[dict] = []
         seen: set[str] = set()
+        total_rate = sum(float(t.get("rate") or 0) for t in (line.taxes or []))
+        denominator = 100 + total_rate if line.tax_inclusive else 100
         for tax in line.taxes or []:
             # The same tax assigned twice to one product must not charge twice.
             key = str(tax.get("id") or tax.get("name") or "")
@@ -167,19 +177,33 @@ def compute_taxes(
             seen.add(key)
 
             rate = float(tax.get("rate") or 0)
+            # Inclusive pricing splits the tax across the price-inclusive base:
+            # each tax is rate / (100 + sum of all rates) of the price.
+            amount = _round(gross_after_discount * rate / denominator)
             applied.append(
                 {
                     "id": tax.get("id"),
                     "name": str(tax.get("name") or "Tax"),
                     "rate": _round(rate),
-                    "amount": _round(base * rate / 100),
+                    "amount": _round(amount),
                     "account_code": account_for(tax),
                 }
             )
 
+        line_tax_total = _round(sum(t["amount"] for t in applied))
+        line_rate_total = _round(sum(t["rate"] for t in applied))
         line_taxes.append(applied)
-        line_tax_totals.append(_round(sum(t["amount"] for t in applied)))
-        line_rates.append(_round(sum(t["rate"] for t in applied)))
+        line_tax_totals.append(line_tax_total)
+        line_rates.append(line_rate_total)
+
+        if line.tax_inclusive:
+            # Customer pays exactly gross_after_discount; tax comes out of it.
+            line_bases.append(max(gross_after_discount - line_tax_total, 0.0))
+            line_totals.append(gross_after_discount)
+        else:
+            # Tax added on top of the price.
+            line_bases.append(gross_after_discount)
+            line_totals.append(gross_after_discount + line_tax_total)
 
     breakdown = group_tax_lines(tax for applied in line_taxes for tax in applied)
     line_discount_total = sum(line_discounts)
@@ -191,7 +215,8 @@ def compute_taxes(
         total_tax=_round(sum(line_tax_totals)),
         breakdown=breakdown,
         line_taxes=line_taxes,
-        line_tax_totals=line_tax_totals,
-        line_rates=line_rates,
+        line_tax_totals=list(line_tax_totals),
+        line_rates=list(line_rates),
         line_bases=[_round(b) for b in line_bases],
+        line_totals=[_round(t) for t in line_totals],
     )

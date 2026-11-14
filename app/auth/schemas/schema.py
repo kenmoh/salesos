@@ -118,6 +118,7 @@ class ProductCreateForStore(Base):
     expiry_date: date | None = None
     expiry_warning_days: int | None = Field(default=None, ge=0, le=3650)
     block_sale_after_expiry: bool = False
+    auto_calc_tax: bool = False
 
 
 class StoreProductUpdate(Base):
@@ -135,6 +136,7 @@ class StoreProductUpdate(Base):
     expiry_date: date | None = None
     expiry_warning_days: int | None = Field(default=None, ge=0, le=3650)
     block_sale_after_expiry: bool | None = None
+    auto_calc_tax: bool | None = None
 
 
 class StoreSyncResult(Base):

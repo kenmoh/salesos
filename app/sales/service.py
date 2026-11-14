@@ -39,6 +39,7 @@ def plan_sale_creation(
                 unit_price=float(line.unit_price),
                 discount_pct=float(line.discount_pct),
                 taxes=list(line.taxes or []),
+                tax_inclusive=any(t.get("tax_inclusive") for t in (line.taxes or [])),
             )
             for line in command.items
         ],
@@ -63,9 +64,10 @@ def plan_sale_creation(
     )
 
     items = []
-    for line, line_taxes, tax_rate, line_total in zip(
-        command.items, calc.line_taxes, calc.line_rates, calc.line_bases
+    for line, line_taxes, tax_rate, line_base, line_customer_total in zip(
+        command.items, calc.line_taxes, calc.line_rates, calc.line_bases, calc.line_totals
     ):
+        line_inclusive = any(t.get("tax_inclusive") for t in line_taxes)
         items.append(
             SaleItem(
                 id=uuid4(),
@@ -78,7 +80,7 @@ def plan_sale_creation(
                 tax_id=line.tax_id,
                 tax_rate=tax_rate if line_taxes else None,
                 tax_breakdown=line_taxes or None,
-                line_total=line_total,
+                line_total=line_customer_total if line_inclusive else line_base,
             )
         )
 

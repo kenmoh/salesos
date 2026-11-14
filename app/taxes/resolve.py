@@ -18,13 +18,14 @@ from app.catalog.models import Product
 from app.taxes.models import Tax
 
 
-def _entry(tax: Tax) -> dict:
+def _entry(tax: Tax, tax_inclusive: bool = False) -> dict:
     """The calculator's view of a tax: identity plus where the money is owed."""
     return {
         "id": str(tax.id),
         "name": tax.name,
         "rate": float(tax.rate),
         "account_code": tax.account_code or "2400",
+        "tax_inclusive": bool(tax_inclusive),
     }
 
 
@@ -59,7 +60,7 @@ async def product_tax_map(
 
     rows = (
         await session.execute(
-            select(Product.id, Product.tax_ids).where(
+            select(Product.id, Product.auto_calc_tax, Product.tax_ids).where(
                 Product.tenant_id == tenant_id,
                 Product.id.in_(unique),
             )
@@ -67,15 +68,21 @@ async def product_tax_map(
     ).all()
 
     assigned: dict[UUID, list[UUID]] = {}
+    inclusive: dict[UUID, bool] = {}
     wanted: set[UUID] = set()
-    for product_id, tax_ids in rows:
+    for product_id, auto_calc_tax, tax_ids in rows:
         ids = [UUID(str(t)) for t in (tax_ids or [])]
         assigned[product_id] = ids
+        inclusive[product_id] = bool(auto_calc_tax)
         wanted.update(ids)
 
     active = await _active_taxes(session, tenant_id, wanted)
     return {
-        str(pid): [_entry(active[tid]) for tid in ids if tid in active]
+        str(pid): [
+            _entry(active[tid], tax_inclusive=inclusive[pid])
+            for tid in ids
+            if tid in active
+        ]
         for pid, ids in assigned.items()
     }
 

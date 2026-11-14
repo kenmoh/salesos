@@ -570,7 +570,7 @@ class TestResolverReadsTheProductNotTheRequest:
 
         class Result:
             def all(self):
-                return [(pid, [])]
+                return [(pid, False, [])]
 
         session = MagicMock()
         session.execute = AsyncMock(return_value=Result())
@@ -581,3 +581,63 @@ class TestResolverReadsTheProductNotTheRequest:
         assert tax_map == {str(pid): []}
         # No assignment means no tax query either.
         assert session.execute.await_count == 1
+
+
+class TestTaxInclusivePricing:
+    """With auto_calc_tax, the selling price already includes tax; the
+    calculator deducts it so the customer still pays exactly sticker price."""
+
+    def test_price_inclusive_vat_deducts_tax_from_sticker_price(self):
+        calc = compute_taxes([
+            TaxLine(qty=1, unit_price=180000, taxes=[dict(VAT, rate=7.5)], tax_inclusive=True)
+        ])
+
+        assert calc.subtotal == 180000
+        assert calc.total_tax == 12558.14
+        assert calc.taxable == 167441.86
+        assert calc.taxable + calc.total_tax == 180000
+        assert calc.line_totals[0] == 180000
+
+        names = {t["name"]: t for t in calc.breakdown}
+        assert names["VAT"]["amount"] == 12558.14
+        assert names["VAT"]["account_code"] == "2300"
+
+    def test_two_inclusive_taxes_prorate_by_rate(self):
+        calc = compute_taxes([
+            TaxLine(qty=1, unit_price=10000, taxes=[
+                dict(VAT, rate=7.5), dict(CONSUMPTION, rate=5.0)
+            ], tax_inclusive=True)
+        ])
+
+        assert calc.total_tax == 1111.11
+        assert calc.taxable == 8888.89
+        assert calc.taxable + calc.total_tax == 10000
+        assert calc.line_totals[0] == 10000
+
+    def test_line_discount_comes_off_before_split(self):
+        calc = compute_taxes([
+            TaxLine(qty=1, unit_price=10000, discount_pct=10, taxes=[dict(VAT, rate=7.5)], tax_inclusive=True)
+        ])
+
+        assert calc.total_tax == 627.91
+        assert calc.taxable == 8372.09
+        assert calc.line_totals[0] == 9000
+
+    def test_exclusive_behavior_is_unchanged(self):
+        calc = compute_taxes([
+            TaxLine(qty=1, unit_price=180000, taxes=[dict(VAT, rate=7.5)], tax_inclusive=False)
+        ])
+
+        assert calc.subtotal == 180000
+        assert calc.total_tax == 13500
+        assert calc.taxable == 180000
+        assert calc.line_totals[0] == 193500
+
+    def test_default_is_exclusive(self):
+        calc = compute_taxes([
+            TaxLine(qty=1, unit_price=180000, taxes=[dict(VAT, rate=7.5)])
+        ])
+
+        assert calc.total_tax == 13500
+        assert calc.taxable == 180000
+        assert calc.line_totals[0] == 193500
