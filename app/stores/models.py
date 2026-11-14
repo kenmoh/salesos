@@ -111,6 +111,7 @@ class StoreProduct(StoreFlowBase):
     reorder_point: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
+    auto_calc_tax: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     extra_metadata: Mapped[dict | None] = mapped_column(
         "metadata", JSON, nullable=True, default=dict
     )

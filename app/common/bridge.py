@@ -2867,6 +2867,7 @@ async def create_product_for_store(
             reorder_point=reorder_point,
             image_url=image_url,
             status="active",
+            auto_calc_tax=auto_calc_tax,
         )
         session.add(store_product)
         await session.commit()

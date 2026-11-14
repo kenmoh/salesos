@@ -92,10 +92,15 @@ def upgrade():
         "products",
         sa.Column("auto_calc_tax", sa.Boolean(), nullable=False, server_default=sa.false()),
     )
+    op.add_column(
+        "store_products",
+        sa.Column("auto_calc_tax", sa.Boolean(), nullable=False, server_default=sa.false()),
+    )
 
 
 def downgrade():
     op.drop_column("products", "auto_calc_tax")
+    op.drop_column("store_products", "auto_calc_tax")
     op.create_table(
         "inbox_events_old",
         sa.Column("event_id", sa.UUID(), nullable=False),
