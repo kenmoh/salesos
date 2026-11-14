@@ -1028,3 +1028,171 @@ async def get_pending_events(
 
 async def get_pending_event_count(*, session: AsyncSession, business_id: str) -> int:
     return await call_scalar(session, "api.fn_pending_event_count", p_bid=business_id) or 0
+
+
+# ── Offline Sync Extensions ───────────────────────────────────────────────────
+
+from uuid import UUID as PyUUID
+
+ENTITY_TABLES = {
+    "stores": "stores",
+    "store_products": "store_products",
+    "products": "products",
+    "categories": "categories",
+    "sales": "sales",
+    "sale_items": "sale_items",
+    "stock_balances": "stock_balances",
+    "customers": "customers",
+}
+
+
+async def get_data_snapshot(
+    *,
+    session: AsyncSession,
+    business_id: str,
+    entity_types: list[str] | None = None,
+    since: datetime | None = None,
+) -> dict:
+    """Return a full data snapshot for initial sync or incremental refresh.
+
+    Queries the raw tables for the requested entity types, filtered by
+    tenant (business_id).  If *since* is provided only rows with
+    ``updated_at >= since`` are returned.
+    """
+    if entity_types is None:
+        entity_types = list(ENTITY_TABLES.keys())
+
+    entities = []
+    for etype in entity_types:
+        table = ENTITY_TABLES.get(etype)
+        if not table:
+            continue
+
+        cols = "*"
+        if since:
+            rows_result = await session.execute(
+                text(
+                    f"SELECT {cols} FROM {table} "
+                    f"WHERE tenant_id = :bid AND updated_at >= :since"
+                ),
+                {"bid": PyUUID(business_id), "since": since},
+            )
+        else:
+            rows_result = await session.execute(
+                text(
+                    f"SELECT {cols} FROM {table} WHERE tenant_id = :bid"
+                ),
+                {"bid": PyUUID(business_id)},
+            )
+
+        keys = list(rows_result.keys())
+        for row in rows_result.fetchall():
+            d = dict(zip(keys, row))
+            entities.append(
+                {
+                    "entity_type": etype,
+                    "id": str(d.get("id", "")),
+                    "data": {k: v for k, v in d.items() if k not in ("id", "tenant_id")},
+                    "version": 1,
+                    "updated_at": d.get("updated_at"),
+                }
+            )
+
+    cursor = datetime.now(UTC).isoformat()
+    return {"entities": entities, "cursor": cursor, "total": len(entities)}
+
+
+async def full_sync(
+    *,
+    session: AsyncSession,
+    business_id: str,
+    user_id: str,
+    events: list[dict],
+    last_cursor: str | None = None,
+) -> dict:
+    """Process client events and return server events since the last cursor.
+
+    Combines ``process_sync_batch`` and ``get_pending_events`` in a single
+    round-trip so the client can push and pull in one call.
+    """
+    # Process incoming client events
+    batch_result = await process_sync_batch(
+        session=session,
+        business_id=business_id,
+        user_id=user_id,
+        events=events,
+    )
+
+    # Fetch server events since last cursor
+    if last_cursor:
+        try:
+            since_dt = datetime.fromisoformat(last_cursor.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            since_dt = datetime.fromisoformat("1970-01-01T00:00:00Z")
+    else:
+        since_dt = datetime.fromisoformat("1970-01-01T00:00:00Z")
+
+    pending = await get_pending_events(
+        session=session,
+        business_id=business_id,
+        since=since_dt,
+        limit=500,
+    )
+
+    # Build cursor from the latest event timestamp
+    cursor = pending.get("cursor") or datetime.now(UTC).isoformat()
+
+    return {
+        "processed": len(batch_result.get("applied", [])),
+        "failed": len(batch_result.get("failed", [])),
+        "errors": batch_result.get("errors", []),
+        "server_events": pending.get("events", []),
+        "cursor": str(cursor),
+    }
+
+
+async def get_sync_cursor(
+    *, session: AsyncSession, business_id: str, device_id: str
+) -> dict:
+    """Retrieve the last sync cursor for a device."""
+    rows = await session.execute(
+        text(
+            "SELECT last_cursor, updated_at FROM sync_cursors "
+            "WHERE tenant_id = :bid AND device_id = :did"
+        ),
+        {"bid": PyUUID(business_id), "did": device_id},
+    )
+    row = rows.fetchone()
+    if row:
+        return {
+            "device_id": device_id,
+            "last_cursor": row[0] or "",
+            "updated_at": row[1],
+        }
+    return {"device_id": device_id, "last_cursor": "", "updated_at": None}
+
+
+async def update_sync_cursor(
+    *, session: AsyncSession, business_id: str, device_id: str, last_cursor: str
+) -> dict:
+    """Store or update the last sync cursor for a device."""
+    now = datetime.now(UTC)
+    await session.execute(
+        text(
+            "INSERT INTO sync_cursors (tenant_id, device_id, last_cursor, updated_at) "
+            "VALUES (:bid, :did, :cursor, :now) "
+            "ON CONFLICT (tenant_id, device_id) "
+            "DO UPDATE SET last_cursor = :cursor, updated_at = :now"
+        ),
+        {
+            "bid": PyUUID(business_id),
+            "did": device_id,
+            "cursor": last_cursor,
+            "now": now,
+        },
+    )
+    return {
+        "device_id": device_id,
+        "last_cursor": last_cursor,
+        "updated_at": now,
+    }

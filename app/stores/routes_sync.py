@@ -6,12 +6,22 @@ from sqlalchemy import select
 
 from app.core.dependencies import DbTenantDep, require_permission
 from app.core.responses import DataResponse, ok
-from app.auth.schemas.schema import BusinessUpdate, SyncBatch, SyncTriggerResult
+from app.auth.schemas.schema import (
+    BusinessUpdate,
+    FullSyncRequest,
+    SyncBatch,
+    SyncCursorUpdate,
+    SyncSnapshotRequest,
+    SyncTriggerResult,
+)
 from app.auth.schemas.responses import (
     BusinessSettings,
+    FullSyncResult,
     PermissionDetail,
     SyncBatchResult,
+    SyncCursorResult,
     SyncPendingItem,
+    SyncSnapshotResult,
 )
 from app.common import services
 
@@ -242,3 +252,89 @@ async def update_business_permissions(payload: dict[str, bool], ctx: DbTenantDep
         )
     await ctx.session.commit()
     return ok(payload)
+
+
+# ── Offline Sync Extensions ───────────────────────────────────────────────────
+
+
+@sync_router.get(
+    "/sync/snapshot",
+    response_model=DataResponse[SyncSnapshotResult],
+    dependencies=[Depends(require_permission("sync:read"))],
+)
+async def sync_snapshot(
+    ctx: DbTenantDep,
+    entity_types: str | None = Query(default=None, description="Comma-separated list of entity types"),
+    since: str | None = Query(default=None, description="ISO 8601 timestamp for incremental sync"),
+):
+    """Return a full data snapshot for initial sync or incremental refresh."""
+    types_list = None
+    if entity_types:
+        types_list = [t.strip() for t in entity_types.split(",") if t.strip()]
+
+    since_dt = None
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid 'since' format. Use ISO 8601.")
+
+    result = await services.get_data_snapshot(
+        session=ctx.session,
+        business_id=ctx.user.business_id,
+        entity_types=types_list,
+        since=since_dt,
+    )
+    return ok(result)
+
+
+@sync_router.post(
+    "/sync/full",
+    response_model=DataResponse[FullSyncResult],
+    dependencies=[Depends(require_permission("sync:read"))],
+)
+async def sync_full(payload: FullSyncRequest, ctx: DbTenantDep):
+    """Comprehensive sync: push client events and pull server events in one call."""
+    result = await services.full_sync(
+        session=ctx.session,
+        business_id=ctx.user.business_id,
+        user_id=ctx.user.user_id,
+        events=[e.model_dump() for e in payload.events],
+        last_cursor=payload.last_cursor,
+    )
+    return ok(result)
+
+
+@sync_router.get(
+    "/sync/cursor",
+    response_model=DataResponse[SyncCursorResult],
+    dependencies=[Depends(require_permission("sync:read"))],
+)
+async def get_sync_cursor(
+    ctx: DbTenantDep,
+    device_id: str = Query(..., description="Unique device identifier"),
+):
+    """Retrieve the last sync cursor for a device."""
+    result = await services.get_sync_cursor(
+        session=ctx.session,
+        business_id=ctx.user.business_id,
+        device_id=device_id,
+    )
+    return ok(result)
+
+
+@sync_router.put(
+    "/sync/cursor",
+    response_model=DataResponse[SyncCursorResult],
+    dependencies=[Depends(require_permission("sync:read"))],
+)
+async def update_sync_cursor_route(payload: SyncCursorUpdate, ctx: DbTenantDep):
+    """Store or update the last sync cursor for a device."""
+    result = await services.update_sync_cursor(
+        session=ctx.session,
+        business_id=ctx.user.business_id,
+        device_id=payload.device_id,
+        last_cursor=payload.last_cursor,
+    )
+    await ctx.session.commit()
+    return ok(result)

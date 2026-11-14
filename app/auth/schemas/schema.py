@@ -376,3 +376,25 @@ class DateRangeParams(Base):
     from_date: datetime
     to_date: datetime
     group_by: str = "day"
+
+
+# ── Offline Sync Extensions ───────────────────────────────────────────────────
+
+
+class SyncSnapshotRequest(Base):
+    """Request for full data snapshot — used on first launch or full resync."""
+    entity_types: list[str] | None = None
+    since: datetime | None = None
+
+
+class FullSyncRequest(Base):
+    """Comprehensive sync: client sends pending events + last cursor, server returns processed results + server events."""
+    events: list[SyncEvent] = Field(default_factory=list)
+    last_cursor: str | None = None
+    device_id: str | None = None
+
+
+class SyncCursorUpdate(Base):
+    """Update last sync cursor for a device/session."""
+    device_id: str
+    last_cursor: str

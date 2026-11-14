@@ -1041,3 +1041,38 @@ class ScannedProduct(_Base):
     selling_price: float = 0
     store_id: str | None = None
     stock_qty: float | None = None
+
+
+# ── Offline Sync Extensions ──────────────────────────────────────────────────
+
+
+class SyncEntityItem(_Base):
+    """Single entity record in a snapshot."""
+    entity_type: str
+    id: str
+    data: dict
+    version: int = 1
+    updated_at: datetime | None = None
+
+
+class SyncSnapshotResult(_Base):
+    """Full data snapshot for initial sync."""
+    entities: list[SyncEntityItem] = []
+    cursor: str = ""
+    total: int = 0
+
+
+class FullSyncResult(_Base):
+    """Comprehensive sync result: processed client events + server events since cursor."""
+    processed: int = 0
+    failed: int = 0
+    errors: list[dict] = []
+    server_events: list[SyncPendingItem] = []
+    cursor: str = ""
+
+
+class SyncCursorResult(_Base):
+    """Sync cursor status for a device."""
+    device_id: str
+    last_cursor: str = ""
+    updated_at: datetime | None = None
