@@ -307,9 +307,8 @@ def _bridge_kwargs():
                 },
                 "transfer": {
                     "amount": 3000.0,
-                    "payment_url": "https://checkout.flutterwave.com/...",
-                    "tx_ref": "SF-TRF-XXX",
-                    "status": "pending",
+                    "payment_id": str(uuid4()),
+                    "status": "completed",
                 },
                 "sale_status": "partial",
                 "amount_paid": 3000.0,
@@ -328,18 +327,16 @@ def _bridge_kwargs():
                 "status": "pending",
             }
         ),
-        initiate_transfer_payment=AsyncMock(
+        record_transfer_payment=AsyncMock(
             return_value={
+                "payment_id": str(uuid4()),
                 "sale_id": str(uuid4()),
-                "account_number": "9755152912",
-                "bank_name": "Flutterwave MFB",
+                "method": "transfer",
                 "amount": 5000.0,
-                "tx_ref": "SF-TRF-XXX",
-                "transfer_reference": "REF123",
-                "account_expiration": "2026-08-26 12:00:00",
-                "transfer_note": "Payment for sale",
-                "instructions": "Transfer exactly NGN 5,000.00 to Flutterwave MFB account 9755152912.",
-                "status": "pending",
+                "status": "completed",
+                "total": 5000.0,
+                "amount_paid": 5000.0,
+                "balance": 0.0,
             }
         ),
     )
@@ -862,19 +859,14 @@ class TestPayments:
             json={
                 "sale_id": "00000000-0000-0000-0000-000000000001",
                 "amount": 5000,
-                "customer_email": "c@c.com",
-                "customer_name": "Test Customer",
             },
         )
         assert resp.status_code == 200
         data = resp.json()
         assert "data" in data
-        assert "account_number" in data["data"]
-        assert "bank_name" in data["data"]
-        assert "tx_ref" in data["data"]
         assert data["data"]["method"] == "transfer"
         assert data["data"]["amount"] == 5000.0
-        assert data["data"]["status"] == "pending"
+        assert data["data"]["status"] == "completed"
 
     async def test_suggest_split(self, client):
         resp = await client.get(f"{self.ROUTE}/split/suggest/00000000-0000-0000-0000-000000000001")

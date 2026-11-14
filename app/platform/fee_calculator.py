@@ -71,7 +71,7 @@ def sale_fee_base(sale) -> float:
 # Payment methods whose money arrives without an external processor. The full
 # rate bundles the processor's share, which these collections never incurred,
 # so they are charged the platform-only rate (rule.cash_amount) instead.
-NO_PROCESSOR_METHODS = frozenset({"cash", "document"})
+NO_PROCESSOR_METHODS = frozenset({"cash", "transfer", "document"})
 
 
 def rate_for_rule(rule, method: str | None) -> Decimal:

@@ -45,7 +45,7 @@ class CardPaymentInit(BaseModel):
 class TransferPaymentInit(BaseModel):
     sale_id: str
     amount: Decimal
-    customer_email: str
+    customer_email: str | None = None
     customer_name: str | None = None
 
 
@@ -121,12 +121,12 @@ async def card(payload: CardPaymentInit, ctx: TenantDep):
 )
 async def transfer(payload: TransferPaymentInit, ctx: TenantDep):
     return ok(
-        await bridge.initiate_transfer_payment(
+        await bridge.record_transfer_payment(
             business_id=ctx.user.business_id,
             sale_id=str(payload.sale_id),
             amount=payload.amount,
-            customer_email=payload.customer_email,
-            customer_name=payload.customer_name,
+            reference=None,
+            recorded_by=ctx.user.user_id,
         )
     )
 

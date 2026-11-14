@@ -108,6 +108,7 @@ def group_tax_lines(entries) -> list[dict]:
                 "rate": rate,
                 "amount": _round(float(tax.get("amount") or 0)),
                 "account_code": str(tax.get("account_code") or ""),
+                "tax_inclusive": bool(tax.get("tax_inclusive")),
             }
         else:
             entry["amount"] = _round(entry["amount"] + float(tax.get("amount") or 0))
@@ -187,6 +188,7 @@ def compute_taxes(
                     "rate": _round(rate),
                     "amount": _round(amount),
                     "account_code": account_for(tax),
+                    "tax_inclusive": bool(line.tax_inclusive),
                 }
             )
 

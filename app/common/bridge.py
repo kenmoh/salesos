@@ -7875,7 +7875,7 @@ async def record_payment(
                 fee_type=fee_result["fee_type"],
                 rate=fee_result["rate"],
                 payment_method=method,
-                status="deducted" if method in ("card", "transfer") else "pending",
+                status="deducted" if method in ("card",) else "pending",
             )
             session.add(ledger)
 
@@ -8239,78 +8239,48 @@ async def initiate_card_payment(
     }
 
 
-async def initiate_transfer_payment(
+async def record_transfer_payment(
     *,
     business_id: str,
     sale_id: str,
     amount: Decimal,
-    customer_email: str,
-    customer_name: str | None = None,
+    reference: str | None = None,
+    recorded_by: str | None = None,
 ) -> dict:
-    """Initiate a bank transfer payment for a sale via Flutterwave DVA.
+    """Record a manual bank transfer payment against a sale.
 
-    Creates a dynamic virtual account tied to the sale amount and tx_ref.
-    The customer transfers the exact amount and Flutterwave automatically
-    reconciles via the tx_ref — no manual reference entry needed.
+    The customer transfers the exact amount to the tenant's own bank account
+    (displayed by the tenant, not a Flutterwave virtual account). The cashier
+    records the payment here — exactly like a cash payment — so the sale is
+    completed immediately and the platform fee is charged at the platform-only
+    rate (transfer has no external processor).
 
     Args:
         business_id: Unique identifier of the tenant processing the payment.
         sale_id: Unique identifier of the sale to collect payment for.
-        amount: Amount to charge via bank transfer.
-        customer_email: Tenant owner's email address for the DVA.
-        customer_name: Optional name of the customer.
+        amount: Amount received via bank transfer.
+        reference: Optional transfer reference from the tenant's records.
+        recorded_by: Identifier of the cashier recording the payment.
 
     Returns:
-        A dictionary containing ``payment_id``, ``sale_id``, ``account_number``,
-        ``bank_name``, ``amount``, ``tx_ref``, ``expiry_date``, and
-        ``status: "pending"``.
+        A dictionary containing ``payment_id``, ``sale_id``, ``amount``,
+        ``method``, ``status: "completed"``, ``total``, ``amount_paid`` and
+        ``balance``.
 
     Raises:
         ValueError: If the sale is not found.
     """
-    from app.sales.repository import get_sale_by_id
-    from app.payments.models import PaymentIntent
-    from app.payments.repository import create_intent
-
-    sdb = _get_sdb("payments")
-    async with sdb.session() as session:
-        sale = await get_sale_by_id(session, UUID(sale_id))
-        if not sale:
-            raise ValueError("sale_not_found")
-
-        tx_ref = f"SF-TRF-{uuid4().hex[:12].upper()}"
-
-        dva_result = await flutterwave_service.create_dynamic_virtual_account(
-            amount=amount,
-            email=customer_email,
-            tx_ref=tx_ref,
-        )
-
-        intent = PaymentIntent(
-            id=uuid4(),
-            tenant_id=UUID(business_id),
-            sale_id=UUID(sale_id),
-            method="transfer",
-            amount=float(amount),
-            currency="NGN",
-            status="pending",
-            gateway_reference=tx_ref,
-            dva_account_number=dva_result["account_number"],
-            bank_name=dva_result["bank_name"],
-            intent_metadata=str(dva_result),
-        )
-        await create_intent(session, intent)
-        await session.commit()
-
+    result = await record_payment(
+        business_id=business_id,
+        sale_id=sale_id,
+        method="transfer",
+        amount=amount,
+        reference=reference,
+        recorded_by=recorded_by,
+    )
     return {
-        "payment_id": str(intent.id),
-        "sale_id": sale_id,
-        "account_number": dva_result["account_number"],
-        "bank_name": dva_result["bank_name"],
-        "amount": float(amount),
-        "tx_ref": tx_ref,
-        "expiry_date": dva_result.get("expiry_date", ""),
-        "status": "pending",
+        **result,
+        "status": result.pop("payment_status"),
     }
 
 
@@ -8521,88 +8491,11 @@ async def initiate_payment(
         })
 
     elif method == "transfer":
-        dva_result = await flutterwave_service.create_dynamic_virtual_account(
-            amount=final_total,
-            email=customer_email,
-            tx_ref=tx_ref,
-        )
-
-        async with sdb_payments.session() as session:
-            db_intent = await session.get(PaymentIntent, intent.id)
-            if db_intent:
-                db_intent.dva_account_number = dva_result["account_number"]
-                db_intent.dva_account_name = dva_result.get("account_name", "")
-                db_intent.bank_name = dva_result["bank_name"]
-                await session.commit()
-
-        result.update({
-            "account_number": dva_result["account_number"],
-            "bank_name": dva_result["bank_name"],
-            "expiry_date": dva_result.get("expiry_date", ""),
-        })
-
-        # A QR of the hosted details page lets the customer copy the account
-        # number on their own phone instead of reading it off the till.
-        business_name = ""
-        store_name = ""
-        try:
-            from app.tenancy.repository import get_tenant_by_id
-
-            async with _get_sdb("tenancy").session() as t_session:
-                tenant = await get_tenant_by_id(t_session, tenant_uid)
-                if tenant:
-                    business_name = tenant.business_name or ""
-        except Exception:
-            pass
-        if cart_store_id:
-            try:
-                from app.stores.repository import get_store_by_id
-
-                async with _get_sdb("inventory").session() as s_session:
-                    store = await get_store_by_id(s_session, UUID(cart_store_id))
-                    if store:
-                        store_name = store.name or ""
-            except Exception:
-                pass
-
-        ttl_seconds = 1800
-        try:
-            expiry_dt = datetime.fromisoformat(
-                str(dva_result.get("expiry_date") or "").replace("Z", "+00:00")
-            )
-            if expiry_dt.tzinfo is None:
-                expiry_dt = expiry_dt.replace(tzinfo=UTC)
-            ttl_seconds = int((expiry_dt - datetime.now(UTC)).total_seconds())
-        except (TypeError, ValueError):
-            pass
-        ttl_seconds = max(300, min(ttl_seconds, 86400))
-
-        # The page is keyed by the intent id: a 36-char UUID instead of a
-        # self-contained signed payload. The shorter URL keeps the QR at
-        # ~37 modules (the same density as the card QR) so phone cameras
-        # read it reliably at the size the till screen renders it.
-        async with sdb_payments.session() as session:
-            db_intent = await session.get(PaymentIntent, intent.id)
-            if db_intent:
-                db_intent.intent_metadata = json.dumps({
-                    **dva_result,
-                    "business_name": business_name,
-                    "store_name": store_name,
-                    "tx_ref": tx_ref,
-                })
-                db_intent.expires_at = datetime.now(UTC) + timedelta(
-                    seconds=ttl_seconds
-                )
-                await session.commit()
-
-        from urllib.parse import urlsplit
-
-        origin = urlsplit(settings.app_callback_url)
-        transfer_url = (
-            f"{origin.scheme}://{origin.netloc}/api/v1/payment/transfer/{intent.id}"
-        )
-        result["transfer_url"] = transfer_url
-        result["qr_code_base64"] = generate_qr_base64(transfer_url)
+        # Transfer is recorded manually by the cashier against the tenant's own
+        # account — no Flutterwave DVA, no gateway intent. The intent stays
+        # pending until the cashier confirms it via confirm_payment, which
+        # records it as an immediate transfer payment (same as cash).
+        pass
 
     return result
 
@@ -9130,37 +9023,18 @@ async def process_split_payment(
             }
 
         if transfer_amount > 0:
-            tx_ref = f"SF-TRF-{uuid4().hex[:12].upper()}"
-
-            dva_result = await flutterwave_service.create_dynamic_virtual_account(
+            transfer_result = await record_transfer_payment(
+                business_id=business_id,
+                sale_id=sale_id,
                 amount=transfer_amount,
-                email=customer_email,
-                tx_ref=tx_ref,
+                reference=None,
             )
-
-            intent = PaymentIntent(
-                id=uuid4(),
-                tenant_id=UUID(business_id),
-                sale_id=UUID(sale_id),
-                method="transfer",
-                amount=float(transfer_amount),
-                currency="NGN",
-                status="pending",
-                gateway_reference=tx_ref,
-                dva_account_number=dva_result["account_number"],
-                bank_name=dva_result["bank_name"],
-                intent_metadata=str(dva_result),
-            )
-            await create_intent(session, intent)
-
             result["transfer"] = {
-                "payment_id": str(intent.id),
-                "amount": float(transfer_amount),
-                "account_number": dva_result["account_number"],
-                "bank_name": dva_result["bank_name"],
-                "tx_ref": tx_ref,
-                "expiry_date": dva_result.get("expiry_date", ""),
-                "status": "pending",
+                "payment_id": transfer_result["payment_id"],
+                "amount": transfer_result["amount"],
+                "tx_ref": None,
+                "expiry_date": None,
+                "status": "completed",
             }
 
         pm = dict(sale.payment_methods) if sale.payment_methods else {}

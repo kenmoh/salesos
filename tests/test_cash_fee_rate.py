@@ -66,10 +66,12 @@ class TestCalculatePlatformFeeMethodRates:
         assert fee["rate"] == 3.5
         assert fee["platform_fee"] == 35.0
 
-    async def test_transfer_is_charged_the_full_rate(self):
+    async def test_transfer_is_charged_the_platform_only_rate(self):
         session = _session(_result(rows=[_rule()]))
         fee = await calculate_platform_fee(session, 1000.0, method="transfer")
-        assert fee["platform_fee"] == 35.0
+        assert fee["rate"] == 1.5
+        assert fee["platform_fee"] == 15.0
+        assert fee["settlement_amount"] == 985.0
 
     async def test_a_rule_without_a_cash_rate_falls_back_to_the_full_rate(self):
         """Legacy rules predate cash_amount; they keep charging as before."""
@@ -88,6 +90,12 @@ class TestCalculatePlatformFeeMethodRates:
         session = _session(_result(rows=[_rule(amount=100, cash_amount=45, fee_type="flat")]))
         fee = await calculate_platform_fee(session, 1000.0, method="cash")
         assert fee["platform_fee"] == 45.0
+
+
+    async def test_transfer_is_processorless(self):
+        """Transfer is collected manually by the tenant, so it sits with the
+        processorless methods and is charged the cash rate."""
+        assert "transfer" in fee_calculator.NO_PROCESSOR_METHODS
 
 
 class TestCalculateFeeShares:
