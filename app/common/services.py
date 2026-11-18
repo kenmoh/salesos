@@ -1192,7 +1192,6 @@ async def process_sync_batch(
             }
         )
 
-    await session.commit()
     return results
 
 
