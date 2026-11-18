@@ -84,6 +84,7 @@ class Sale(StoreFlowBase):
     void_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     voided_by: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    client_reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
@@ -121,6 +122,7 @@ class SaleItem(StoreFlowBase):
     product_name: Mapped[str] = mapped_column(String(200), nullable=False)
     qty: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
     unit_price: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
+    extra: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False, default=0)
     discount_pct: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False, default=0)
     tax_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), nullable=True

@@ -14,6 +14,7 @@ from app.sales.repository import (
 from app.sales.schemas import ReceiptCreateCommand, SaleCreateCommand, SaleItemLine
 from app.sales.service import plan_create_receipt, plan_sale_creation
 from app.taxes.resolve import product_tax_map
+from app.tips.repository import record_tips_for_sale
 
 
 async def handle_cart_checked_out(envelope: EventEnvelope, session: AsyncSession) -> None:
@@ -51,6 +52,7 @@ async def handle_cart_checked_out(envelope: EventEnvelope, session: AsyncSession
                 product_name=i["product_name"],
                 qty=Decimal(i["qty"]),
                 unit_price=Decimal(i["unit_price"]),
+                extra=Decimal(str(i.get("extra") or 0)),
                 tax_id=UUID(line_taxes[0]["id"]) if line_taxes else None,
                 taxes=line_taxes,
             )
@@ -66,6 +68,7 @@ async def handle_cart_checked_out(envelope: EventEnvelope, session: AsyncSession
     _result, sale_model, sale_item_models, outbox = plan_sale_creation(command)
     await create_sale(session, sale_model)
     await create_sale_items(session, sale_item_models)
+    await record_tips_for_sale(session, sale_model, sale_item_models)
     for write in outbox:
         session.add(write.to_model())
 

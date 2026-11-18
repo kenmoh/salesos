@@ -79,6 +79,7 @@ def plan_add_item(
         product_public_id=command.product_public_id,
         name=command.name,
         unit_price=float(command.unit_price),
+        extra=float(command.extra or 0),
         qty=float(command.qty),
         created_by=command.created_by,
     )
@@ -93,9 +94,9 @@ def plan_add_item(
         correlation_id=command.correlation_id,
     )
 
-    total = sum(i.unit_price * i.qty for i in current_items) + float(command.unit_price) * float(
-        command.qty
-    )
+    total = sum(
+        (float(i.unit_price) + float(i.extra)) * float(i.qty) for i in current_items
+    ) + (float(command.unit_price) + float(command.extra or 0)) * float(command.qty)
 
     outbox = [OutboxWrite(event=event, aggregate_type="cart_item", aggregate_id=str(item_id))]
     return item, outbox
@@ -109,7 +110,7 @@ def plan_bulk_add_items(
     outbox: list[OutboxWrite] = []
     cart_id = command.cart_id
 
-    for product_id, public_id, name, unit_price, qty, store_id in resolved_products:
+    for product_id, public_id, name, unit_price, qty, store_id, extra in resolved_products:
         item_id = uuid4()
         item = CartItem(
             id=item_id,
@@ -119,6 +120,7 @@ def plan_bulk_add_items(
             product_public_id=public_id,
             name=name,
             unit_price=float(unit_price),
+            extra=float(extra or 0),
             qty=float(qty),
             created_by=command.created_by,
         )
@@ -154,13 +156,18 @@ def plan_remove_item(command: RemoveItemCommand, item: CartItem) -> list[OutboxW
 
 
 def plan_checkout(command: CheckoutCommand, cart: Cart, items: list[CartItem]) -> list[OutboxWrite]:
-    total = sum(i.unit_price * i.qty for i in items) if items else 0
+    total = (
+        sum((float(i.unit_price) + float(i.extra)) * float(i.qty) for i in items)
+        if items
+        else 0
+    )
     item_data = [
         {
             "product_id": str(i.product_id),
             "product_name": i.name,
             "qty": str(i.qty),
             "unit_price": str(i.unit_price),
+            "extra": str(i.extra),
         }
         for i in items
     ]

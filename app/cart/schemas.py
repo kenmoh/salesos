@@ -35,6 +35,7 @@ class AddItemCommand(BaseModel):
     product_public_id: str = Field(..., min_length=1, max_length=20)
     name: str = Field(..., min_length=1, max_length=200)
     unit_price: Decimal = Field(..., ge=0)
+    extra: Decimal | None = None
     qty: Decimal = Field(..., gt=0)
     created_by: UUID | None = None
     correlation_id: str | None = None
@@ -53,6 +54,7 @@ class CheckoutItem(BaseModel):
     product_public_id: str = Field(..., min_length=1, max_length=20)
     qty: Decimal = Field(..., gt=0)
     store_id: UUID | None = None
+    extra: Decimal | None = None
 
 
 class CheckoutCommand(BaseModel):
@@ -98,6 +100,7 @@ class CartClearResponse(BaseModel):
 class AddItemRequest(BaseModel):
     product_id: str
     qty: float | None = Field(default=None, gt=0)
+    extra: Decimal | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -111,6 +114,7 @@ class CartItemResponse(BaseModel):
     product_public_id: str = ""
     name: str = ""
     unit_price: float = 0
+    extra: float = 0
     qty: float = 0
 
 

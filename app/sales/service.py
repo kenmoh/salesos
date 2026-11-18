@@ -31,12 +31,14 @@ def plan_sale_creation(
 
     # Tax belongs to the lines that earned it. The command carries only a
     # cart-level discount, which the calculator spreads across the lines so
-    # nothing is taxed on money the customer never paid.
+    # nothing is taxed on money the customer never paid. A line's ``extra``
+    # overrides the product's selling price for this sale only, so tax is
+    # computed on the price the customer is actually charged.
     calc = compute_taxes(
         [
             TaxLine(
                 qty=float(line.qty),
-                unit_price=float(line.unit_price),
+                unit_price=float(line.unit_price) + float(line.extra),
                 discount_pct=float(line.discount_pct),
                 taxes=list(line.taxes or []),
                 tax_inclusive=any(t.get("tax_inclusive") for t in (line.taxes or [])),
@@ -76,6 +78,7 @@ def plan_sale_creation(
                 product_name=line.product_name,
                 qty=float(line.qty),
                 unit_price=float(line.unit_price),
+                extra=float(line.extra),
                 discount_pct=float(line.discount_pct),
                 tax_id=line.tax_id,
                 tax_rate=tax_rate if line_taxes else None,

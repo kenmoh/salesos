@@ -412,6 +412,8 @@ async def create_tenant(
                 "coupons:delete",
                 "taxes:read",
                 "taxes:manage",
+                "tips:read",
+                "tips:settle",
                 "inventory:distribution_create",
                 "inventory:distribution_receive",
                 "inventory:distribution_read",
@@ -436,6 +438,7 @@ async def create_tenant(
                 "cart:create",
                 "cart:read",
                 "cart:checkout",
+                "tips:read",
             ],
             "inventory": [
                 "auth:login",
@@ -1241,6 +1244,7 @@ async def create_sale_via_service(
     store_id: str | None = None,
     notes: str | None = None,
     correlation_id: str | None = None,
+    client_reference: str | None = None,
 ) -> dict:
     """Create a sale record through the sales service.
 
@@ -1261,6 +1265,9 @@ async def create_sale_via_service(
         notes: Optional notes attached to the sale.
         correlation_id: Optional correlation identifier for distributed
             tracing.
+        client_reference: Optional client-generated idempotency reference for
+            offline sales. When set it is stored on the sale so replays can be
+            detected instead of creating duplicates.
 
     Returns:
         A dictionary containing the newly created sale details including
@@ -1269,6 +1276,7 @@ async def create_sale_via_service(
     from app.sales.schemas import SaleCreateCommand, SaleItemLine
     from app.sales.service import plan_sale_creation
     from app.sales.repository import create_sale as repo_create_sale, create_sale_items
+    from app.tips.repository import record_tips_for_sale
 
     if not store_id:
         # Every sale is attributed to a store for per-store cash and reporting.
@@ -1293,6 +1301,7 @@ async def create_sale_via_service(
                 product_name=i["product_name"],
                 qty=Decimal(str(i["qty"])),
                 unit_price=Decimal(str(i["unit_price"])),
+                extra=Decimal(str(i.get("extra") or 0)),
                 discount_pct=Decimal(str(i.get("discount_pct", 0))),
                 taxes=list(i.get("taxes"))
                 if i.get("taxes")
@@ -1314,8 +1323,11 @@ async def create_sale_via_service(
         )
 
         result, sale_model, sale_item_models, outbox = plan_sale_creation(command)
+        if client_reference:
+            sale_model.client_reference = client_reference
         await repo_create_sale(session, sale_model)
         await create_sale_items(session, sale_item_models)
+        await record_tips_for_sale(session, sale_model, sale_item_models)
         for write in outbox:
             session.add(write.to_model())
         await session.commit()
@@ -6444,7 +6456,9 @@ async def list_carts(tenant_id: str) -> list[dict]:
             select(
                 Cart,
                 func.count(CartItem.id).label("item_count"),
-                func.coalesce(func.sum(CartItem.unit_price * CartItem.qty), 0).label("total"),
+                func.coalesce(
+                    func.sum((CartItem.unit_price + CartItem.extra) * CartItem.qty), 0
+                ).label("total"),
             )
             .outerjoin(CartItem, Cart.id == CartItem.cart_id)
             .where(Cart.tenant_id == UUID(tenant_id), Cart.status == "active")
@@ -6539,11 +6553,16 @@ async def add_to_cart(
     product_id: str,
     qty: float | None = None,
     actor_id: str | None = None,
+    extra: float | None = None,
 ) -> dict:
     """Add a product to an existing cart.
 
     If the product is already in the cart, overrides qty if provided, else increments by 1.
     Otherwise, creates a new cart item.
+
+    ``extra`` is an optional per-line price override applied on top of the
+    product's selling price for this cart only; the product itself is never
+    repriced.
 
     Returns the cart item as a dict.
     """
@@ -6598,6 +6617,8 @@ async def add_to_cart(
                 existing.qty = Decimal(str(qty))
             else:
                 existing.qty = Decimal(str(existing.qty)) + 1
+            if extra is not None:
+                existing.extra = Decimal(str(extra))
             await session.flush()
             result = {
                 "id": str(existing.id),
@@ -6605,6 +6626,7 @@ async def add_to_cart(
                 "product_public_id": existing.product_public_id,
                 "name": existing.name,
                 "unit_price": float(existing.unit_price),
+                "extra": float(existing.extra),
                 "qty": float(existing.qty),
             }
         else:
@@ -6615,6 +6637,7 @@ async def add_to_cart(
                 product_public_id=product.public_id,
                 name=product.name,
                 unit_price=Decimal(str(product.selling_price)),
+                extra=Decimal(str(extra or 0)),
                 qty=Decimal(str(qty or 1)),
                 created_by=UUID(actor_id) if actor_id else None,
             )
@@ -6625,6 +6648,7 @@ async def add_to_cart(
                 "product_public_id": item.product_public_id,
                 "name": item.name,
                 "unit_price": float(item.unit_price),
+                "extra": float(item.extra),
                 "qty": float(item.qty),
             }
 
@@ -6997,6 +7021,7 @@ async def get_cart(tenant_id: str, cart_id: str) -> dict:
                     "product_public_id": i.product_public_id,
                     "name": i.name,
                     "unit_price": float(i.unit_price),
+                    "extra": float(i.extra),
                     "qty": float(i.qty),
                 }
                 for i in items
@@ -7106,7 +7131,11 @@ async def checkout_cart(
                             resolved_ids[idx] = pub
 
             validated = [
-                CheckoutItem(product_public_id=pid, qty=Decimal(str(i["qty"])))
+                CheckoutItem(
+                    product_public_id=pid,
+                    qty=Decimal(str(i["qty"])),
+                    extra=Decimal(str(i["extra"])) if i.get("extra") is not None else None,
+                )
                 for pid, i in zip(resolved_ids, items)
             ]
 
@@ -7175,6 +7204,7 @@ async def checkout_cart(
                     Decimal(str(price)),
                     i.qty,
                     str(cart_store_id) if cart_store_id else None,
+                    i.extra or Decimal("0"),
                 ))
 
             checkout_command = CheckoutCommand(
@@ -7202,6 +7232,7 @@ async def checkout_cart(
                     product_name=product_map[i.product_public_id].name,
                     qty=i.qty,
                     unit_price=Decimal(str(product_map[i.product_public_id].selling_price)),
+                    extra=i.extra or Decimal("0"),
                     tax_id=UUID(line_taxes[0]["id"]) if line_taxes else None,
                     tax_rate=(
                         Decimal(str(sum(t["rate"] for t in line_taxes)))
@@ -7211,9 +7242,10 @@ async def checkout_cart(
                     taxes=line_taxes,
                 ))
 
-            # Calculate subtotal
+            # Calculate subtotal (extra included: it is what the customer pays)
             subtotal = sum(
-                float(si.unit_price) * float(si.qty) for si in sale_items
+                (float(si.unit_price) + float(si.extra)) * float(si.qty)
+                for si in sale_items
             )
 
             # Resolve discount
@@ -7241,7 +7273,7 @@ async def checkout_cart(
                         discount_type=disc["discount_type"],
                         value=disc["value"],
                         buy_x_get_y_free_qty=disc.get("buy_x_get_y_free_qty", 0),
-                        cart_items=[{"qty": float(si.qty), "unit_price": float(si.unit_price)} for si in sale_items],
+                        cart_items=[{"qty": float(si.qty), "unit_price": float(si.unit_price) + float(si.extra)} for si in sale_items],
                     )
                     discount_amount = Decimal(str(disc_amount))
 
@@ -7286,6 +7318,7 @@ async def checkout_cart(
 
             await repo_create_sale(cart_session, sale_model)
             await create_sale_items(cart_session, sale_item_models)
+            await record_tips_for_sale(cart_session, sale_model, sale_item_models)
             for write in sale_outbox:
                 cart_session.add(write.to_model())
 
@@ -7510,12 +7543,14 @@ async def checkout_cart(
 
     from app.sales.service import plan_sale_creation
     from app.sales.repository import create_sale as repo_create_sale, create_sale_items
+    from app.tips.repository import record_tips_for_sale
 
     sdb_sales = _get_sdb("sales")
     async with sdb_sales.session() as sales_session:
         result, sale_model, sale_item_models, outbox = plan_sale_creation(sale_command)
         await repo_create_sale(sales_session, sale_model)
         await create_sale_items(sales_session, sale_item_models)
+        await record_tips_for_sale(sales_session, sale_model, sale_item_models)
         for write in outbox:
             sales_session.add(write.to_model())
         await sales_session.commit()
@@ -8375,13 +8410,15 @@ async def initiate_payment(
                 product_map[pid].selling_price if pid in product_map else 0
             )
             qty = float(item.qty)
+            extra = float(item.extra or 0)
             public_id = product_map[pid].public_id if pid in product_map else pid
             snapshot_items.append({
                 "product_public_id": public_id,
                 "qty": qty,
                 "unit_price": price,
+                "extra": extra,
             })
-            total += Decimal(str(price)) * Decimal(str(qty))
+            total += (Decimal(str(price)) + Decimal(str(extra))) * Decimal(str(qty))
 
         # Resolve discount
         discount_amount = Decimal("0")
@@ -8406,7 +8443,7 @@ async def initiate_payment(
         tax_lines = [
             TaxLine(
                 qty=float(snap["qty"]),
-                unit_price=float(snap["unit_price"]),
+                unit_price=float(snap["unit_price"]) + float(snap["extra"]),
                 discount_pct=0.0,
                 taxes=list(product_taxes.get(str(item.product_id)) or []),
                 tax_inclusive=any(
@@ -8563,6 +8600,7 @@ async def build_receipt_data(
             "product_name": si.product_name,
             "qty": float(si.qty),
             "unit_price": float(si.unit_price),
+            "extra": float(si.extra),
             "discount_pct": float(si.discount_pct or 0),
             "tax_rate": float(si.tax_rate) if si.tax_rate else None,
             "line_total": float(si.line_total),

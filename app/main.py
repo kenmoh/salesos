@@ -145,6 +145,7 @@ def create_app() -> FastAPI:
     from app.discounts.routes import router as discounts_router
     from app.discounts.routes import coupon_router
     from app.taxes.routes import router as taxes_router
+    from app.tips.routes import router as tips_router
 
     for router in (
         auth_router,
@@ -162,6 +163,7 @@ def create_app() -> FastAPI:
         discounts_router,
         coupon_router,
         taxes_router,
+        tips_router,
     ):
         app.include_router(router, prefix=prefix)
 

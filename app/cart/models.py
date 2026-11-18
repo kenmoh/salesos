@@ -90,6 +90,7 @@ class CartItem(StoreFlowBase):
     product_public_id: Mapped[str] = mapped_column(String(20), nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     unit_price: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False)
+    extra: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False, default=0)
     qty: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False, default=1)
     created_by: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

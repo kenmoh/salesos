@@ -2,7 +2,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.core.dependencies import TenantDep, DbTenantDep, require_permission
+from app.core.dependencies import (
+    TenantDep,
+    DbTenantDep,
+    require_permission,
+    require_price_override_enabled,
+)
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
 from app.auth.schemas.schema import SaleCreate, VoidSale
 from app.auth.schemas.responses import (
@@ -33,6 +38,9 @@ router = APIRouter(prefix="/sales", tags=["Sales"])
     dependencies=[Depends(require_permission("sales:create"))],
 )
 async def create_sale(payload: SaleCreate, ctx: DbTenantDep):
+    if any(i.extra != 0 for i in payload.items):
+        # Same owner-enabled switch as the cart paths.
+        await require_price_override_enabled(ctx)
     items = [i.model_dump() for i in payload.items]
     # The taxes come from each product, resolved by the bridge: sending this
     # route the tenant's whole tax list would charge every tax on every line.

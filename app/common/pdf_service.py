@@ -93,7 +93,7 @@ class StoreFlowPDF(FPDF):
         self.set_font("Helvetica", "", 9)
         for idx, item in enumerate(items, 1):
             qty = float(item.get("qty", 0))
-            unit_price = float(item.get("unit_price", 0))
+            unit_price = float(item.get("unit_price", 0)) + float(item.get("extra", 0))
             discount_pct = float(item.get("discount_pct", 0))
             line_total = qty * unit_price * (1 - discount_pct / 100)
 

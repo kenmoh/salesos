@@ -18,6 +18,7 @@ class BusinessUpdate(Base):
     currency: str | None = None
     logo_url: str | None = None
     settings: dict | None = None
+    allow_price_override: bool | None = None
 
 
 class StoreCreate(Base):
@@ -227,6 +228,7 @@ class SaleItem(Base):
     product_name: str = Field(..., min_length=1)
     qty: Decimal = Field(..., gt=0)
     unit_price: Decimal = Field(..., ge=0)
+    extra: Decimal = Decimal("0")
     discount_pct: Decimal = Decimal("0")
     tax_rate: Decimal | None = None
 

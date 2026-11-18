@@ -9,6 +9,7 @@ class SaleItemLine(BaseModel):
     product_name: str = Field(..., min_length=1, max_length=200)
     qty: Decimal = Field(..., gt=0)
     unit_price: Decimal = Field(..., ge=0)
+    extra: Decimal = Decimal("0")
     discount_pct: Decimal = Decimal("0")
     tax_id: UUID | None = None
     tax_rate: Decimal | None = None

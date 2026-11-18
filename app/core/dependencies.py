@@ -315,3 +315,18 @@ async def require_owner(ctx: TenantDep) -> TenantContext:
     if max_rank < OWNER_RANK:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Owner or higher required")
     return ctx
+
+
+async def require_price_override_enabled(ctx: TenantDep) -> None:
+    """Reject a non-zero line override unless the owner enabled the feature.
+
+    The flag lives in the tenant settings (``allow_price_override``) and is
+    toggled only by the owner, so every role may reprice once it is on.
+    """
+    from app.tenancy.settings import is_price_override_enabled
+
+    if not await is_price_override_enabled(ctx.user.business_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Price overrides are disabled. Ask the business owner to enable them in settings.",
+        )

@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -6,6 +7,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.db.helpers import call, call_scalar, exec_fn
+
+logger = logging.getLogger(__name__)
 
 
 async def create_product(
@@ -245,6 +248,7 @@ async def get_sale(*, session: AsyncSession, business_id: str, sale_id: str) -> 
             "product_name": si.product_name,
             "qty": float(si.qty),
             "unit_price": float(si.unit_price),
+            "extra": float(si.extra),
             "discount": float(si.discount_pct) if si.discount_pct else 0,
             "tax_rate": float(si.tax_rate) if si.tax_rate else None,
         }
@@ -436,6 +440,7 @@ async def void_sale(
     from app.inventory.models import StockBalance, StockMovement
     from app.sales.events import sale_voided_event
     from app.sales.models import Sale, SaleItem
+    from app.tips.repository import void_pending_tips_for_sale
 
     tenant_id = UUID(business_id)
 
@@ -458,6 +463,7 @@ async def void_sale(
     sale.void_reason = reason
     sale.voided_by = UUID(user_id)
     sale.voided_at = now
+    await void_pending_tips_for_sale(session, sale.id)
 
     # 2. Restock: return each line's qty to the sale's store, with audit trail
     for item in items:
@@ -601,6 +607,7 @@ async def return_sale(
     from app.inventory.models import StockBalance, StockMovement
     from app.sales.events import sale_returned_event
     from app.sales.models import Sale, SaleItem
+    from app.tips.repository import void_pending_tips_for_sale
 
     tenant_id = UUID(business_id)
 
@@ -625,6 +632,7 @@ async def return_sale(
     sale.void_reason = reason
     sale.voided_by = UUID(user_id)
     sale.voided_at = now
+    await void_pending_tips_for_sale(session, sale.id)
 
     # 2. Restock: return each line's qty to the sale's store, with audit trail
     for item in items:
@@ -953,73 +961,282 @@ async def update_document_status(
     )
 
 
+async def _sync_event_exists(session: AsyncSession, business_id: str, client_id: str) -> str | None:
+    row = await session.execute(
+        text(
+            "SELECT id, status, error FROM sync_events "
+            "WHERE tenant_id = :bid AND client_id = :cid"
+        ),
+        {"bid": business_id, "cid": client_id},
+    )
+    r = row.fetchone()
+    if not r:
+        return None
+    return {"id": str(r[0]), "status": r[1], "error": r[2]}
+
+
+async def _mark_sync_event(
+    session: AsyncSession,
+    event_id: str,
+    *,
+    status: str,
+    error: str | None = None,
+) -> None:
+    await session.execute(
+        text(
+            "UPDATE sync_events SET status = :status, error = :error, "
+            "applied_at = CASE WHEN :status IN ('processed','failed') THEN now() ELSE applied_at END, "
+            "retry_count = CASE WHEN :status = 'failed' THEN retry_count + 1 ELSE retry_count END WHERE id = :eid"
+        ),
+        {"status": status, "error": error, "eid": event_id},
+    )
+
+
+async def _apply_sale_created(
+    session: AsyncSession,
+    business_id: str,
+    user_id: str,
+    payload: dict,
+) -> dict:
+    from app.common.bridge import create_sale_via_service, record_payment
+
+    client_reference = payload.get("client_reference") or payload.get("client_id")
+    store_id = payload.get("store_id")
+    cashier_id = payload.get("cashier_id") or user_id
+    customer_name = payload.get("customer_name")
+    customer_phone = payload.get("customer_phone")
+    discount = payload.get("discount") or 0
+    notes = payload.get("notes")
+    items = payload.get("items") or []
+    payment = payload.get("payment") or {}
+
+    if not store_id:
+        raise ValueError("store_id is required")
+    if not items or not isinstance(items, list):
+        raise ValueError("items are required")
+
+    # Idempotent replay: a sale already created for this client reference must
+    # not be duplicated when the mobile client retries after a lost response.
+    if client_reference:
+        row = await session.execute(
+            text(
+                "SELECT id, status, total FROM sales "
+                "WHERE tenant_id = :bid AND client_reference = :ref"
+            ),
+            {"bid": business_id, "ref": client_reference},
+        )
+        existing = row.fetchone()
+        if existing:
+            return {
+                "sale_id": str(existing[0]),
+                "sale_status": existing[1],
+                "total": float(existing[2] or 0),
+                "client_reference": client_reference,
+                "replayed": True,
+            }
+
+    # The owner's price-override switch is authoritative; offline payloads
+    # carry captured prices but may not introduce overrides when disabled.
+    settings_row = await session.execute(
+        text("SELECT settings FROM tenants WHERE id = :bid"),
+        {"bid": business_id},
+    )
+    settings_r = settings_row.fetchone()
+    settings = {}
+    if settings_r and settings_r[0]:
+        settings = settings_r[0] if isinstance(settings_r[0], dict) else json.loads(settings_r[0] or "{}")
+    allow_override = bool(settings.get("allow_price_override", False))
+    for item in items:
+        if item.get("extra") not in (None, 0) and not allow_override:
+            raise ValueError("price_override_not_enabled")
+
+    # Validate that every product is available in the tenant's store.
+    for item in items:
+        product_id = item.get("product_id")
+        if not product_id:
+            raise ValueError("product_id is required")
+        row = await session.execute(
+            text(
+                "SELECT id FROM store_products "
+                "WHERE tenant_id = :bid AND product_id = :pid AND store_id = :sid"
+            ),
+            {"bid": business_id, "pid": product_id, "sid": store_id},
+        )
+        if not row.fetchone():
+            raise ValueError(f"product_not_found:{product_id}")
+
+    sale_items = [
+        {
+            "product_id": str(i["product_id"]),
+            "product_name": str(i.get("product_name") or ""),
+            "qty": Decimal(str(i["qty"])),
+            "unit_price": Decimal(str(i["unit_price"])),
+            "extra": Decimal(str(i.get("extra") or 0)),
+            "discount_pct": Decimal(str(i.get("discount_pct", 0))),
+            "taxes": list(i.get("taxes") or []),
+        }
+        for i in items
+    ]
+
+    sale_result = await create_sale_via_service(
+        tenant_id=business_id,
+        cashier_id=str(cashier_id),
+        items=sale_items,
+        discount=Decimal(str(discount)),
+        customer_name=customer_name,
+        customer_phone=customer_phone,
+        store_id=str(store_id),
+        notes=notes,
+        correlation_id=str(client_reference) if client_reference else None,
+    )
+    sale_id = str(sale_result["id"])
+    total = float(sale_result.get("total") or 0)
+
+    # Offline checkout is paid at the till: cash or manually recorded transfer.
+    await record_payment(
+        business_id=business_id,
+        sale_id=sale_id,
+        method=str(payment.get("method") or "cash"),
+        amount=Decimal(str(total)),
+        reference=str(payment.get("reference") or client_reference or sale_id),
+    )
+
+    return {
+        "sale_id": sale_id,
+        "sale_status": "completed",
+        "total": total,
+        "client_reference": client_reference,
+        "replayed": False,
+    }
+
+
+async def _apply_event(
+    session: AsyncSession,
+    business_id: str,
+    user_id: str,
+    event: dict,
+) -> dict:
+    etype = event.get("event_type")
+    payload = event.get("payload") or {}
+
+    if etype == "sale.created":
+        return await _apply_sale_created(session, business_id, user_id, payload)
+
+    # Legacy types already handled by the worker path; keep them no-ops here
+    # so new clients do not break on old event kinds.
+    return {"event_type": etype, "applied": False, "skipped": True}
+
+
 async def process_sync_batch(
     *, session: AsyncSession, business_id: str, user_id: str, events: list
 ) -> dict:
+    """Queue client sync events and apply supported ones immediately.
+
+    Application is synchronous so the mobile client receives an immediate
+    success/failure for every event. Idempotency is provided by ``client_id``
+    deduplication and by ``sales.client_reference`` for sale replays.
+    """
     results: dict = {"applied": [], "failed": [], "duplicates": []}
     for event in events:
         client_id = event.get("client_id")
         if client_id:
-            dup = await call_scalar(
-                session,
-                "api.fn_check_event_dup",
-                p_bid=business_id,
-                p_client_id=client_id,
-            )
-            if dup:
-                results["duplicates"].append({"client_id": client_id, "event_id": str(dup)})
+            existing = await _sync_event_exists(session, business_id, client_id)
+            if existing:
+                results["duplicates"].append(
+                    {
+                        "client_id": client_id,
+                        "event_id": existing["id"],
+                        "status": existing["status"],
+                        "error": existing["error"],
+                    }
+                )
                 continue
-        eid = await call_scalar(
-            session,
-            "api.fn_queue_event",
-            p_bid=business_id,
-            p_uid=user_id,
-            p_type=event["event_type"],
-            p_payload=json.dumps(event["payload"]),
-            p_client_id=client_id,
-            p_client_ts=event.get("client_ts"),
+
+        res = await session.execute(
+            text(
+                "INSERT INTO sync_events "
+                "(tenant_id, user_id, client_id, event_type, payload, client_ts, status, retry_count, created_at) "
+                "VALUES (:bid, :uid, :cid, :etype, :payload::jsonb, :cts, 'pending', 0, now()) "
+                "RETURNING id"
+            ),
+            {
+                "bid": business_id,
+                "uid": user_id,
+                "cid": client_id,
+                "etype": event["event_type"],
+                "payload": json.dumps(event.get("payload") or {}),
+                "cts": event.get("client_ts"),
+            },
         )
-        results["applied"].append({"client_id": client_id, "event_id": str(eid)})
+        event_id_str = str(res.scalar())
+        try:
+            applied = await _apply_event(
+                session, business_id, user_id, event
+            )
+            await _mark_sync_event(session, event_id_str, status="processed")
+        except Exception as exc:  # noqa: BLE001 - mark and continue batch
+            logger = __import__("logging").getLogger(__name__)
+            logger.exception("Sync event %s failed", event_id_str)
+            await _mark_sync_event(session, event_id_str, status="failed", error=str(exc))
+            results["failed"].append(
+                {"client_id": client_id, "event_id": event_id_str, "error": str(exc)}
+            )
+            continue
+
+        results["applied"].append(
+            {
+                "client_id": client_id,
+                "event_id": event_id_str,
+                "event_type": event.get("event_type"),
+                "applied": applied,
+            }
+        )
+
+    await session.commit()
     return results
 
 
 async def queue_server_event(
     *, session: AsyncSession, business_id: str, tenant_id: str, event_type: str, payload: dict
 ) -> str:
-    return str(
-        await call_scalar(
-            session,
-            "api.fn_queue_event",
-            p_bid=business_id,
-            p_uid=None,
-            p_type=event_type,
-            p_payload=json.dumps(payload),
-            p_client_id=None,
-            p_client_ts=None,
-            p_tenant_id=tenant_id,
-        )
+    res = await session.execute(
+        text(
+            "INSERT INTO sync_events "
+            "(tenant_id, user_id, client_id, event_type, payload, client_ts, status, retry_count, created_at) "
+            "VALUES (:bid, NULL, NULL, :etype, :payload::jsonb, NULL, 'pending', 0, now()) "
+            "RETURNING id"
+        ),
+        {
+            "bid": business_id,
+            "etype": event_type,
+            "payload": json.dumps(payload),
+        },
     )
+    return str(res.scalar())
 
 
 async def get_pending_events(
     *, session: AsyncSession, business_id: str, since: datetime, limit: int = 50
 ) -> dict:
-    rows = await call(
-        session,
-        "api.fn_pending_events",
-        p_bid=business_id,
-        p_since=since,
-        p_limit=limit,
+    rows = await session.execute(
+        text(
+            "SELECT id, event_type, payload, client_id, client_ts, created_at, status, error "
+            "FROM sync_events WHERE tenant_id = :bid AND status = 'pending' "
+            "ORDER BY created_at ASC LIMIT :limit"
+        ),
+        {"bid": business_id, "limit": limit},
     )
     events = []
     cursor = since
-    for row in rows:
+    for row in rows.mappings():
         events.append(
             {
+                "id": str(row["id"]),
                 "event_type": row["event_type"],
                 "payload": row["payload"],
                 "client_id": row.get("client_id"),
                 "client_ts": row.get("client_ts"),
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
             }
         )
         cursor = row["created_at"]
@@ -1027,7 +1244,13 @@ async def get_pending_events(
 
 
 async def get_pending_event_count(*, session: AsyncSession, business_id: str) -> int:
-    return await call_scalar(session, "api.fn_pending_event_count", p_bid=business_id) or 0
+    row = await session.execute(
+        text(
+            "SELECT COUNT(*) FROM sync_events WHERE tenant_id = :bid AND status = 'pending'"
+        ),
+        {"bid": business_id},
+    )
+    return int(row.scalar() or 0)
 
 
 # ── Offline Sync Extensions ───────────────────────────────────────────────────
@@ -1045,6 +1268,35 @@ ENTITY_TABLES = {
     "customers": "customers",
 }
 
+ENTITY_TIMESTAMP_COLUMN = {
+    "stores": "updated_at",
+    "store_products": "updated_at",
+    "products": "updated_at",
+    "categories": "created_at",
+    "sales": "updated_at",
+    "sale_items": "sales.updated_at",
+    "stock_balances": "updated_at",
+    "customers": "updated_at",
+}
+
+ENTITY_FROM = {
+    "sale_items": "sale_items si JOIN sales s ON s.id = si.sale_id",
+}
+
+ENTITY_SELECT_COLUMNS = {
+    "sale_items": "si.*, s.id AS sale_id, s.tenant_id, s.updated_at AS updated_at",
+}
+
+
+def _serialize_value(value):
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, PyUUID):
+        return str(value)
+    return value
+
 
 async def get_data_snapshot(
     *,
@@ -1056,50 +1308,60 @@ async def get_data_snapshot(
     """Return a full data snapshot for initial sync or incremental refresh.
 
     Queries the raw tables for the requested entity types, filtered by
-    tenant (business_id).  If *since* is provided only rows with
-    ``updated_at >= since`` are returned.
+    tenant (business_id).  If *since* is provided only rows updated or created
+    at/after *since* are returned. The cursor is captured before the query so
+    concurrent writes cannot be skipped.
     """
     if entity_types is None:
         entity_types = list(ENTITY_TABLES.keys())
 
+    cursor = datetime.now(UTC)
     entities = []
     for etype in entity_types:
         table = ENTITY_TABLES.get(etype)
         if not table:
             continue
 
-        cols = "*"
+        from_clause = ENTITY_FROM.get(etype, table)
+        cols = ENTITY_SELECT_COLUMNS.get(etype, "*")
+        ts_col = ENTITY_TIMESTAMP_COLUMN.get(etype, "updated_at")
+
         if since:
             rows_result = await session.execute(
                 text(
-                    f"SELECT {cols} FROM {table} "
-                    f"WHERE tenant_id = :bid AND updated_at >= :since"
+                    f"SELECT {cols} FROM {from_clause} "
+                    f"WHERE tenant_id = :bid AND {ts_col} >= :since"
                 ),
                 {"bid": PyUUID(business_id), "since": since},
             )
         else:
             rows_result = await session.execute(
-                text(
-                    f"SELECT {cols} FROM {table} WHERE tenant_id = :bid"
-                ),
+                text(f"SELECT {cols} FROM {from_clause} WHERE tenant_id = :bid"),
                 {"bid": PyUUID(business_id)},
             )
 
         keys = list(rows_result.keys())
         for row in rows_result.fetchall():
-            d = dict(zip(keys, row))
+            d = {k: _serialize_value(v) for k, v in zip(keys, row)}
             entities.append(
                 {
                     "entity_type": etype,
                     "id": str(d.get("id", "")),
-                    "data": {k: v for k, v in d.items() if k not in ("id", "tenant_id")},
+                    "data": {
+                        k: v
+                        for k, v in d.items()
+                        if k not in ("id", "tenant_id")
+                    },
                     "version": 1,
                     "updated_at": d.get("updated_at"),
                 }
             )
 
-    cursor = datetime.now(UTC).isoformat()
-    return {"entities": entities, "cursor": cursor, "total": len(entities)}
+    return {
+        "entities": entities,
+        "cursor": cursor.isoformat(),
+        "total": len(entities),
+    }
 
 
 async def full_sync(
@@ -1145,7 +1407,7 @@ async def full_sync(
     return {
         "processed": len(batch_result.get("applied", [])),
         "failed": len(batch_result.get("failed", [])),
-        "errors": batch_result.get("errors", []),
+        "errors": batch_result.get("failed", []),
         "server_events": pending.get("events", []),
         "cursor": str(cursor),
     }

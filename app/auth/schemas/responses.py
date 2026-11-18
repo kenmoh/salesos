@@ -846,6 +846,7 @@ class BusinessSettings(_Base):
     tax_rate: float | None = None
     currency: str | None = None
     logo_url: str | None = None
+    allow_price_override: bool = False
     settings: dict = {}
 
 

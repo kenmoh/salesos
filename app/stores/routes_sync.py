@@ -4,7 +4,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile
 from sqlalchemy import select
 
-from app.core.dependencies import DbTenantDep, require_permission
+from app.core.dependencies import DbTenantDep, require_owner, require_permission
 from app.core.responses import DataResponse, ok
 from app.auth.schemas.schema import (
     BusinessUpdate,
@@ -104,6 +104,7 @@ async def business_settings(ctx: DbTenantDep):
         tax_rate=settings.get("tax_rate"),
         currency=settings.get("currency"),
         logo_url=settings.get("logo_url"),
+        allow_price_override=bool(settings.get("allow_price_override", False)),
         settings=settings,
     ))
 
@@ -129,6 +130,13 @@ async def update_business_settings(payload: BusinessUpdate, ctx: DbTenantDep):
     if payload.phone is not None:
         tenant.owner_phone = payload.phone
 
+    # The price-override flag is the owner's decision, however it is sent.
+    requested_override = payload.allow_price_override
+    if requested_override is None and payload.settings is not None:
+        requested_override = payload.settings.get("allow_price_override")
+    if requested_override is not None:
+        await require_owner(ctx)
+
     # Merge into settings JSON
     settings = json.loads(tenant.settings) if isinstance(tenant.settings, str) else (tenant.settings or {})
     if payload.address is not None:
@@ -142,13 +150,21 @@ async def update_business_settings(payload: BusinessUpdate, ctx: DbTenantDep):
     if payload.logo_url is not None:
         settings["logo_url"] = payload.logo_url
     if payload.settings is not None:
-        settings.update(payload.settings)
+        settings.update(
+            {k: v for k, v in payload.settings.items() if k != "allow_price_override"}
+        )
         # System notifications are always enabled
         if "notification_types" in settings:
             settings["notification_types"]["system"] = True
+    if requested_override is not None:
+        settings["allow_price_override"] = bool(requested_override)
     tenant.settings = json.dumps(settings)
 
     await ctx.session.flush()
+    if requested_override is not None:
+        from app.tenancy.settings import invalidate_price_override
+
+        await invalidate_price_override(ctx.user.business_id)
 
     return ok(BusinessSettings(
         name=tenant.business_name,
@@ -158,6 +174,7 @@ async def update_business_settings(payload: BusinessUpdate, ctx: DbTenantDep):
         tax_rate=settings.get("tax_rate"),
         currency=settings.get("currency"),
         logo_url=settings.get("logo_url"),
+        allow_price_override=bool(settings.get("allow_price_override", False)),
         settings=settings,
     ))
 
@@ -214,6 +231,7 @@ async def upload_business_logo(
         tax_rate=settings.get("tax_rate"),
         currency=settings.get("currency"),
         logo_url=logo_url,
+        allow_price_override=bool(settings.get("allow_price_override", False)),
         settings=settings,
     )
     return ok(settings)

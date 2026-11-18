@@ -3,7 +3,11 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from app.core.dependencies import TenantDep, require_permission
+from app.core.dependencies import (
+    TenantDep,
+    require_permission,
+    require_price_override_enabled,
+)
 from app.core.responses import DataResponse, ok
 from app.auth.schemas.responses import SuccessResponse
 import app.common.bridge as bridge
@@ -141,6 +145,9 @@ async def void_item(item_id: str, body: VoidItemRequest, ctx: TenantDep, request
 )
 async def add_item(cart_id: str, body: AddItemRequest, ctx: TenantDep):
     try:
+        if body.extra is not None and body.extra != 0:
+            # The owner decides whether this counter may reprice lines at all.
+            await require_price_override_enabled(ctx)
         return ok(
             await bridge.add_to_cart(
                 tenant_id=ctx.user.business_id,
@@ -148,6 +155,7 @@ async def add_item(cart_id: str, body: AddItemRequest, ctx: TenantDep):
                 product_id=body.product_id,
                 qty=body.qty,
                 actor_id=ctx.user.user_id,
+                extra=float(body.extra) if body.extra is not None else None,
             )
         )
     except ValueError as e:
@@ -200,6 +208,12 @@ async def clear_cart(cart_id: str, body: VoidItemRequest, ctx: TenantDep):
 )
 async def checkout_cart(cart_id: str, body: CheckoutRequest, ctx: TenantDep):
     try:
+        if body.items and any(
+            i.extra is not None and i.extra != 0 for i in body.items
+        ):
+            # Same switch as adding an item: the owner enables overrides for
+            # the whole business, then any permitted role may use them.
+            await require_price_override_enabled(ctx)
         items_raw = None
         if body.items:
             items_raw = [i.model_dump(mode="json") for i in body.items]
