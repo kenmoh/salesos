@@ -114,7 +114,15 @@ async def platform_create_plan(payload: PlanCreate, ctx: PlatformDep):
     dependencies=[Depends(require_platform_permission("platform:*")), Depends(require_super_admin)],
 )
 async def platform_update_plan(plan_id: UUID, payload: PlanUpdate, ctx: PlatformDep):
-    plan = await ctx.session.get(SubscriptionPlan, plan_id)
+    result = await ctx.session.execute(
+        select(SubscriptionPlan)
+        .options(
+            selectinload(SubscriptionPlan.fee_tiers),
+            selectinload(SubscriptionPlan.plan_features),
+        )
+        .where(SubscriptionPlan.id == plan_id)
+    )
+    plan = result.scalar_one_or_none()
     if not plan:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Plan not found")
     for field, value in payload.model_dump(exclude_unset=True).items():
