@@ -23,7 +23,6 @@ def plan_tenant_creation(
 ) -> tuple[TenantResult, Tenant, list[OutboxWrite]]:
     """Create tenant + owner user + owner role in one plan."""
     tenant_id = uuid4()
-    owner_user_id = uuid4()
     subdomain = f"{slug}{SUBDOMAIN_SUFFIX}"
 
     tenant = Tenant(
@@ -70,7 +69,9 @@ def plan_tenant_creation(
         business_name=command.business_name,
         tier=command.tier,
         status="active",
-        owner_user_id=owner_user_id,
+        # The owner row the plan just built — not a separate id, so callers
+        # can act on the owner user directly.
+        owner_user_id=user_model.id,
     )
 
     outbox = [OutboxWrite(event=event, aggregate_type="tenant", aggregate_id=str(tenant_id))]
