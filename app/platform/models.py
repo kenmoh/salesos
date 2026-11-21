@@ -48,6 +48,13 @@ class PlatformAdmin(StoreFlowBase):
         role: Admin role (e.g., "admin", "super_admin").
         status: Account status ("active", "inactive", "suspended").
         last_login_at: Timestamp of last successful login.
+        last_device_type: Device the admin last signed in from ("ios",
+            "android", "browser", "unknown").
+        last_browser: Browser the admin last signed in with, when it was a
+            browser.
+        last_seen_at: When the device was last recorded.
+        last_user_agent: User-Agent header of the last sign-in.
+        last_ip_address: IP address of the last sign-in.
     """
 
     __tablename__ = "platform_admins"
@@ -62,6 +69,11 @@ class PlatformAdmin(StoreFlowBase):
     totp_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
     totp_enabled: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="0")
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_device_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    last_browser: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    last_ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )

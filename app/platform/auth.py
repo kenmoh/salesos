@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.platform.models import PlatformAdmin
 
 from app.core.config import settings
+from app.core.device import describe_request
 from app.core.security import (
     create_access_token,
     decode_access_token,
@@ -73,15 +74,26 @@ async def platform_login(
 
     refresh_token, _ = create_refresh_token(str(admin.id), "platform", sid)
     await single_sign_on_device(str(admin.id), sid)
+    device = describe_request(req)
     await store_refresh_session(
         str(admin.id),
         sid,
         hash_token(refresh_token),
-        {"device_name": None, "user_agent": req.headers.get("user-agent", ""), "ip_address": None},
+        {
+            "device_name": device.label,
+            "user_agent": req.headers.get("user-agent", ""),
+            "ip_address": device.ip_address,
+        },
         settings.refresh_token_expire_days * 86400,
     )
 
-    admin.last_login_at = datetime.now(UTC)
+    now = datetime.now(UTC)
+    admin.last_login_at = now
+    admin.last_device_type = device.device_type
+    admin.last_browser = device.browser
+    admin.last_seen_at = now
+    admin.last_user_agent = device.user_agent
+    admin.last_ip_address = device.ip_address
     await session.flush()
 
     return {

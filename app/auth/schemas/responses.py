@@ -428,6 +428,10 @@ class AuthUser(_Base):
     totp_enabled: bool | None = None
     auto_create_cart: bool | None = None
     last_login_at: str | None = None
+    last_device_type: str | None = None
+    last_browser: str | None = None
+    last_seen_at: str | None = None
+    last_ip_address: str | None = None
     avatar_url: str | None = None
     store_id: str | None = None
 
@@ -481,6 +485,10 @@ class EmployeeListItem(_Base):
     phone: str | None = None
     store_id: str | None = None
     last_login_at: str | None = None
+    last_device_type: str | None = None
+    last_browser: str | None = None
+    last_seen_at: str | None = None
+    last_ip_address: str | None = None
     created_at: str | None = None
 
 

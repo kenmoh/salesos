@@ -5,9 +5,10 @@ from uuid import UUID
 
 from fastapi import Request
 from jose import ExpiredSignatureError, JWTError
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.core.config import settings
+from app.core.device import ClientDevice, client_ip, describe_request
 from app.core.redis_client import cache_del, cache_get, cache_set
 from app.core.security import (
     blacklist_token,
@@ -47,28 +48,39 @@ class TotpRequired(Exception):
     pass
 
 
-def _device_from_ua(req: Request) -> str | None:
-    """A short human label (iPhone, iPad, Android, …) from the user agent."""
-    ua = (req.headers.get("user-agent") or "").lower()
-    if "iphone" in ua:
-        return "iPhone"
-    if "ipad" in ua:
-        return "iPad"
-    if "android" in ua:
-        return "Android"
-    if "windows" in ua:
-        return "Windows PC"
-    if "mac" in ua:
-        return "Mac"
-    return None
-
-
 def _ip(req: Request) -> str:
-    forwarded = req.headers.get("x-forwarded-for")
-    return (
-        forwarded.split(",")[0].strip()
-        if forwarded
-        else (str(req.client.host) if req.client else "0.0.0.0")
+    return client_ip(req)
+
+
+def device_values(device: ClientDevice, now: datetime) -> dict:
+    """The account columns that carry the last known device."""
+    return {
+        "last_device_type": device.device_type,
+        "last_browser": device.browser,
+        "last_seen_at": now,
+        "last_user_agent": device.user_agent,
+        "last_ip_address": device.ip_address,
+    }
+
+
+async def record_user_device(
+    *,
+    session,
+    user_id: str,
+    device: ClientDevice,
+    mark_login: bool = False,
+) -> None:
+    """Stamp the device on the account row that already exists.
+
+    One row per account: the columns are overwritten on every sign-in, so
+    tracking devices never grows the table.
+    """
+    now = datetime.now(UTC)
+    values = device_values(device, now)
+    if mark_login:
+        values["last_login_at"] = now
+    await session.execute(
+        update(User).where(User.id == UUID(user_id)).values(**values)
     )
 
 
@@ -87,6 +99,10 @@ async def _get_user_by_email(session, email: str) -> dict | None:
         "totp_enabled": bool(user.totp_enabled),
         "totp_secret": user.totp_secret,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+        "last_device_type": user.last_device_type,
+        "last_browser": user.last_browser,
+        "last_seen_at": user.last_seen_at.isoformat() if user.last_seen_at else None,
+        "last_ip_address": user.last_ip_address,
         "avatar_url": user.avatar_url,
         "store_id": str(user.store_id) if user.store_id else None,
     }
@@ -197,18 +213,19 @@ async def login(*, session, email, password, totp_code, req, device_name=None):
     sid = generate_session_id()
     refresh, _ = create_refresh_token(user["user_id"], user["business_id"], sid)
     await single_sign_on_device(user["user_id"], sid)
+    device = describe_request(req, device_name)
     await store_refresh_session(
         user["user_id"],
         sid,
         hash_token(refresh),
         {
-            "device_name": device_name or _device_from_ua(req),
+            "device_name": device.label,
             "user_agent": req.headers.get("user-agent", ""),
             "ip_address": _ip(req),
         },
         settings.refresh_token_expire_days * 86400,
     )
-    # Update last_login_at
+    # Update last_login_at and the last known device on the same row.
     from app.common.bridge import _get_shared_engine
     from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
     engine = _get_shared_engine()
@@ -216,9 +233,12 @@ async def login(*, session, email, password, totp_code, req, device_name=None):
 
     async with factory() as upd_session:
         async with upd_session.begin():
-            result = await upd_session.execute(select(User).where(User.id == UUID(user["user_id"])))
-            db_user = result.scalar_one()
-            db_user.last_login_at = datetime.now(UTC)
+            await record_user_device(
+                session=upd_session,
+                user_id=user["user_id"],
+                device=device,
+                mark_login=True,
+            )
     # Log successful login
     await log_auth_event(
         session,
@@ -241,6 +261,10 @@ async def login(*, session, email, password, totp_code, req, device_name=None):
         "permissions": perms,
         "totp_enabled": bool(user.get("totp_enabled")),
         "last_login_at": user.get("last_login_at"),
+        "last_device_type": user.get("last_device_type"),
+        "last_browser": user.get("last_browser"),
+        "last_seen_at": user.get("last_seen_at"),
+        "last_ip_address": user.get("last_ip_address"),
         "avatar_url": user.get("avatar_url"),
         "store_id": user.get("store_id"),
     }
@@ -774,15 +798,20 @@ async def login_with_social(*, session, id_token: str, provider: str, req):
     )
     sid = generate_session_id()
     refresh, _ = create_refresh_token(str(user.id), str(user.tenant_id), sid)
+    device = describe_request(req)
     await store_refresh_session(
         str(user.id),
         sid,
         hash_token(refresh),
-        {},
+        {
+            "device_name": device.label,
+            "user_agent": req.headers.get("user-agent", ""),
+            "ip_address": _ip(req),
+        },
         settings.refresh_token_expire_days * 86400,
     )
 
-    # Update last_login_at
+    # Update last_login_at and the last known device on the same row.
     from app.common.bridge import _get_shared_engine
     from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession as UpdSession
 
@@ -790,11 +819,12 @@ async def login_with_social(*, session, id_token: str, provider: str, req):
     factory = async_sessionmaker(bind=engine, class_=UpdSession, expire_on_commit=False)
     async with factory() as upd_session:
         async with upd_session.begin():
-            db_user_result = await upd_session.execute(
-                select(IdUser).where(IdUser.id == user.id)
+            await record_user_device(
+                session=upd_session,
+                user_id=str(user.id),
+                device=device,
+                mark_login=True,
             )
-            db_user = db_user_result.scalar_one()
-            db_user.last_login_at = datetime.now(UTC)
 
     # Audit log
     await log_auth_event(
@@ -820,6 +850,10 @@ async def login_with_social(*, session, id_token: str, provider: str, req):
         "permissions": perms,
         "totp_enabled": bool(user.totp_enabled),
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+        "last_device_type": user.last_device_type,
+        "last_browser": user.last_browser,
+        "last_seen_at": user.last_seen_at.isoformat() if user.last_seen_at else None,
+        "last_ip_address": user.last_ip_address,
         "avatar_url": user.avatar_url,
         "store_id": str(user.store_id) if user.store_id else None,
     }, is_new_user

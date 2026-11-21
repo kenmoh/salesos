@@ -49,6 +49,13 @@ class User(StoreFlowBase):
         totp_secret: TOTP secret for MFA (if enabled).
         totp_enabled: Whether TOTP is enabled.
         last_login_at: Timestamp of last successful login.
+        last_device_type: Device the account last signed in from ("ios",
+            "android", "browser", "unknown").
+        last_browser: Browser the account last signed in with, when it was a
+            browser.
+        last_seen_at: When the device was last recorded.
+        last_user_agent: User-Agent header of the last sign-in.
+        last_ip_address: IP address of the last sign-in.
         avatar_url: Optional profile picture URL.
     """
 
@@ -66,6 +73,11 @@ class User(StoreFlowBase):
     totp_enabled: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)
     auto_create_cart: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_device_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    last_browser: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    last_ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     store_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
     provider: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)

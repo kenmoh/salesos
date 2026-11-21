@@ -70,7 +70,8 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
     response_model=DataMessageResponse[RegistrationResponse],
     dependencies=[Depends(auth_rate_limit(3, 3600))],
 )
-async def register(payload: RegisterRequest, request: Request):
+async def register(payload: RegisterRequest, request: Request, session=Depends(get_db)):
+    from app.core.device import describe_request
     from app.core.security import hash_password
 
     # The tenant names its business in settings after sign-up; registration
@@ -80,17 +81,28 @@ async def register(payload: RegisterRequest, request: Request):
         or payload.business_email.split("@")[0].split("+")[0]
         or "My business"
     )
+    owner_email = payload.owner_email or payload.business_email
 
     tenant_result = await create_tenant(
         business_name=business_name,
         business_email=payload.business_email,
         owner_name=payload.owner_name,
-        owner_email=payload.owner_email or payload.business_email,
+        owner_email=owner_email,
         owner_phone=payload.owner_phone,
         owner_password_hash=hash_password(payload.password),
         actor_id=None,
         correlation_id=None,
     )
+
+    # Record the device the tenant signed up from on the owner row that was
+    # just created — the same row every later login updates.
+    owner_id = tenant_result.get("owner_user_id")
+    if owner_id:
+        await auth_service.record_user_device(
+            session=session,
+            user_id=owner_id,
+            device=describe_request(request),
+        )
 
     return ok(
         {"tenant": tenant_result}, message="Registration successful. Check your email to verify."
@@ -195,6 +207,10 @@ async def me(ctx: DbTenantDep):
                 "permissions": ctx.user.permissions,
                 "totp_enabled": False,
                 "last_login_at": None,
+                "last_device_type": None,
+                "last_browser": None,
+                "last_seen_at": None,
+                "last_ip_address": None,
                 "avatar_url": None,
             }
         )
@@ -211,6 +227,10 @@ async def me(ctx: DbTenantDep):
             "totp_enabled": bool(user.totp_enabled),
             "auto_create_cart": bool(user.auto_create_cart),
             "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+            "last_device_type": user.last_device_type,
+            "last_browser": user.last_browser,
+            "last_seen_at": user.last_seen_at.isoformat() if user.last_seen_at else None,
+            "last_ip_address": user.last_ip_address,
             "avatar_url": user.avatar_url,
             "store_id": str(user.store_id) if user.store_id else None,
         }
@@ -534,6 +554,8 @@ async def employees(ctx: DbTenantDep):
         text("""
             SELECT u.id, u.email, u.full_name, u.phone, u.status,
                    u.last_login_at, u.created_at, u.store_id,
+                   u.last_device_type, u.last_browser, u.last_seen_at,
+                   u.last_ip_address,
                    STRING_AGG(r.name, ',') AS role
             FROM users u
             LEFT JOIN user_roles ur ON ur.user_id = u.id
@@ -561,6 +583,10 @@ async def employees(ctx: DbTenantDep):
                 "status": r["status"],
                 "is_active": r["status"] == "active",
                 "last_login_at": r["last_login_at"].isoformat() if r["last_login_at"] else None,
+                "last_device_type": r["last_device_type"],
+                "last_browser": r["last_browser"],
+                "last_seen_at": r["last_seen_at"].isoformat() if r["last_seen_at"] else None,
+                "last_ip_address": r["last_ip_address"],
                 "created_at": r["created_at"].isoformat() if r["created_at"] else None,
                 "store_id": str(r["store_id"]) if r["store_id"] else None,
             }

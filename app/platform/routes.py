@@ -4,6 +4,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import Date, and_, case, cast, desc, func, select, text
+from sqlalchemy.orm import aliased
 
 from app.core.platform_deps import PlatformDep, require_platform_permission
 from app.core.ratelimit import auth_rate_limit
@@ -142,6 +143,12 @@ async def me(ctx: PlatformDep):
                     "last_login_at": admin.last_login_at.isoformat()
                     if admin.last_login_at
                     else None,
+                    "last_device_type": admin.last_device_type,
+                    "last_browser": admin.last_browser,
+                    "last_seen_at": admin.last_seen_at.isoformat()
+                    if admin.last_seen_at
+                    else None,
+                    "last_ip_address": admin.last_ip_address,
                 }
             )
 
@@ -230,6 +237,10 @@ async def list_admins(
                     "status": a.status,
                     "totp_enabled": bool(a.totp_enabled),
                     "last_login_at": a.last_login_at.isoformat() if a.last_login_at else None,
+                    "last_device_type": a.last_device_type,
+                    "last_browser": a.last_browser,
+                    "last_seen_at": a.last_seen_at.isoformat() if a.last_seen_at else None,
+                    "last_ip_address": a.last_ip_address,
                     "created_at": a.created_at.isoformat() if a.created_at else None,
                 }
                 for a in rows
@@ -383,9 +394,18 @@ async def list_tenants(
     page: int = 1,
     page_size: int = 50,
 ):
+    from app.identity.models import User
     from app.tenancy.models import Tenant
 
-    query = select(Tenant)
+    # The owner row carries the device the business signed up and signs in
+    # from; users.email is unique, so this join never fans out.
+    owner = aliased(User)
+    query = select(
+        Tenant,
+        owner.last_device_type,
+        owner.last_browser,
+        owner.last_seen_at,
+    ).outerjoin(owner, owner.email == Tenant.owner_email)
     count_query = select(func.count(Tenant.id))
 
     if status_filter:
@@ -412,7 +432,7 @@ async def list_tenants(
     query = query.order_by(Tenant.created_at.desc())
     query = query.offset((page - 1) * page_size).limit(page_size)
     result = await ctx.session.execute(query)
-    tenants = result.scalars().all()
+    rows = result.all()
 
     return ok(
         {
@@ -427,9 +447,12 @@ async def list_tenants(
                     "owner_email": t.owner_email,
                     "tier": t.tier,
                     "status": t.status,
+                    "owner_device_type": device_type,
+                    "owner_browser": browser,
+                    "owner_last_seen_at": last_seen.isoformat() if last_seen else None,
                     "created_at": t.created_at.isoformat() if t.created_at else None,
                 }
-                for t in tenants
+                for t, device_type, browser, last_seen in rows
             ],
             "total": total,
             "page": page,
@@ -727,6 +750,10 @@ async def list_all_users(
                     "status": u.status,
                     "totp_enabled": bool(u.totp_enabled),
                     "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
+                    "last_device_type": u.last_device_type,
+                    "last_browser": u.last_browser,
+                    "last_seen_at": u.last_seen_at.isoformat() if u.last_seen_at else None,
+                    "last_ip_address": u.last_ip_address,
                     "created_at": u.created_at.isoformat() if u.created_at else None,
                 }
                 for u in users
@@ -771,6 +798,8 @@ async def tenant_employees(tenant_id: str, ctx: PlatformDep):
         text("""
             SELECT u.id, u.email, u.full_name, u.phone, u.status,
                    u.last_login_at, u.created_at,
+                   u.last_device_type, u.last_browser, u.last_seen_at,
+                   u.last_ip_address,
                    STRING_AGG(r.name, ',') AS roles
             FROM users u
             LEFT JOIN user_roles ur ON ur.user_id = u.id
@@ -792,6 +821,10 @@ async def tenant_employees(tenant_id: str, ctx: PlatformDep):
                 "roles": r["roles"] or "",
                 "status": r["status"],
                 "last_login_at": r["last_login_at"].isoformat() if r["last_login_at"] else None,
+                "last_device_type": r["last_device_type"],
+                "last_browser": r["last_browser"],
+                "last_seen_at": r["last_seen_at"].isoformat() if r["last_seen_at"] else None,
+                "last_ip_address": r["last_ip_address"],
                 "created_at": r["created_at"].isoformat() if r["created_at"] else None,
             }
             for r in rows
@@ -1698,6 +1731,10 @@ async def audit_actor_details(actor_id: str, ctx: PlatformDep):
                 "store_name": store_name,
                 "created_at": row.created_at.isoformat() if row.created_at else None,
                 "last_login_at": row.last_login_at.isoformat() if row.last_login_at else None,
+                "last_device_type": row.last_device_type,
+                "last_browser": row.last_browser,
+                "last_seen_at": row.last_seen_at.isoformat() if row.last_seen_at else None,
+                "last_ip_address": row.last_ip_address,
             }
         )
 
@@ -1722,6 +1759,10 @@ async def audit_actor_details(actor_id: str, ctx: PlatformDep):
                 "store_name": None,
                 "created_at": admin.created_at.isoformat() if admin.created_at else None,
                 "last_login_at": admin.last_login_at.isoformat() if admin.last_login_at else None,
+                "last_device_type": admin.last_device_type,
+                "last_browser": admin.last_browser,
+                "last_seen_at": admin.last_seen_at.isoformat() if admin.last_seen_at else None,
+                "last_ip_address": admin.last_ip_address,
             }
         )
 
