@@ -116,7 +116,7 @@ def _expiry_fields(expiry: Any) -> dict[str, Any]:
             expiry = date.fromisoformat(expiry)
         except ValueError:
             return {"expiry_date": expiry, "expired": False, "days_left": None}
-    # Expiry is a date on the merchant's local calendar; comparing it with
+    # Expiry is a date on the tenant's local calendar; comparing it with
     # the UTC day puts the count out by one between local midnight and the
     # UTC-day rollover.
     today = date.today()
@@ -1605,7 +1605,7 @@ async def get_expiring_products(
     """
     try:
         window = _clamp_int(days, 30, 0, 3650)
-        # Product expiry dates live on the merchant's local calendar, not UTC.
+        # Product expiry dates live on the tenant's local calendar, not UTC.
         today = date.today()
         horizon = today + timedelta(days=window)
         sql = (
@@ -2278,7 +2278,7 @@ async def get_accounts_payable(
             ),
             params,
         )
-        # Payable due dates live on the merchant's local calendar, not UTC.
+        # Payable due dates live on the tenant's local calendar, not UTC.
         today = date.today()
         payables = []
         for r in result.fetchall():

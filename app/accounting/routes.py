@@ -121,7 +121,7 @@ def _required_store_id(store_id: str | None, context: str) -> str:
 
     An untagged row is invisible to store-filtered views -- every store
     screen filters on store_id, so a liability created across all stores
-    never stops showing as owed in each store even after what the merchant
+    never stops showing as owed in each store even after what the tenant
     already paid. All Stores is for viewing; anything that posts money
     against a store names that store.
     """

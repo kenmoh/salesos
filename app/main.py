@@ -46,16 +46,7 @@ async def lifespan(app: FastAPI):
     # subprocess because it feeds SSE connections held by this process.
     from app.core.sse import broker
 
-    # Layerbase's free tier hibernates Redis after 15 idle minutes; the wake
-    # costs login traffic 1-5s. A periodic solo ping keeps the tickover alive
-    # without holding a connection slot.
-    import asyncio
-
-    from app.core.redis_client import redis_keepalive_loop
-
-    redis_keepalive = asyncio.create_task(redis_keepalive_loop(logger=logger))
     yield
-    redis_keepalive.cancel()
 
     await broker.shutdown()
     logger.info("StoreFlow shutting down")
@@ -65,7 +56,7 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(
         title="StoreFlow API",
-        description="SaaS POS, Inventory, Invoicing and Accounting for the Nigerian market.",
+        description="SaaS POS, Inventory, Invoicing and Accounting for businesses.",
         version=settings.app_version,
         docs_url="/docs" if not settings.is_production else None,
         redoc_url="/redoc" if not settings.is_production else None,

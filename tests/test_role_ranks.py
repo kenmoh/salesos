@@ -184,7 +184,7 @@ class TestRouteSurfacesTheCeilingAsBadRequest:
 
 
 class TestBuiltinRolesCannotBeChanged:
-    """The seeded roles describe the shape of the business, so the merchant
+    """The seeded roles describe the shape of the business, so the tenant
     composes a custom role out of the permission set instead of editing these;
     editing a built-in would silently change what the seeded permissions mean
     for every role that shares them."""

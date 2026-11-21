@@ -205,7 +205,7 @@ asyncio.run(main())
     "currency": "NGN",
     "charged_amount": 100,
     "app_fee": 1.4,
-    "merchant_fee": 0,
+    "tenant_fee": 0,
     "processor_response": "Approved by Financial Institution",
     "auth_model": "PIN",
     "ip": "::ffff:10.5.179.3",

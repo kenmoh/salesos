@@ -344,7 +344,7 @@ class TestRemittanceTracking:
 class TestRemitTaxRoute:
     """The remittance endpoint guards its ceiling against the ledger.
 
-    A merchant cannot remit more tax than the account still carries, and an
+    A tenant cannot remit more tax than the account still carries, and an
     account no tax maps to is not remittable at all: both leave no journal
     and no audit row behind. The repository answers the ledger questions,
     so the route only has to mediate.

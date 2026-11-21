@@ -3,7 +3,7 @@
 Remittances posted before remitting became store-bound (the All Stores
 workflow) left ``journals.store_id`` NULL. Store-filtered owed balances join
 on journals.store_id, so whichever store the tax was collected in kept
-showing the amount as still owed even after the merchant paid it — the
+showing the amount as still owed even after the tenant paid it — the
 remittance was invisible to every store view.
 
 For the tenant given, every ``tax_remittance`` journal with no store gets the
