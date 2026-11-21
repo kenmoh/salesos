@@ -51,6 +51,11 @@ class SubscriptionPlan(StoreFlowBase):
         order_by="TransactionFeeTier.minimum_amount",
     )
 
+    @property
+    def features(self) -> list["PlanFeature"]:
+        """Alias so the PlanOut schema (from_attributes) can read plan_features as ``features``."""
+        return self.plan_features
+
 
 class PlanFeature(StoreFlowBase):
     __tablename__ = "plan_features"
