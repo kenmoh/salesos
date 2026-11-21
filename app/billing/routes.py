@@ -17,8 +17,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.core.dependencies import DbTenantDep
+from app.core.dependencies import DbTenantDep, get_db
 from app.core.platform_deps import PlatformDep, require_platform_permission
 from app.core.responses import DataResponse, ok
 from app.billing import fees as fee_service
@@ -410,10 +411,14 @@ async def tenant_list_billable_transactions(ctx: DbTenantDep):
     "/plans",
     response_model=list[PlanOut],
 )
-async def public_list_plans(ctx: DbTenantDep):
-    result = await ctx.session.execute(
+async def public_list_plans(ctx: get_db):
+    result = await ctx.execute(
         select(SubscriptionPlan)
         .where(SubscriptionPlan.is_active.is_(True))
+        .options(
+            selectinload(SubscriptionPlan.plan_features),
+            selectinload(SubscriptionPlan.fee_tiers),
+        )
         .order_by(SubscriptionPlan.sort_order, SubscriptionPlan.name)
     )
     return result.scalars().all()
@@ -423,8 +428,8 @@ async def public_list_plans(ctx: DbTenantDep):
     "/plans/{plan_id}/features",
     response_model=list[PlanFeatureOut],
 )
-async def public_plan_features(plan_id: UUID, ctx: DbTenantDep):
-    result = await ctx.session.execute(
+async def public_plan_features(plan_id: UUID, ctx: get_db):
+    result = await ctx.execute(
         select(PlanFeature)
         .where(PlanFeature.plan_id == plan_id, PlanFeature.is_enabled.is_(True))
         .order_by(PlanFeature.sort_order, PlanFeature.feature_key)
@@ -436,8 +441,8 @@ async def public_plan_features(plan_id: UUID, ctx: DbTenantDep):
     "/fee-tiers",
     response_model=list[FeeTierOut],
 )
-async def public_fee_tiers(ctx: DbTenantDep):
-    result = await ctx.session.execute(
+async def public_fee_tiers(ctx: get_db):
+    result = await ctx.execute(
         select(TransactionFeeTier)
         .where(TransactionFeeTier.is_active.is_(True))
         .order_by(TransactionFeeTier.plan_id, TransactionFeeTier.minimum_amount)

@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import Boolean, DateTime, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.common.db.base import StoreFlowBase
 
@@ -37,6 +37,16 @@ class SubscriptionPlan(StoreFlowBase):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+    plan_features: Mapped[list["PlanFeature"]] = relationship(
+        back_populates="plan",
+        cascade="all, delete-orphan",
+        order_by="PlanFeature.sort_order",
+    )
+    fee_tiers: Mapped[list["TransactionFeeTier"]] = relationship(
+        back_populates="plan",
+        cascade="all, delete-orphan",
+        order_by="TransactionFeeTier.minimum_amount",
+    )
 
 
 class PlanFeature(StoreFlowBase):
@@ -54,6 +64,7 @@ class PlanFeature(StoreFlowBase):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+    plan: Mapped["SubscriptionPlan"] = relationship(back_populates="plan_features")
 
 
 class PricingVersion(StoreFlowBase):
@@ -85,6 +96,7 @@ class TransactionFeeTier(StoreFlowBase):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+    plan: Mapped["SubscriptionPlan"] = relationship(back_populates="fee_tiers")
 
 
 # ── Tenant-scoped subscription / billing / wallet ──────────────────────────

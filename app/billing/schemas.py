@@ -26,6 +26,8 @@ class PlanOut(PlanBase):
     id: UUID
     created_at: datetime
     updated_at: datetime
+    features: list[PlanFeatureOut] = []
+    fee_tiers: list[FeeTierOut] = []
 
 
 class PlanCreate(PlanBase):
