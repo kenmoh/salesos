@@ -12,7 +12,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -54,7 +54,11 @@ class PlanFeature(StoreFlowBase):
     __table_args__ = (UniqueConstraint("plan_id", "feature_key", name="uq_plan_features_plan_key"),)
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    plan_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    plan_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("subscription_plans.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     feature_key: Mapped[str] = mapped_column(String(80), nullable=False)
     feature_label: Mapped[str] = mapped_column(String(200), nullable=False)
     feature_value: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -85,7 +89,11 @@ class TransactionFeeTier(StoreFlowBase):
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     pricing_version_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
-    plan_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    plan_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("subscription_plans.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     label: Mapped[str] = mapped_column(String(100), nullable=False)
     minimum_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     maximum_amount: Mapped[Decimal | None] = mapped_column(Numeric(15, 2), nullable=True)
