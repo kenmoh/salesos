@@ -13,6 +13,7 @@ SERVICE_HANDLERS: dict[str, list[tuple[str, EventHandler]]] = {
     "notifications": [],
     "reporting": [],
     "documents": [],
+    "billing": [],
 }
 
 
@@ -27,6 +28,7 @@ def apply_service_handlers(service: str, register_fn: Callable[[str, EventHandle
 
 
 from ..handlers import accounting, documents, inventory, notifications, reporting, sales
+from app.billing import handlers as billing
 from app.common.events.names import (
     CART_CHECKED_OUT,
     DOCUMENT_STATUS_CHANGED,
@@ -41,6 +43,7 @@ from app.common.events.names import (
     TENANT_CREATED,
     CATALOG_PRODUCT_CREATED,
     TENANT_TIER_CHANGED,
+    DOCUMENT_STATUS_CHANGED,
 )
 
 register("sales", CART_CHECKED_OUT, sales.handle_cart_checked_out)
@@ -61,3 +64,7 @@ register("reporting", SALE_RETURNED, reporting.handle_sale_voided)
 register("reporting", PAYMENT_SUCCEEDED, reporting.handle_payment_succeeded)
 register("reporting", TENANT_TIER_CHANGED, reporting.handle_tier_changed)
 register("documents", DOCUMENT_STATUS_CHANGED, documents.handle_document_status_changed)
+register("billing", SALE_CONFIRMED, billing.handle_sale_confirmed)
+register("billing", SALE_VOIDED, billing.handle_sale_reversed)
+register("billing", SALE_RETURNED, billing.handle_sale_reversed)
+register("billing", DOCUMENT_STATUS_CHANGED, billing.handle_document_status_changed)

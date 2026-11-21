@@ -1088,6 +1088,7 @@ async def _apply_sale_created(
         store_id=str(store_id),
         notes=notes,
         correlation_id=str(client_reference) if client_reference else None,
+        client_reference=client_reference,
     )
     sale_id = str(sale_result["id"])
     total = float(sale_result.get("total") or 0)

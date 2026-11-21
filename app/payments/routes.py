@@ -660,6 +660,23 @@ async def flutterwave_webhook(request: Request, verif_hash: str = Header(default
                     if str(e) != "not_settlement":
                         pass
 
+            # Billing settlement flow: clear accrued billing debt.
+            is_billing_settlement = intent_meta.get("type") == "billing_settlement"
+            if is_billing_settlement:
+                try:
+                    await bridge.confirm_billing_settlement(
+                        business_id=str(resolved_intent.tenant_id),
+                        intent_id=str(resolved_intent.id),
+                        gateway_data=data,
+                    )
+                    await _log_webhook_event(event, event_id, payload)
+                    return ok(
+                        {"received": True, "confirmed": True, "kind": "billing_settlement"}
+                    )
+                except ValueError as e:
+                    if str(e) != "not_billing_settlement":
+                        pass
+
             # Intent-first flow: confirm the intent which creates the sale
             try:
                 await bridge.confirm_payment(

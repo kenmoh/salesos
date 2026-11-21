@@ -183,6 +183,12 @@ def create_app() -> FastAPI:
 
     app.include_router(platform_router, prefix=prefix)
 
+    from app.billing import routes as billing_routes
+
+    app.include_router(billing_routes.platform_billing_router, prefix="/api/v1/platform")
+    app.include_router(billing_routes.tenant_billing_router, prefix=prefix)
+    app.include_router(billing_routes.public_pricing_router, prefix=prefix)
+
     from app.stores.routes_sync import sync_router
 
     app.include_router(sync_router, prefix=prefix)

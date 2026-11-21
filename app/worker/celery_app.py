@@ -33,6 +33,7 @@ celery_app.conf.update(
         "app.worker.tasks.task_generate_product_qr": {"queue": "catalog"},
         "app.worker.tasks.task_refresh_analytics_mvs": {"queue": "analytics"},
         "app.worker.tasks.task_cleanup_in_app_notifications": {"queue": "notifications"},
+        "app.worker.tasks.task_generate_billing_invoices": {"queue": "billing"},
     },
     # Beat schedule for periodic tasks
     beat_schedule={
@@ -55,6 +56,10 @@ celery_app.conf.update(
         "queue-health": {
             "task": "app.worker.tasks.task_queue_health",
             "schedule": crontab(minute="*/5"),  # Every 5 minutes
+        },
+        "generate-billing-invoices": {
+            "task": "app.worker.tasks.task_generate_billing_invoices",
+            "schedule": crontab(minute=0, hour=0),  # Daily at midnight UTC
         },
     },
 )

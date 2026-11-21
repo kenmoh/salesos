@@ -17,6 +17,7 @@ from app.common.db.base import StoreFlowBase
 # Import ALL models so they register with StoreFlowBase.metadata
 import app.accounting.models  # noqa: F401
 import app.ai.models  # noqa: F401
+import app.billing.models  # noqa: F401
 import app.cart.models  # noqa: F401
 import app.catalog.models  # noqa: F401
 import app.customers.models  # noqa: F401

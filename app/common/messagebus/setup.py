@@ -37,6 +37,12 @@ SERVICE_QUEUES: dict[str, list[str]] = {
         "payment.succeeded",
     ],
     "reporting": ["reporting.#", "sales.#", "payment.#", "tenancy.tier_changed"],
+    "billing": [
+        "sales.sale_confirmed",
+        "sales.sale_voided",
+        "sales.sale_returned",
+        "documents.status_changed",
+    ],
 }
 
 

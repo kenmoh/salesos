@@ -16,7 +16,9 @@ Tasks that duplicate event handlers have been removed:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import text
@@ -606,5 +608,96 @@ def task_queue_health() -> dict:
             results["oldest_pending_seconds"] = oldest
         except Exception as exc:  # noqa: BLE001 - never crash the beat schedule
             logger.error("Outbox health probe failed: %s", exc)
+
+    return results
+
+
+@celery_app.task(name="app.worker.tasks.task_generate_billing_invoices")
+def task_generate_billing_invoices() -> dict:
+    """Generate invoices for due 30-day billing periods and attempt wallet auto-debit.
+
+    Runs on a daily schedule via Celery beat. For each active subscription whose
+    billing period has ended:
+
+    1. Generates an invoice for the just-closed period (idempotent).
+    2. If auto-debit is enabled and the wallet covers the amount due, debits it.
+    3. Otherwise marks the subscription past-due and opens a 7-day grace window.
+    4. Advances the subscription to its next 30-day cycle, applying any staged
+       plan change (no proration).
+
+    Returns:
+        Dict with counts of invoices generated and wallet debits applied.
+    """
+    from app.billing import invoices as invoice_service
+    from app.billing import subscriptions as sub_service
+    from app.billing.models import MerchantSubscription, TenantWallet
+    from app.common.db.engine import create_service_database
+    from sqlalchemy import select
+
+    sdb = create_service_database(settings.database_url)
+
+    async def _process():
+        async with sdb.session() as session:
+            now = datetime.utcnow()
+            result = await session.execute(
+                select(MerchantSubscription).where(
+                    MerchantSubscription.next_billing_date <= now,
+                    MerchantSubscription.status.in_(("active", "past_due")),
+                )
+            )
+            subs = result.scalars().all()
+
+            invoices = 0
+            debits = 0
+            skipped_grace = 0
+
+            for sub in subs:
+                # Skip subscriptions still inside their grace window.
+                if sub.status == "past_due" and sub.grace_period_end and sub.grace_period_end > now:
+                    skipped_grace += 1
+                    continue
+
+                # The open period covering the just-ended cycle.
+                period = await sub_service.open_period_for_subscription(session, sub)
+
+                invoice = await invoice_service.generate_invoice_for_period(session, period)
+                if invoice:
+                    invoices += 1
+                    if sub.auto_debit_enabled and invoice.amount_due > 0:
+                        wallet_result = await session.execute(
+                            select(TenantWallet).where(
+                                TenantWallet.tenant_id == sub.tenant_id
+                            )
+                        )
+                        wallet = wallet_result.scalar_one_or_none()
+                        if wallet:
+                            payment = await invoice_service.apply_wallet_payment(
+                                session, invoice=invoice, wallet=wallet
+                            )
+                            if payment:
+                                debits += 1
+                            else:
+                                # Insufficient balance: past due + grace window.
+                                sub.status = "past_due"
+                                sub.grace_period_end = now + timedelta(days=sub_service.GRACE_DAYS)
+                        else:
+                            # No wallet: past due + grace window.
+                            sub.status = "past_due"
+                            sub.grace_period_end = now + timedelta(days=sub_service.GRACE_DAYS)
+
+                # Advance to the next 30-day cycle (applies staged plan change).
+                await sub_service.advance_period(session, sub)
+
+            await session.commit()
+            return {
+                "invoices_generated": invoices,
+                "wallet_debits": debits,
+                "subscriptions_processed": len(subs),
+                "skipped_grace": skipped_grace,
+            }
+
+    result = asyncio.run(_process())
+    logger.info("Billing invoice generation: %s", result)
+    return result
 
     return results

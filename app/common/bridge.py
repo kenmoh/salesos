@@ -6513,10 +6513,12 @@ async def create_or_resume_cart(
             maximum allowed threshold.
     """
     from app.platform.fee_calculator import assert_fee_headroom
+    from app.billing.fees import assert_billing_headroom
 
     sdb_payments = _get_sdb("payments")
     async with sdb_payments.session() as pay_session:
         await assert_fee_headroom(pay_session, UUID(tenant_id))
+        await assert_billing_headroom(pay_session, UUID(tenant_id))
 
     sdb = _get_sdb("cart")
     async with sdb.session() as session:
@@ -7085,6 +7087,7 @@ async def checkout_cart(
     from app.sales.schemas import SaleCreateCommand, SaleItemLine
     from app.sales.service import plan_sale_creation
     from app.sales.repository import create_sale as repo_create_sale, create_sale_items
+    from app.tips.repository import record_tips_for_sale
     from app.platform.fee_calculator import assert_fee_headroom
 
     sdb_payments = _get_sdb("payments")
@@ -7315,6 +7318,20 @@ async def checkout_cart(
             # cart) — each paying multiple network round trips. All tables live in
             # one database, so they commit atomically here instead.
             result, sale_model, sale_item_models, sale_outbox = plan_sale_creation(sale_command)
+
+            # ── Billing headroom: refuse the sale if the tenant cannot cover
+            # the transaction fee from wallet or within the debt cap. This is
+            # checked before the sale is persisted so a blocked sale costs
+            # nothing. Mirrors assert_fee_headroom for the legacy fee system.
+            from app.billing.fees import resolve_fee, check_fee_affordability, money
+
+            fee_base = money(subtotal) - money(discount_amount)
+            if fee_base > 0:
+                _affordable, _reason = await check_fee_affordability(
+                    cart_session, tenant_uid, fee_base
+                )
+                if not _affordable:
+                    raise ValueError("fee_balance_exceeded")
 
             await repo_create_sale(cart_session, sale_model)
             await create_sale_items(cart_session, sale_item_models)
@@ -9465,6 +9482,47 @@ async def confirm_settlement_payment(
     return {"cleared": cleared}
 
 
+async def confirm_billing_settlement(
+    *, business_id: str, intent_id: str, gateway_data: dict
+) -> dict:
+    """Webhook confirm for a billing settlement link: clear accrued debt.
+
+    The intent's ``intent_metadata.type`` must be ``billing_settlement``.
+    On confirmation, ``merchant_subscriptions.accrued_debt`` is zeroed out.
+    """
+    from app.payments.models import PaymentIntent
+    from app.payments.repository import get_intent_by_id, update_intent_status
+    from app.billing.models import MerchantSubscription
+
+    sdb = _get_sdb("payments")
+    async with sdb.session() as session:
+        intent = await get_intent_by_id(session, UUID(intent_id))
+        if not intent:
+            raise ValueError("intent_not_found")
+
+        metadata = {}
+        try:
+            metadata = json.loads(intent.intent_metadata or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        if metadata.get("type") != "billing_settlement":
+            raise ValueError("not_billing_settlement")
+
+        await update_intent_status(session, intent.id, "completed", gateway_data)
+
+        tenant_id = UUID(metadata.get("tenant_id") or str(intent.tenant_id))
+        result = await session.execute(
+            select(MerchantSubscription).where(MerchantSubscription.tenant_id == tenant_id)
+        )
+        sub = result.scalar_one_or_none()
+        if sub:
+            sub.accrued_debt = Decimal("0.00")
+
+        await session.commit()
+
+    return {"cleared": True}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DOCUMENT MANAGEMENT
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -9647,8 +9705,10 @@ async def create_document(
         # as opening a cart or checking one out. Checked before planning so a
         # refused document costs nothing.
         from app.platform.fee_calculator import assert_fee_headroom
+        from app.billing.fees import assert_billing_headroom
 
         await assert_fee_headroom(session, UUID(tenant_id))
+        await assert_billing_headroom(session, UUID(tenant_id))
 
         # Catalog lines take their taxes from the product; custom lines take
         # the ones picked for them. Both are resolved from the tenant's own
