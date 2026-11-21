@@ -17,7 +17,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, joinedload
 
 from app.core.dependencies import DbTenantDep, get_db
 from app.core.platform_deps import PlatformDep, require_platform_permission
@@ -52,6 +52,7 @@ from app.billing.schemas import (
     PricingVersionCreate,
     PricingVersionOut,
     SubscriptionOut,
+    WalletFundLinkRequest,
     WalletFundRequest,
     WalletOut,
     WalletTransactionOut,
@@ -79,7 +80,12 @@ def require_super_admin(ctx: PlatformDep):
 )
 async def platform_list_plans(ctx: PlatformDep):
     result = await ctx.session.execute(
-        select(SubscriptionPlan).order_by(SubscriptionPlan.sort_order, SubscriptionPlan.name)
+        select(SubscriptionPlan)
+        .options(
+            selectinload(SubscriptionPlan.fee_tiers),
+            selectinload(SubscriptionPlan.plan_features),
+        )
+        .order_by(SubscriptionPlan.sort_order, SubscriptionPlan.name)
     )
     return result.scalars().all()
 
@@ -389,6 +395,31 @@ async def tenant_billing_settle_link(ctx: DbTenantDep):
             raise HTTPException(status_code=400, detail="nothing_pending")
         raise HTTPException(status_code=400, detail=str(e))
     return ok(result, message="settlement_link_created")
+
+
+@tenant_billing_router.post(
+    "/billing/wallet/funding-link",
+    response_model=DataResponse[dict],
+    status_code=status.HTTP_201_CREATED,
+)
+async def tenant_wallet_funding_link(
+    payload: WalletFundLinkRequest, ctx: DbTenantDep
+):
+    """Create a Flutterwave link to fund the tenant's wallet.
+
+    The link amount is specified by the tenant. Confirmation (webhook)
+    credits the wallet in full.
+    """
+    try:
+        result = await invoice_service.create_wallet_funding_link(
+            ctx.session,
+            tenant_id=ctx.user.business_id,
+            actor_id=ctx.user.user_id,
+            amount=payload.amount,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return ok(result, message="funding_link_created")
 
 
 @tenant_billing_router.get(

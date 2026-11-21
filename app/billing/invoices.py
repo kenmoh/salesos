@@ -362,3 +362,112 @@ async def create_billing_settlement_link(
         "tx_ref": tx_ref,
         "regenerated": regenerated,
     }
+
+
+async def create_wallet_funding_link(
+    session: AsyncSession,
+    *,
+    tenant_id: UUID,
+    actor_id: str,
+    amount: Decimal,
+) -> dict:
+    """Create a Flutterwave link to fund the tenant's wallet.
+
+    The Flutterwave webhook (intent type ``wallet_funding``) credits the
+    wallet on confirmation.
+    """
+    import re
+
+    from app.common.bridge import _get_sdb
+    from app.identity.repository import get_user_by_id as _get_user
+    from app.payments.models import PaymentIntent
+    from app.payments.repository import create_intent
+
+    total = money(amount)
+    if total <= 0:
+        raise ValueError("amount_must_be_positive")
+
+    sdb = _get_sdb("payments")
+    async with sdb.session() as pay_session:
+        open_intent = (
+            await pay_session.execute(
+                select(PaymentIntent).where(
+                    PaymentIntent.tenant_id == tenant_id,
+                    PaymentIntent.status == "pending",
+                    PaymentIntent.gateway_reference.like("SF-WALLET-FUND-%"),
+                ).order_by(PaymentIntent.created_at.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+
+        if open_intent:
+            base_ref = re.sub(r"-R\d+$", "", open_intent.gateway_reference)
+            attempt = re.search(r"-R(\d+)$", open_intent.gateway_reference)
+            n = int(attempt.group(1)) + 1 if attempt else 1
+            tx_ref = f"{base_ref}-R{n}"
+            regenerated = True
+            try:
+                metadata = json.loads(open_intent.intent_metadata or "{}")
+            except (TypeError, ValueError):
+                metadata = {}
+            metadata["type"] = "wallet_funding"
+            metadata["tenant_id"] = str(tenant_id)
+            open_intent.amount = float(total)
+            open_intent.gateway_reference = tx_ref
+            open_intent.intent_metadata = json.dumps(metadata)
+            intent = open_intent
+        else:
+            regenerated = False
+            tx_ref = f"SF-WALLET-FUND-{uuid4().hex[:10].upper()}"
+            intent = PaymentIntent(
+                id=uuid4(),
+                tenant_id=tenant_id,
+                sale_id=None,
+                cart_id=None,
+                method="card",
+                amount=float(total),
+                currency="NGN",
+                status="pending",
+                gateway_reference=tx_ref,
+                intent_metadata=json.dumps({
+                    "type": "wallet_funding",
+                    "tenant_id": str(tenant_id),
+                    "created_by": actor_id,
+                }),
+            )
+
+    owner_email = None
+    async with _get_sdb("identity").session() as id_session:
+        actor_user = await _get_user(id_session, UUID(actor_id))
+        owner_email = actor_user.email if actor_user else None
+
+    async with sdb.session() as pay_session:
+        if regenerated:
+            intent = await pay_session.merge(intent)
+        else:
+            await create_intent(pay_session, intent)
+        await pay_session.commit()
+
+    link_result = await flutterwave_service.create_payment_link(
+        amount=total,
+        tx_ref=tx_ref,
+        customer_email=owner_email or "settlements@storeflow.ng",
+        title="Fund Wallet",
+        meta={"tenant_id": str(tenant_id), "intent_id": str(intent.id)},
+    )
+
+    async with sdb.session() as pay_session:
+        row = (
+            await pay_session.execute(
+                select(PaymentIntent).where(PaymentIntent.id == intent.id)
+            )
+        ).scalar_one()
+        row.authorization_url = link_result["link"]
+        await pay_session.commit()
+
+    return {
+        "link": link_result["link"],
+        "amount": float(total),
+        "intent_id": str(intent.id),
+        "tx_ref": tx_ref,
+        "regenerated": regenerated,
+    }

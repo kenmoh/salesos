@@ -202,6 +202,10 @@ class WalletFundRequest(BaseModel):
     description: Optional[str] = "Wallet funding"
 
 
+class WalletFundLinkRequest(BaseModel):
+    amount: Decimal
+
+
 # ── Billable transaction ────────────────────────────────────────────────────
 
 class BillableTransactionOut(BaseModel):

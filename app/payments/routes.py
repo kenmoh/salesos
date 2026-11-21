@@ -677,6 +677,23 @@ async def flutterwave_webhook(request: Request, verif_hash: str = Header(default
                     if str(e) != "not_billing_settlement":
                         pass
 
+            # Wallet funding flow: credit the wallet.
+            is_wallet_funding = intent_meta.get("type") == "wallet_funding"
+            if is_wallet_funding:
+                try:
+                    await bridge.confirm_wallet_funding(
+                        business_id=str(resolved_intent.tenant_id),
+                        intent_id=str(resolved_intent.id),
+                        gateway_data=data,
+                    )
+                    await _log_webhook_event(event, event_id, payload)
+                    return ok(
+                        {"received": True, "confirmed": True, "kind": "wallet_funding"}
+                    )
+                except ValueError as e:
+                    if str(e) != "not_wallet_funding":
+                        pass
+
             # Intent-first flow: confirm the intent which creates the sale
             try:
                 await bridge.confirm_payment(

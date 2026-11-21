@@ -9523,6 +9523,52 @@ async def confirm_billing_settlement(
     return {"cleared": True}
 
 
+async def confirm_wallet_funding(
+    *, business_id: str, intent_id: str, gateway_data: dict
+) -> dict:
+    """Webhook confirm for a wallet funding link: credit the wallet.
+
+    The intent's ``intent_metadata.type`` must be ``wallet_funding``.
+    On confirmation, the wallet balance is increased by the intent amount.
+    """
+    from app.payments.models import PaymentIntent
+    from app.payments.repository import get_intent_by_id, update_intent_status
+    from app.billing.models import MerchantSubscription, TenantWallet
+    from app.billing.invoices import credit_wallet
+
+    sdb = _get_sdb("payments")
+    async with sdb.session() as session:
+        intent = await get_intent_by_id(session, UUID(intent_id))
+        if not intent:
+            raise ValueError("intent_not_found")
+
+        metadata = {}
+        try:
+            metadata = json.loads(intent.intent_metadata or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        if metadata.get("type") != "wallet_funding":
+            raise ValueError("not_wallet_funding")
+
+        await update_intent_status(session, intent.id, "completed", gateway_data)
+
+        tenant_id = UUID(metadata.get("tenant_id") or str(intent.tenant_id))
+        amount = Decimal(str(intent.amount))
+
+        # Credit the wallet.
+        await credit_wallet(
+            session,
+            tenant_id=tenant_id,
+            amount=amount,
+            entry_type="funding",
+            gateway_reference=intent.gateway_reference,
+            description=f"Wallet funding via Flutterwave - {intent.gateway_reference}",
+        )
+
+        await session.commit()
+
+    return {"credited": float(amount)}
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DOCUMENT MANAGEMENT
 # ═══════════════════════════════════════════════════════════════════════════════
