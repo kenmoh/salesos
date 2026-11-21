@@ -33,6 +33,9 @@ class SubscriptionPlan(StoreFlowBase):
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="NGN")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    annual_discount_pct: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, default=17.00
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow

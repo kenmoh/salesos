@@ -18,6 +18,7 @@ class PlanBase(BaseModel):
     currency: str = "NGN"
     is_active: bool = True
     sort_order: int = 0
+    annual_discount_pct: Decimal = Decimal("17.00")
 
 
 class PlanOut(PlanBase):
@@ -42,6 +43,7 @@ class PlanUpdate(BaseModel):
     currency: Optional[str] = None
     is_active: Optional[bool] = None
     sort_order: Optional[int] = None
+    annual_discount_pct: Optional[Decimal] = None
 
 
 # ── Plan features ───────────────────────────────────────────────────────────
