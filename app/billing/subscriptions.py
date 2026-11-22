@@ -19,6 +19,7 @@ from app.billing.models import (
     MerchantSubscription,
     SubscriptionPlan,
 )
+from app.platform.models import PlatformSetting
 
 PERIOD_DAYS = 30
 GRACE_DAYS = 7
@@ -39,6 +40,15 @@ async def ensure_subscription(
     free = result.scalar_one()
     now = datetime.now(UTC)
     end = now + timedelta(days=PERIOD_DAYS)
+
+    # Read default debt cap from platform settings (fallback to 2000)
+    debt_cap_setting = await session.scalar(
+        select(PlatformSetting).where(PlatformSetting.key == "default_debt_cap")
+    )
+    default_debt_cap = (
+        float(debt_cap_setting.value) if debt_cap_setting and debt_cap_setting.value else 2000.0
+    )
+
     sub = MerchantSubscription(
         tenant_id=tenant_id,
         plan_id=free.id,
@@ -48,6 +58,7 @@ async def ensure_subscription(
         current_period_end=end,
         next_billing_date=end,
         auto_debit_enabled=True,
+        debt_cap=default_debt_cap,
     )
     session.add(sub)
     await session.flush()
