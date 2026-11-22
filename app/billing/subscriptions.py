@@ -109,6 +109,9 @@ async def apply_pending_plan(session: AsyncSession, sub: MerchantSubscription) -
     sub.pending_plan_id = None
     sub.plan_change_requested_at = None
     await session.flush()
+    from app.billing.limits import invalidate_product_limit
+
+    await invalidate_product_limit(str(sub.tenant_id))
     return True
 
 

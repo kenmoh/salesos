@@ -70,6 +70,7 @@ class PlanFeature(StoreFlowBase):
     feature_key: Mapped[str] = mapped_column(String(80), nullable=False)
     feature_label: Mapped[str] = mapped_column(String(200), nullable=False)
     feature_value: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    limit_value: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)

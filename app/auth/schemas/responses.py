@@ -132,6 +132,17 @@ class ProductCreatedForStore(_Base):
     auto_calc_tax: bool = False
 
 
+class StoreProductsResponse(_Base):
+    """Store product list with the current store's product quota."""
+
+    data: list["StoreProductListItem"] = []
+    total: int = 0
+    page: int = 1
+    page_size: int = 0
+    catalog_total: int | None = None
+    product_limit: int | None = None
+
+
 class StoreProductListItem(_Base):
     id: str = ""
     name: str = ""

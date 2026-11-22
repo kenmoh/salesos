@@ -27,11 +27,12 @@ def ok(data, *, message="ok"):
     return {"message": message, "data": data}
 
 
-def paginated(items, *, total, page, page_size, message="ok"):
+def paginated(items, *, total, page, page_size, message="ok", **extra):
     return {
         "message": message,
         "data": list(items),
         "total": total,
         "page": page,
         "page_size": page_size,
+        **extra,
     }

@@ -53,6 +53,7 @@ class PlanFeatureBase(BaseModel):
     feature_key: str
     feature_label: str
     feature_value: Optional[str] = None
+    limit_value: Optional[int] = None
     is_enabled: bool = True
     sort_order: int = 0
 
@@ -72,6 +73,7 @@ class PlanFeatureCreate(PlanFeatureBase):
 class PlanFeatureUpdate(BaseModel):
     feature_label: Optional[str] = None
     feature_value: Optional[str] = None
+    limit_value: Optional[int] = None
     is_enabled: Optional[bool] = None
     sort_order: Optional[int] = None
 

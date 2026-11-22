@@ -24,6 +24,7 @@ from app.auth.schemas.responses import (
     StoreProductAdded,
     StoreProductDetail,
     StoreProductListItem,
+    StoreProductsResponse,
     StoreProductUpdated,
     SuccessResponse,
     SyncResult,
@@ -158,6 +159,8 @@ async def delete_category(store_id: str, category_id: str, ctx: TenantDep):
     dependencies=[Depends(require_permission("inventory:write"))],
 )
 async def add_store_product(store_id: str, payload: StoreProductAdd, ctx: TenantDep):
+    from app.billing.limits import PlanLimitError
+
     try:
         result = await bridge.add_product_to_store(
             tenant_id=ctx.user.business_id,
@@ -166,6 +169,11 @@ async def add_store_product(store_id: str, payload: StoreProductAdd, ctx: Tenant
             qty=payload.qty,
         )
         return ok(result)
+    except PlanLimitError as e:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Product limit reached for this store ({e.limit} products). Upgrade your plan to add more.",
+        )
     except ValueError as e:
         detail = str(e)
         if detail == "product_not_found":
@@ -182,6 +190,8 @@ async def add_store_product(store_id: str, payload: StoreProductAdd, ctx: Tenant
     dependencies=[Depends(require_permission("inventory:write"))],
 )
 async def create_product_for_store(store_id: str, payload: ProductCreateForStore, ctx: TenantDep):
+    from app.billing.limits import PlanLimitError
+
     try:
         result = await bridge.create_product_for_store(
             tenant_id=ctx.user.business_id,
@@ -203,13 +213,18 @@ async def create_product_for_store(store_id: str, payload: ProductCreateForStore
             block_sale_after_expiry=payload.block_sale_after_expiry,
         )
         return ok(result)
+    except PlanLimitError as e:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Product limit reached for this store ({e.limit} products). Upgrade your plan to add more.",
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get(
     "/{store_id}/products",
-    response_model=PaginatedResponse[StoreProductListItem],
+    response_model=StoreProductsResponse,
     dependencies=[Depends(require_permission("inventory:read"))],
 )
 async def store_products(
@@ -239,8 +254,16 @@ async def store_products(
             page_size=page_size,
         ),
     )
+    from app.billing.limits import product_limit_for_tenant
+
+    limit = await product_limit_for_tenant(ctx.user.business_id)
     return paginated(
-        result["items"], total=result["total"], page=result["page"], page_size=result["page_size"]
+        result["items"],
+        total=result["total"],
+        page=result["page"],
+        page_size=result["page_size"],
+        catalog_total=result.get("catalog_total"),
+        product_limit=limit,
     )
 
 
@@ -599,6 +622,8 @@ async def receive_distribution_endpoint(
             supervisor_pin=payload.supervisor_pin,
             request=request,
         )
+    from app.billing.limits import PlanLimitError
+
     try:
         result = await bridge.receive_distribution(
             tenant_id=ctx.user.business_id,
@@ -617,6 +642,11 @@ async def receive_distribution_endpoint(
             pin_verified_by=pin_verified_by,
         )
         return ok(result)
+    except PlanLimitError as e:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Product limit reached for this store ({e.limit} products). Upgrade your plan to add more.",
+        )
     except ValueError as e:
         detail = str(e)
         if detail == "distribution_not_found":

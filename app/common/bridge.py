@@ -1010,9 +1010,12 @@ async def create_products(
     if store_id:
         from app.stores.models import StoreProduct
         from app.stores.sku import generate_unique_sku
+        from app.billing.limits import enforce_store_product_limit
 
         sdb_stores = _get_sdb("inventory")
         async with sdb_stores.session() as store_session:
+            # Gate the whole batch against the store's remaining slots.
+            await enforce_store_product_limit(tenant_id, store_id, store_session)
             for result in products:
                 try:
                     auto_sku = await generate_unique_sku(store_session, UUID(tenant_id))
@@ -2737,7 +2740,23 @@ async def get_store_products(
             "total": total,
             "page": page,
             "page_size": page_size,
+            "catalog_total": await _store_catalog_count(tenant_id, store_id),
         }
+
+
+async def _store_catalog_count(tenant_id: str, store_id: str) -> int:
+    """Count StoreProduct rows for a store — the canonical per-store cap metric."""
+    from app.stores.models import StoreProduct
+
+    sdb = _get_sdb("inventory")
+    async with sdb.session() as session:
+        result = await session.execute(
+            select(func.count(StoreProduct.id)).where(
+                StoreProduct.tenant_id == UUID(tenant_id),
+                StoreProduct.store_id == UUID(store_id),
+            )
+        )
+        return result.scalar() or 0
 
 
 async def add_product_to_store(
@@ -2768,12 +2787,45 @@ async def add_product_to_store(
     from app.catalog.repository import get_product_by_id as repo_get_product
     from app.inventory.models import StockBalance
     from app.inventory.repository import get_stock_balance
+    from app.stores.models import StoreProduct
+    from app.billing.limits import enforce_store_product_limit
 
     sdb_catalog = _get_sdb("catalog")
     async with sdb_catalog.session() as cat_session:
         product = await repo_get_product(cat_session, UUID(product_id))
         if not product:
             raise ValueError("product_not_found")
+        product_name = getattr(product, "name", "") or "Product"
+        product_sku = getattr(product, "sku", None)
+        selling_price = float(getattr(product, "selling_price", 0) or 0)
+        cost_price = float(getattr(product, "cost_price", 0) or 0)
+
+    # A store's catalog row is the canonical cap metric. Create it if it does
+    # not exist yet, and gate only genuinely new rows.
+    sdb_stores = _get_sdb("stores")
+    async with sdb_stores.session() as store_session:
+        existing_sp = await store_session.scalar(
+            select(StoreProduct).where(
+                StoreProduct.tenant_id == UUID(tenant_id),
+                StoreProduct.store_id == UUID(store_id),
+                StoreProduct.product_id == UUID(product_id),
+            )
+        )
+        if not existing_sp:
+            await enforce_store_product_limit(tenant_id, store_id, store_session)
+            store_session.add(
+                StoreProduct(
+                    tenant_id=UUID(tenant_id),
+                    store_id=UUID(store_id),
+                    product_id=UUID(product_id),
+                    name=product_name,
+                    sku=product_sku,
+                    selling_price=selling_price,
+                    cost_price=cost_price,
+                    status="active",
+                )
+            )
+            await store_session.flush()
 
     sdb_inventory = _get_sdb("inventory")
     async with sdb_inventory.session() as inv_session:
@@ -2841,6 +2893,13 @@ async def create_product_for_store(
         found = await taxes_for_ids(session, UUID(tenant_id), [UUID(t) for t in tax_ids])
         if {t["id"] for t in found} != {str(UUID(t)) for t in tax_ids}:
             raise ValueError("unknown_tax_id")
+
+        # Gate before any write: count StoreProduct rows for this store.
+        from app.billing.limits import enforce_store_product_limit
+
+        async with _get_sdb("stores").session() as limit_session:
+            await enforce_store_product_limit(tenant_id, store_id, limit_session)
+
         product = Product(
             tenant_id=UUID(tenant_id),
             public_id=new_product_public_id(),
@@ -3127,6 +3186,7 @@ async def create_store_product(
     )
     from app.stores.sku import generate_unique_sku
     from app.catalog.repository import get_product_by_id
+    from app.billing.limits import enforce_store_product_limit
 
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
@@ -3137,6 +3197,8 @@ async def create_store_product(
         existing = await get_store_product(session, UUID(store_id), UUID(product_id))
         if existing:
             raise ValueError("product_already_in_store")
+
+        await enforce_store_product_limit(tenant_id, store_id, session)
 
         if not sku:
             sku = await generate_unique_sku(session, UUID(tenant_id))
@@ -3649,6 +3711,16 @@ async def sync_store_products(
 
     sdb_inv = _get_sdb("inventory")
     async with sdb_inv.session() as session:
+        from app.billing.limits import count_store_products, product_limit_for_tenant
+
+        limit = await product_limit_for_tenant(tenant_id)
+        if limit is not None:
+            used = await count_store_products(tenant_id, target_store_id, session)
+            if used >= limit:
+                from app.billing.limits import PlanLimitError
+
+                raise PlanLimitError(limit=limit, used=used)
+
         for pid in product_uids:
             try:
                 # Check if already exists in target
@@ -4734,10 +4806,13 @@ async def _resolve_destination_product(
     from app.stores.models import StoreProduct
     from app.stores.repository import get_store_product_by_name
     from app.stores.sku import generate_unique_sku
+    from app.billing.limits import enforce_store_product_limit
 
     existing = await get_store_product_by_name(session, tenant_id, store_id, item_name)
     if existing:
         return existing.product_id
+
+    await enforce_store_product_limit(str(tenant_id), str(store_id), session)
 
     source_product = None
     source_sp = (

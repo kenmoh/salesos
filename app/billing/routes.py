@@ -25,6 +25,7 @@ from app.core.responses import DataResponse, ok
 from app.billing import fees as fee_service
 from app.billing import invoices as invoice_service
 from app.billing import subscriptions as sub_service
+from app.billing.limits import invalidate_product_limit, invalidate_product_limit_for_plan
 from app.platform.models import PlatformSetting
 from app.billing.models import (
     BillingInvoice,
@@ -182,10 +183,12 @@ async def platform_upsert_plan_feature(payload: PlanFeatureCreate, ctx: Platform
         for field, value in payload.model_dump(exclude_unset=True).items():
             setattr(feature, field, value)
         await ctx.session.flush()
+        await invalidate_product_limit_for_plan(payload.plan_id, ctx.session)
         return feature
     feature = PlanFeature(**payload.model_dump())
     ctx.session.add(feature)
     await ctx.session.flush()
+    await invalidate_product_limit_for_plan(payload.plan_id, ctx.session)
     return feature
 
 
@@ -201,6 +204,7 @@ async def platform_update_plan_feature(feature_id: UUID, payload: PlanFeatureUpd
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(feature, field, value)
     await ctx.session.flush()
+    await invalidate_product_limit_for_plan(feature.plan_id, ctx.session)
     return feature
 
 
