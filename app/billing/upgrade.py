@@ -109,8 +109,24 @@ async def build_quote(
             )
 
     amount_due = max(money(0), money(gross - credit))
+
+    monthly = money(plan.monthly_price)
+    if interval == "annual":
+        base_price = money(monthly * 12)
+        discount_pct = (
+            float(round((Decimal("1") - gross / base_price) * 100, 2))
+            if base_price > 0
+            else 0.0
+        )
+    else:
+        base_price = monthly
+        discount_pct = 0.0
+
     return {
         "gross": float(gross),
+        "base_price": float(base_price),
+        "discount_pct": discount_pct,
+        "discount_amount": float(base_price - gross),
         "credit": float(credit),
         "amount_due": float(amount_due),
         "interval": interval,

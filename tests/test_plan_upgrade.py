@@ -51,6 +51,38 @@ async def test_plan_price_annual_uses_discount_setting():
 
 
 @pytest.mark.asyncio
+async def test_quote_annual_discount_breakdown():
+    session = MagicMock()
+    plan = MagicMock()
+    plan.id = uuid4()
+    plan.slug = "basic"
+    plan.name = "Basic"
+    plan.monthly_price = Decimal("7500")
+    plan.currency = "NGN"
+
+    current = MagicMock()
+    current.id = uuid4()
+    current.monthly_price = Decimal("0")
+
+    sub = MagicMock()
+    sub.plan_id = current.id
+    sub.billing_interval = "monthly"
+    sub.current_period_end = datetime.now(UTC) + timedelta(days=30)
+    sub.current_period_start = datetime.now(UTC)
+
+    session.get = AsyncMock(return_value=current)
+    setting = MagicMock()
+    setting.value = "17"
+    session.scalar = AsyncMock(return_value=setting)
+
+    quote = await build_quote(session, uuid4(), plan, "annual", sub)
+    assert quote["base_price"] == 90000.0
+    assert quote["gross"] == 74700.0
+    assert quote["discount_pct"] == 17.0
+    assert quote["discount_amount"] == 15300.0
+
+
+@pytest.mark.asyncio
 async def test_resolve_plan_by_slug_or_id():
     session = MagicMock()
     plan = MagicMock()
