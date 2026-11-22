@@ -327,6 +327,50 @@ async def tenant_get_subscription(ctx: DbTenantDep):
     return sub
 
 
+@tenant_billing_router.get(
+    "/billing/limits",
+)
+async def tenant_plan_limits(ctx: DbTenantDep):
+    """Current usage and caps for every plan-feature quota."""
+    from app.billing.limits import (
+        DOCUMENTS_FEATURE_KEY,
+        PRODUCTS_FEATURE_KEY,
+        STAFF_FEATURE_KEY,
+        STORES_FEATURE_KEY,
+        count_store_products,
+        count_tenant_documents,
+        count_tenant_stores,
+        count_tenant_users,
+        feature_limit_for_tenant,
+    )
+
+    tenant_id = ctx.user.business_id
+    used_users = await count_tenant_users(tenant_id, ctx.session)
+    used_stores = await count_tenant_stores(tenant_id, ctx.session)
+    used_documents = await count_tenant_documents(tenant_id, ctx.session)
+
+    return ok(
+        {
+            "users": {
+                "used": used_users,
+                "limit": await feature_limit_for_tenant(tenant_id, STAFF_FEATURE_KEY, ctx.session),
+            },
+            "stores": {
+                "used": used_stores,
+                "limit": await feature_limit_for_tenant(tenant_id, STORES_FEATURE_KEY, ctx.session),
+            },
+            "documents": {
+                "used": used_documents,
+                "limit": await feature_limit_for_tenant(tenant_id, DOCUMENTS_FEATURE_KEY, ctx.session),
+            },
+            "products": {
+                "used": None,
+                "limit": await feature_limit_for_tenant(tenant_id, PRODUCTS_FEATURE_KEY, ctx.session),
+            },
+        }
+    )
+
+
 @tenant_billing_router.post(
     "/billing/subscription/plan",
     response_model=SubscriptionOut,

@@ -4,6 +4,7 @@ from datetime import datetime
 from uuid import UUID
 
 from app.core.dependencies import DbTenantDep, TenantDep, require_permission
+from app.billing.limits import PlanLimitError
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
 from app.auth.schemas.schema import DocumentCreate, DocumentStatusUpdate
 from app.auth.schemas.responses import (
@@ -77,6 +78,11 @@ async def create_document_endpoint(payload: DocumentCreate, ctx: DbTenantDep):
     store_id = await _resolve_document_store(ctx, payload.store_id)
     try:
         result = await _create_document(payload, ctx, store_id)
+    except PlanLimitError as exc:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Document limit reached for your plan ({exc.limit} per billing period). Upgrade your plan to create more.",
+        )
     except ValueError as exc:
         if str(exc) == "fee_balance_exceeded":
             # The tenant's unpaid platform fees have reached the limit. Same

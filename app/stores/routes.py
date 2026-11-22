@@ -21,6 +21,8 @@ router = APIRouter(prefix="/stores", tags=["Stores"])
     dependencies=[Depends(require_permission("stores:create"))],
 )
 async def create_store(payload: StoreCreate, ctx: TenantDep):
+    from app.billing.limits import PlanLimitError
+
     try:
         result = await bridge.create_store(
             tenant_id=ctx.user.business_id,
@@ -31,6 +33,11 @@ async def create_store(payload: StoreCreate, ctx: TenantDep):
             actor_id=ctx.user.user_id,
         )
         return ok(result)
+    except PlanLimitError as e:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Store limit reached for your plan ({e.limit} stores). Upgrade your plan to add more.",
+        )
     except ValueError as e:
         if str(e) == "main_store_exists":
             raise HTTPException(

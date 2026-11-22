@@ -452,6 +452,15 @@ async def create_employee(
     if existing.scalar_one_or_none():
         raise AuthError("A user with this email already exists", "duplicate_email")
 
+    from app.billing.limits import (
+        STAFF_FEATURE_KEY,
+        count_tenant_users,
+        enforce_limit,
+    )
+
+    used = await count_tenant_users(business_id, session)
+    await enforce_limit(business_id, STAFF_FEATURE_KEY, "user", used, session)
+
     user = IdUser(
         tenant_id=UUID(business_id),
         email=email,

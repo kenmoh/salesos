@@ -527,19 +527,27 @@ async def set_supervisor_pin(payload: SetPinRequest, ctx: DbTenantDep):
     dependencies=[Depends(require_permission("employees:create"))],
 )
 async def create_employee(payload: CreateEmployeeRequest, request: Request, ctx: DbTenantDep):
-    result = await auth_service.create_employee(
-        session=ctx.session,
-        business_id=ctx.user.business_id,
-        actor_id=ctx.user.user_id,
-        email=payload.email,
-        full_name=payload.full_name,
-        phone=payload.phone,
-        roles=payload.roles,
-        password=payload.password,
-        store_id=str(payload.store_id) if payload.store_id else None,
-        req=request,
-    )
-    return ok(result)
+    from app.billing.limits import PlanLimitError
+
+    try:
+        result = await auth_service.create_employee(
+            session=ctx.session,
+            business_id=ctx.user.business_id,
+            actor_id=ctx.user.user_id,
+            email=payload.email,
+            full_name=payload.full_name,
+            phone=payload.phone,
+            roles=payload.roles,
+            password=payload.password,
+            store_id=str(payload.store_id) if payload.store_id else None,
+            req=request,
+        )
+        return ok(result)
+    except PlanLimitError as e:
+        raise HTTPException(
+            status_code=402,
+            detail=f"User limit reached for your plan ({e.limit} users). Upgrade your plan to add more.",
+        )
 
 
 @router.get(

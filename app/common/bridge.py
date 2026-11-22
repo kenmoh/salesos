@@ -2261,9 +2261,13 @@ async def create_store(
         count_main_stores,
     )
 
+    from app.billing.limits import STORES_FEATURE_KEY, count_tenant_stores, enforce_limit
+
     sdb = _get_sdb("inventory")
     async with sdb.session() as session:
         main_count = await count_main_stores(session, UUID(tenant_id))
+        used = await count_tenant_stores(tenant_id, session)
+        await enforce_limit(tenant_id, STORES_FEATURE_KEY, "store", used, session)
 
     command = StoreCreateCommand(
         tenant_id=UUID(tenant_id),
@@ -9830,6 +9834,15 @@ async def create_document(
 
         await assert_fee_headroom(session, UUID(tenant_id))
         await assert_billing_headroom(session, UUID(tenant_id))
+
+        from app.billing.limits import (
+            DOCUMENTS_FEATURE_KEY,
+            count_tenant_documents,
+            enforce_limit,
+        )
+
+        doc_used = await count_tenant_documents(tenant_id, session)
+        await enforce_limit(tenant_id, DOCUMENTS_FEATURE_KEY, "document", doc_used, session)
 
         # Catalog lines take their taxes from the product; custom lines take
         # the ones picked for them. Both are resolved from the tenant's own
