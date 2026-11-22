@@ -432,17 +432,20 @@ async def tenant_upgrade_pay(payload: UpgradeRequest, ctx: DbTenantDep):
 
     amount = Decimal(str(quote["amount_due"]))
 
+    # Nothing to pay (same plan, or credit covers the whole price) — activate
+    # directly instead of sending a zero-amount link to the gateway.
+    if amount <= 0:
+        await upgrade_service.apply_plan_upgrade(
+            ctx.session,
+            tenant_id=tenant_id,
+            plan=plan,
+            interval=payload.interval,
+            actor_id=ctx.user.user_id,
+        )
+        await ctx.session.commit()
+        return ok({"status": "completed", "amount": 0.0})
+
     if payload.payment_method == "wallet":
-        if amount <= 0:
-            await upgrade_service.apply_plan_upgrade(
-                ctx.session,
-                tenant_id=tenant_id,
-                plan=plan,
-                interval=payload.interval,
-                actor_id=ctx.user.user_id,
-            )
-            await ctx.session.commit()
-            return ok({"status": "completed", "amount": 0.0})
         debited = await debit_wallet(
             ctx.session,
             tenant_id=tenant_id,
