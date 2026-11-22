@@ -147,6 +147,19 @@ async def platform_list_plan_features(plan_id: UUID, ctx: PlatformDep):
     return result.scalars().all()
 
 
+@platform_billing_router.get(
+    "/plan-features",
+    response_model=list[PlanFeatureOut],
+    dependencies=[Depends(require_platform_permission("platform:*")), Depends(require_super_admin)],
+)
+async def platform_list_all_plan_features(ctx: PlatformDep):
+    result = await ctx.session.execute(
+        select(PlanFeature)
+        .order_by(PlanFeature.sort_order, PlanFeature.feature_key)
+    )
+    return result.scalars().all()
+
+
 @platform_billing_router.post(
     "/plan-features",
     response_model=PlanFeatureOut,
