@@ -217,3 +217,33 @@ class PlatformFeeLedger(StoreFlowBase):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
+
+
+class PlatformSetting(StoreFlowBase):
+    """Platform-wide settings stored as key-value pairs.
+
+    Only super_admins may create or update these. Tenant-scoped settings
+    (e.g. per-tenant debt_cap) live on the subscription model; this table
+    holds platform-level defaults and toggles.
+
+    Attributes:
+        key: Unique setting key (e.g. "default_debt_cap", "annual_discount_pct").
+        value: JSON-encoded setting value.
+        description: Human-readable description of the setting.
+    """
+
+    __tablename__ = "platform_settings"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    key: Mapped[str] = mapped_column(String(80), unique=True, nullable=False, index=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )

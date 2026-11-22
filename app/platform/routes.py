@@ -1,7 +1,7 @@
 import json
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import Date, and_, case, cast, desc, func, select, text
 from sqlalchemy.orm import aliased
@@ -9,7 +9,12 @@ from sqlalchemy.orm import aliased
 from app.core.platform_deps import PlatformDep, require_platform_permission
 from app.core.ratelimit import auth_rate_limit
 from app.core.responses import ok, paginated
-from app.platform.models import FeeType, PlatformAdmin
+from app.platform.models import FeeType, PlatformAdmin, PlatformSetting
+
+
+def require_super_admin(ctx: PlatformDep):
+    if ctx.user.role != "super_admin":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Super admin required")
 from app.platform.auth import (
     PlatformAuthError,
     PlatformTotpRequired,
@@ -3077,3 +3082,73 @@ async def clear_debt(payload: ClearDebtRequest, request: Request, ctx: PlatformD
             "entries": cleared,
         }
     )
+
+
+# ── Platform settings ─────────────────────────────────────────────
+
+
+class PlatformSettingOut(BaseModel):
+    key: str
+    value: str
+    description: str | None = None
+
+
+class PlatformSettingUpdate(BaseModel):
+    key: str
+    value: str
+    description: str | None = None
+
+
+@router.get(
+    "/settings",
+    response_model=list[PlatformSettingOut],
+    dependencies=[Depends(require_platform_permission("platform:*"))],
+)
+async def list_platform_settings(ctx: PlatformDep):
+    result = await ctx.session.execute(
+        select(PlatformSetting).order_by(PlatformSetting.key)
+    )
+    return result.scalars().all()
+
+
+@router.patch(
+    "/settings",
+    response_model=list[PlatformSettingOut],
+    dependencies=[Depends(require_platform_permission("platform:*")), Depends(require_super_admin)],
+)
+async def update_platform_settings(
+    payload: list[PlatformSettingUpdate],
+    ctx: PlatformDep,
+    request: Request,
+):
+    from app.platform.audit import log_platform_audit
+
+    updated: list[PlatformSetting] = []
+    for item in payload:
+        setting = await ctx.session.scalar(
+            select(PlatformSetting).where(PlatformSetting.key == item.key)
+        )
+        if setting:
+            setting.value = item.value
+            setting.description = item.description
+        else:
+            setting = PlatformSetting(
+                key=item.key,
+                value=item.value,
+                description=item.description,
+            )
+            ctx.session.add(setting)
+        updated.append(setting)
+
+    await ctx.session.flush()
+
+    await log_platform_audit(
+        ctx.session,
+        admin_id=ctx.user.admin_id,
+        action="platform_settings.update",
+        resource="platform_settings",
+        details={"keys": [item.key for item in payload]},
+        ip_address=_get_client_ip(request),
+    )
+
+    return updated
