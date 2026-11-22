@@ -150,6 +150,12 @@ class PlanChangeRequest(BaseModel):
     plan_slug: str
 
 
+class UpgradeRequest(BaseModel):
+    plan: str
+    interval: str = "monthly"
+    payment_method: str = "wallet"  # "wallet" or "gateway"
+
+
 class AutoDebitToggle(BaseModel):
     auto_debit_enabled: bool
 

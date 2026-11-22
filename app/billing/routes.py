@@ -46,6 +46,7 @@ from app.billing.schemas import (
     FeeTierOut,
     InvoiceOut,
     PlanChangeRequest,
+    UpgradeRequest,
     PlanCreate,
     PlanFeatureCreate,
     PlanFeatureOut,
@@ -376,10 +377,179 @@ async def tenant_plan_limits(ctx: DbTenantDep):
     response_model=SubscriptionOut,
 )
 async def tenant_change_plan(payload: PlanChangeRequest, ctx: DbTenantDep):
-    sub = await sub_service.change_plan(ctx.session, ctx.user.business_id, payload.plan_slug)
+    from app.billing.upgrade import resolve_plan
+
+    # Accept a slug or a plan UUID (the UI sends the plan id).
+    plan = await resolve_plan(ctx.session, payload.plan_slug)
+    if not plan:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Plan not found")
+    sub = await sub_service.change_plan(ctx.session, ctx.user.business_id, plan.slug)
     if sub is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Plan not found")
     return sub
+
+
+@tenant_billing_router.post(
+    "/billing/subscription/upgrade/quote",
+)
+async def tenant_upgrade_quote(payload: UpgradeRequest, ctx: DbTenantDep):
+    from uuid import UUID as _UUID
+
+    from app.billing.upgrade import build_quote, resolve_plan
+
+    plan = await resolve_plan(ctx.session, payload.plan)
+    if not plan:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Plan not found")
+    sub = await sub_service.ensure_subscription(ctx.session, _UUID(ctx.user.business_id))
+    quote = await build_quote(ctx.session, _UUID(ctx.user.business_id), plan, payload.interval, sub)
+    return ok(quote)
+
+
+@tenant_billing_router.post(
+    "/billing/subscription/upgrade/pay",
+)
+async def tenant_upgrade_pay(payload: UpgradeRequest, ctx: DbTenantDep):
+    from uuid import UUID as _UUID
+
+    from app.billing import upgrade as upgrade_service
+    from app.billing.invoices import debit_wallet
+    from app.common.bridge import _get_sdb
+    from app.payments.models import PaymentIntent
+    from app.payments.repository import create_intent
+
+    tenant_id = _UUID(ctx.user.business_id)
+    plan = await upgrade_service.resolve_plan(ctx.session, payload.plan)
+    if not plan:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Plan not found")
+    sub = await sub_service.ensure_subscription(ctx.session, tenant_id)
+    quote = await upgrade_service.build_quote(ctx.session, tenant_id, plan, payload.interval, sub)
+
+    # Downgrades stay staged for period end — no immediate charge.
+    current = await ctx.session.get(SubscriptionPlan, sub.plan_id)
+    if current and float(current.monthly_price) > float(plan.monthly_price):
+        sub = await sub_service.change_plan(ctx.session, ctx.user.business_id, plan.slug)
+        return ok({"status": "scheduled", "subscription": sub})
+
+    amount = Decimal(str(quote["amount_due"]))
+
+    if payload.payment_method == "wallet":
+        if amount <= 0:
+            await upgrade_service.apply_plan_upgrade(
+                ctx.session,
+                tenant_id=tenant_id,
+                plan=plan,
+                interval=payload.interval,
+                actor_id=ctx.user.user_id,
+            )
+            await ctx.session.commit()
+            return ok({"status": "completed", "amount": 0.0})
+        debited = await debit_wallet(
+            ctx.session,
+            tenant_id=tenant_id,
+            amount=amount,
+            reference=f"plan-upgrade-{plan.slug}",
+            description=f"Plan upgrade to {plan.name} ({payload.interval})",
+        )
+        if debited < amount:
+            raise HTTPException(
+                status_code=402,
+                detail="Insufficient wallet balance. Fund your wallet or use a payment link.",
+            )
+        await upgrade_service.apply_plan_upgrade(
+            ctx.session,
+            tenant_id=tenant_id,
+            plan=plan,
+            interval=payload.interval,
+            actor_id=ctx.user.user_id,
+        )
+        await ctx.session.commit()
+        return ok({"status": "completed", "amount": float(amount)})
+
+    # Gateway path: create a hosted payment link with typed intent metadata.
+    import json
+    import re
+    from uuid import uuid4
+
+    from app.common import flutterwave_service
+
+    sdb = _get_sdb("payments")
+    async with sdb.session() as pay_session:
+        open_intent = (
+            await pay_session.execute(
+                select(PaymentIntent).where(
+                    PaymentIntent.tenant_id == tenant_id,
+                    PaymentIntent.status == "pending",
+                    PaymentIntent.gateway_reference.like("SF-PLAN-UPGRADE-%"),
+                ).order_by(PaymentIntent.created_at.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+        if open_intent:
+            base_ref = re.sub(r"-R\d+$", "", open_intent.gateway_reference)
+            attempt = re.search(r"-R(\d+)$", open_intent.gateway_reference)
+            n = int(attempt.group(1)) + 1 if attempt else 1
+            tx_ref = f"{base_ref}-R{n}"
+            open_intent.amount = float(amount)
+            open_intent.gateway_reference = tx_ref
+            open_intent.intent_metadata = json.dumps({
+                "type": "plan_upgrade",
+                "tenant_id": str(tenant_id),
+                "plan_id": str(plan.id),
+                "plan_slug": plan.slug,
+                "interval": payload.interval,
+                "gross": quote["gross"],
+                "credit": quote["credit"],
+                "amount": float(amount),
+                "created_by": ctx.user.user_id,
+            })
+            intent = open_intent
+        else:
+            tx_ref = f"SF-PLAN-UPGRADE-{uuid4().hex[:10].upper()}"
+            intent = PaymentIntent(
+                id=uuid4(),
+                tenant_id=tenant_id,
+                sale_id=None,
+                cart_id=None,
+                method="card",
+                amount=float(amount),
+                currency=quote["currency"],
+                status="pending",
+                gateway_reference=tx_ref,
+                intent_metadata=json.dumps({
+                    "type": "plan_upgrade",
+                    "tenant_id": str(tenant_id),
+                    "plan_id": str(plan.id),
+                    "plan_slug": plan.slug,
+                    "interval": payload.interval,
+                    "gross": quote["gross"],
+                    "credit": quote["credit"],
+                    "amount": float(amount),
+                    "created_by": ctx.user.user_id,
+                }),
+            )
+        await create_intent(pay_session, intent) if not open_intent else None
+        await pay_session.commit()
+        intent_id = str(intent.id)
+
+    from app.identity.repository import get_user_by_id as _get_user
+    owner_email = None
+    async with _get_sdb("identity").session() as id_session:
+        actor_user = await _get_user(id_session, _UUID(ctx.user.user_id))
+        owner_email = actor_user.email if actor_user else None
+
+    link = await flutterwave_service.create_payment_link(
+        amount=amount,
+        tx_ref=tx_ref,
+        customer_email=owner_email or "billing@storeflow.ng",
+        title=f"Upgrade to {plan.name}",
+        meta={"tenant_id": str(tenant_id), "intent_id": intent_id},
+    )
+    async with sdb.session() as pay_session:
+        row = (
+            await pay_session.execute(select(PaymentIntent).where(PaymentIntent.id == _UUID(intent_id)))
+        ).scalar_one()
+        row.authorization_url = link["link"]
+        await pay_session.commit()
+    return ok({"status": "pending", "link": link["link"], "amount": float(amount), "intent_id": intent_id})
 
 
 @tenant_billing_router.patch(

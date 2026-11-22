@@ -678,6 +678,21 @@ async def flutterwave_webhook(request: Request, verif_hash: str = Header(default
                     if str(e) != "not_billing_settlement":
                         pass
 
+            # Plan upgrade flow: activate the paid plan immediately.
+            is_plan_upgrade = intent_meta.get("type") == "plan_upgrade"
+            if is_plan_upgrade:
+                try:
+                    await bridge.confirm_plan_upgrade(
+                        business_id=str(resolved_intent.tenant_id),
+                        intent_id=str(resolved_intent.id),
+                        gateway_data=data,
+                    )
+                    await _log_webhook_event(event, event_id, payload)
+                    return ok({"received": True, "confirmed": True, "kind": "plan_upgrade"})
+                except ValueError as e:
+                    if str(e) != "not_plan_upgrade":
+                        pass
+
             # Wallet funding flow: credit the wallet.
             is_wallet_funding = intent_meta.get("type") == "wallet_funding"
             if is_wallet_funding:
@@ -935,6 +950,68 @@ async def reconcile_settlement_payment(ctx: TenantDep, tx_ref: str = Body(defaul
         "amount": float(intent.amount),
         "intent_id": str(intent.id),
     })
+
+
+@router.post(
+    "/plan-upgrade/reconcile",
+    response_model=DataResponse[dict],
+    dependencies=[Depends(require_permission("payments:create"))],
+)
+async def reconcile_plan_upgrade(ctx: TenantDep, tx_ref: str = Body(default="", embed=True)):
+    """Manually confirm a paid plan upgrade whose webhook never arrived."""
+    from uuid import UUID as _UUID
+    from app.common.bridge import confirm_plan_upgrade
+    from app.payments.models import PaymentIntent
+
+    tx_ref = (tx_ref or "").strip()
+    sdb = _get_sdb("payments")
+    async with sdb.session() as session:
+        stmt = (
+            select(PaymentIntent)
+            .where(
+                PaymentIntent.tenant_id == _UUID(ctx.user.business_id),
+                PaymentIntent.status == "pending",
+                PaymentIntent.gateway_reference.like("SF-PLAN-UPGRADE-%"),
+            )
+            .order_by(PaymentIntent.created_at.desc())
+            .limit(1)
+        )
+        if tx_ref:
+            stmt = stmt.where(PaymentIntent.gateway_reference == tx_ref)
+        intent = (await session.execute(stmt)).scalar_one_or_none()
+        if intent is None:
+            raise HTTPException(status_code=404, detail="No pending plan upgrade found")
+        try:
+            intent_meta = json.loads(intent.intent_metadata or "{}")
+        except (TypeError, ValueError):
+            intent_meta = {}
+        if intent_meta.get("type") != "plan_upgrade":
+            raise HTTPException(status_code=400, detail="This reference is not a plan upgrade")
+        tx_ref = intent.gateway_reference
+
+    try:
+        tx_data = await flutterwave_service.verify_transaction(tx_ref=tx_ref)
+    except flutterwave_service.FlutterwaveError as e:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Flutterwave has not marked this transaction successful: {e}",
+        )
+    charged = float(tx_data.get("amount") or 0)
+    if charged + 0.01 < float(intent.amount):
+        raise HTTPException(status_code=409, detail="Amount mismatch")
+
+    result = await confirm_plan_upgrade(
+        business_id=ctx.user.business_id,
+        intent_id=str(intent.id),
+        gateway_data={
+            "source": "manual_reconcile",
+            "tx_ref": tx_ref,
+            "flw_ref": tx_data.get("flw_ref"),
+            "flw_id": tx_data.get("id"),
+            "status": tx_data.get("status"),
+        },
+    )
+    return ok({"activated": True, "intent_id": str(intent.id), **result})
 
 
 @router.get(

@@ -9648,6 +9648,59 @@ async def confirm_wallet_funding(
 
     return {"credited": float(amount)}
 
+
+async def confirm_plan_upgrade(
+    *, business_id: str, intent_id: str, gateway_data: dict
+) -> dict:
+    """Webhook confirm for a plan upgrade: activate the purchased plan.
+
+    The intent's ``intent_metadata.type`` must be ``plan_upgrade``. Verifies
+    the metadata amount against the intent amount before activating.
+    """
+    from app.payments.models import PaymentIntent
+    from app.payments.repository import get_intent_by_id, update_intent_status
+    from app.billing import upgrade as upgrade_service
+    from app.billing.models import SubscriptionPlan
+
+    sdb = _get_sdb("payments")
+    async with sdb.session() as session:
+        intent = await get_intent_by_id(session, UUID(intent_id))
+        if not intent:
+            raise ValueError("intent_not_found")
+
+        metadata = {}
+        try:
+            metadata = json.loads(intent.intent_metadata or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        if metadata.get("type") != "plan_upgrade":
+            raise ValueError("not_plan_upgrade")
+
+        expected = float(metadata.get("amount") or intent.amount)
+        if abs(expected - float(intent.amount)) > 0.01:
+            raise ValueError("amount_mismatch")
+
+        tenant_id = UUID(metadata.get("tenant_id") or str(intent.tenant_id))
+        plan_id = UUID(metadata["plan_id"])
+        interval = metadata.get("interval") or "monthly"
+        await update_intent_status(session, intent.id, "completed", gateway_data)
+        await session.commit()
+
+    async with _get_sdb("billing").session() as billing_session:
+        plan = await billing_session.get(SubscriptionPlan, plan_id)
+        if not plan:
+            raise ValueError("plan_not_found")
+        result = await upgrade_service.apply_plan_upgrade(
+            billing_session,
+            tenant_id=tenant_id,
+            plan=plan,
+            interval=interval,
+            actor_id=metadata.get("created_by"),
+        )
+        await billing_session.commit()
+    return result
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DOCUMENT MANAGEMENT
 # ═══════════════════════════════════════════════════════════════════════════════

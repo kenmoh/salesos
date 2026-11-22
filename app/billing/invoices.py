@@ -72,6 +72,25 @@ async def generate_invoice_for_period(
     )
 
     subscription_amount = money(plan.monthly_price if plan else 0)
+    sub = (
+        await session.execute(
+            select(MerchantSubscription).where(
+                MerchantSubscription.tenant_id == period.tenant_id
+            )
+        )
+    ).scalar_one_or_none()
+    if plan and sub and sub.billing_interval == "annual":
+        from app.platform.models import PlatformSetting
+
+        setting = await session.scalar(
+            select(PlatformSetting).where(PlatformSetting.key == "annual_discount_pct")
+        )
+        try:
+            discount = Decimal(str(setting.value)) if setting and setting.value else Decimal("17")
+        except Exception:
+            discount = Decimal("17")
+        discount = min(max(discount, Decimal("0")), Decimal("100"))
+        subscription_amount = money(subscription_amount * 12 * (1 - discount / 100))
     fee_total = money(charges.scalar())
     credit_total = money(credits.scalar())
     total = money(max(Decimal(0), subscription_amount + fee_total - credit_total))
