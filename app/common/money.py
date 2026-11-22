@@ -16,6 +16,8 @@ def kobo_to_naira(kobo: int) -> Decimal:
     return Decimal(str(kobo)) / KOBO
 
 
-def format_naira(amount: Decimal) -> str:
-    quantized = quantize_naira(amount)
-    return f"\u20a6{quantized:,.2f}"
+def format_naira(amount: Decimal, currency: str | None = None) -> str:
+    """Format an amount with a currency symbol (defaults to NGN)."""
+    from app.common.currency import format_money
+
+    return format_money(quantize_naira(amount), currency, decimals=2)

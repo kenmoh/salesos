@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from app.core.dependencies import TenantDep, DbTenantDep, require_permission
+from app.common.currency import format_money
 from app.core.responses import DataResponse, ok
 from app.auth.schemas.schema import PaymentCreate, SplitPaymentCreate
 from app.auth.schemas.responses import (
@@ -1041,6 +1042,7 @@ async def payment_callback(
     display_status = (status or "").lower() or "unknown"
     paid_amount = None
     paid_for = None
+    paid_currency = None
 
     if tx_ref:
         try:
@@ -1054,6 +1056,17 @@ async def payment_callback(
                 ).scalar_one_or_none()
             if row:
                 paid_amount = float(row.amount)
+                paid_currency = getattr(row, "currency", None)
+                if not paid_currency and getattr(row, "tenant_id", None):
+                    try:
+                        from app.tenancy.settings import currency_code
+                        from app.tenancy.models import Tenant
+                        async with _get_sdb("tenancy").session() as tsession:
+                            trow = await tsession.get(Tenant, row.tenant_id)
+                            if trow:
+                                paid_currency = currency_code(trow.settings)
+                    except Exception:
+                        paid_currency = None
                 try:
                     metadata = json.loads(row.intent_metadata or "{}")
                     if metadata.get("type") == "settlement":
@@ -1096,7 +1109,7 @@ async def payment_callback(
 
     deep_link = f"sellmoh://payment/callback?tx_ref={tx_ref}&status={status}"
     amount_html = (
-        f"<div class='amount'>₦{paid_amount:,.2f}</div>"
+        f"<div class='amount'>{format_money(paid_amount, paid_currency, decimals=2)}</div>"
         if paid_amount is not None
         else ""
     )

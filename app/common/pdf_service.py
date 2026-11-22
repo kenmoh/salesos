@@ -7,6 +7,8 @@ from io import BytesIO
 
 from fpdf import FPDF
 
+from app.common.currency import DEFAULT_CURRENCY, format_money_ascii
+
 
 class StoreFlowPDF(FPDF):
     """Custom PDF class with tenant branding."""
@@ -17,16 +19,18 @@ class StoreFlowPDF(FPDF):
         logo_bytes: bytes | None = None,
         address: str = "",
         phone: str = "",
+        currency: str | None = None,
     ):
         super().__init__()
         self.business_name = business_name
         self.logo_bytes = logo_bytes
         self.address = address
         self.phone = phone
+        self.currency = currency or DEFAULT_CURRENCY
 
-    @staticmethod
-    def _naira(amount: float) -> str:
-        return f"NGN {amount:,.2f}"
+    def money(self, amount: float) -> str:
+        # Helvetica is latin-1 only; use the currency code rather than a symbol.
+        return format_money_ascii(amount, self.currency, decimals=2)
 
     def header(self):
         contact_bits = [bit for bit in (self.address.strip(), self.phone.strip()) if bit]
@@ -100,9 +104,9 @@ class StoreFlowPDF(FPDF):
             self.cell(col_widths[0], 6, str(idx), border=1, align="C")
             self.cell(col_widths[1], 6, str(item.get("description", ""))[:35], border=1)
             self.cell(col_widths[2], 6, f"{qty:.1f}", border=1, align="C")
-            self.cell(col_widths[3], 6, f"NGN{unit_price:,.2f}", border=1, align="R")
+            self.cell(col_widths[3], 6, self.money(unit_price), border=1, align="R")
             self.cell(col_widths[4], 6, f"{discount_pct:.0f}%", border=1, align="C")
-            self.cell(col_widths[5], 6, f"NGN{line_total:,.2f}", border=1, align="R")
+            self.cell(col_widths[5], 6, self.money(line_total), border=1, align="R")
             self.ln()
 
     def totals_section(self, subtotal: float, tax: float = 0, total: float = 0, tax_breakdown: list[dict] | None = None):
@@ -111,25 +115,25 @@ class StoreFlowPDF(FPDF):
         x_start = self.w - self.r_margin - 75
         self.set_x(x_start)
         self.cell(35, 7, "Subtotal:")
-        self.cell(40, 7, f"NGN{subtotal:,.2f}", align="R")
+        self.cell(40, 7, self.money(subtotal), align="R")
         self.ln(7)
 
         if tax_breakdown:
             for t in tax_breakdown:
                 self.set_x(x_start)
                 self.cell(35, 7, f"{t['name']} ({t['rate']}%):")
-                self.cell(40, 7, f"NGN{t['amount']:,.2f}", align="R")
+                self.cell(40, 7, self.money(t["amount"]), align="R")
                 self.ln(7)
         elif tax > 0:
             self.set_x(x_start)
             self.cell(35, 7, "Tax:")
-            self.cell(40, 7, f"NGN{tax:,.2f}", align="R")
+            self.cell(40, 7, self.money(tax), align="R")
             self.ln(7)
 
         self.set_font("Helvetica", "B", 12)
         self.set_x(x_start)
         self.cell(35, 8, "Total:")
-        self.cell(40, 8, f"NGN{total:,.2f}", align="R")
+        self.cell(40, 8, self.money(total), align="R")
         self.ln(8)
 
     def notes_section(self, note: str = "", terms: str = ""):
@@ -166,8 +170,9 @@ def generate_invoice_pdf(
     phone: str = "",
     title: str = "Invoice",
     tax_breakdown: list[dict] | None = None,
+    currency: str | None = None,
 ) -> bytes:
-    pdf = StoreFlowPDF(business_name, logo_bytes=logo_bytes, address=address, phone=phone)
+    pdf = StoreFlowPDF(business_name, logo_bytes=logo_bytes, address=address, phone=phone, currency=currency)
     pdf.alias_nb_pages()
     pdf.add_page()
 
@@ -198,8 +203,9 @@ def generate_receipt_pdf(
     phone: str = "",
     tax: float = 0,
     tax_breakdown: list[dict] | None = None,
+    currency: str | None = None,
 ) -> bytes:
-    pdf = StoreFlowPDF(business_name, logo_bytes=logo_bytes, address=address, phone=phone)
+    pdf = StoreFlowPDF(business_name, logo_bytes=logo_bytes, address=address, phone=phone, currency=currency)
     pdf.alias_nb_pages()
     pdf.add_page()
 
@@ -229,8 +235,9 @@ def generate_quote_pdf(
     address: str = "",
     phone: str = "",
     tax_breakdown: list[dict] | None = None,
+    currency: str | None = None,
 ) -> bytes:
-    pdf = StoreFlowPDF(business_name, logo_bytes=logo_bytes, address=address, phone=phone)
+    pdf = StoreFlowPDF(business_name, logo_bytes=logo_bytes, address=address, phone=phone, currency=currency)
     pdf.alias_nb_pages()
     pdf.add_page()
 

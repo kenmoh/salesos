@@ -33,6 +33,13 @@ def price_override_enabled(raw_settings) -> bool:
     return bool(parse_tenant_settings(raw_settings).get(PRICE_OVERRIDE_SETTING, False))
 
 
+def currency_code(raw_settings) -> str:
+    """The tenant's currency code, defaulting to NGN."""
+    from app.common.currency import DEFAULT_CURRENCY, normalize_currency
+
+    return normalize_currency(parse_tenant_settings(raw_settings).get("currency")) or DEFAULT_CURRENCY
+
+
 async def is_price_override_enabled(business_id: str, session=None) -> bool:
     """Whether the owner has enabled per-line price overrides for this tenant."""
     key = _PRICE_OVERRIDE_KEY.format(business_id=business_id)

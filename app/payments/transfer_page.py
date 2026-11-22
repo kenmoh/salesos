@@ -42,6 +42,7 @@ def build_transfer_token(payload: dict, *, ttl_seconds: int = 1800) -> str:
         "store_name": str(payload.get("store_name", "")),
         "expiry_date": str(payload.get("expiry_date", "")),
         "tx_ref": str(payload.get("tx_ref", "")),
+        "currency": str(payload.get("currency", "") or ""),
         "exp": int(datetime.now(UTC).timestamp()) + max(int(ttl_seconds), 60),
     }
     raw = json.dumps(body, separators=(",", ":")).encode()
@@ -62,10 +63,9 @@ def parse_transfer_token(token: str) -> tuple[dict | None, bool]:
         return None, False
 
 
-def _format_amount(value: float) -> str:
-    if value == int(value):
-        return f"\u20a6{int(value):,}"
-    return f"\u20a6{value:,.2f}"
+def _format_amount(value: float, currency: str | None = None) -> str:
+    from app.common.currency import format_money
+    return format_money(value, currency, decimals=2 if value != int(value) else None)
 
 
 def _format_expiry(value: str) -> str:
@@ -200,7 +200,10 @@ def render_transfer_page(payload: dict) -> str:
     account_number = payload.get("account_number") or ""
     bank_name = payload.get("bank_name") or ""
     tx_ref = payload.get("tx_ref") or ""
-    amount = _format_amount(float(payload.get("amount", 0) or 0))
+    amount = _format_amount(
+        float(payload.get("amount", 0) or 0),
+        payload.get("currency"),
+    )
     expiry = _format_expiry(payload.get("expiry_date") or "")
 
     def copy_btn(value: str, label: str) -> str:

@@ -277,6 +277,7 @@ def _build_document_pdf(doc: dict, business: dict | None = None) -> tuple[str, s
         logo_bytes=business.get("logo_bytes"),
         address=business.get("address") or "",
         phone=business.get("phone") or "",
+        currency=business.get("currency"),
     )
 
     if doc_type == "receipt":
@@ -378,11 +379,14 @@ async def _business_profile(ctx) -> dict:
         except Exception:
             logo_bytes = None
 
+    from app.tenancy.settings import currency_code
+
     return {
         "name": tenant.business_name,
         "address": settings.get("address") or "",
         "phone": tenant.owner_phone or "",
         "logo_bytes": logo_bytes,
+        "currency": currency_code(settings),
     }
 
 

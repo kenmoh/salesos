@@ -221,7 +221,10 @@ async def handle_sale_confirmed(envelope: EventEnvelope, session: AsyncSession) 
     if not _is_type_enabled(prefs, "orders"):
         return
 
-    fmt_total = f"₦{total:,.0f}" if isinstance(total, (int, float)) else str(total)
+    from app.common.currency import format_money
+    from app.tenancy.settings import currency_code
+    tenant_currency = currency_code(tenant.settings if tenant else "{}")
+    fmt_total = format_money(total, tenant_currency) if isinstance(total, (int, float)) else str(total)
 
     await create_in_app_notification(
         session=session,
@@ -266,7 +269,10 @@ async def handle_payment_received(envelope: EventEnvelope, session: AsyncSession
     if not _is_type_enabled(prefs, "payments"):
         return
 
-    fmt_amount = f"₦{amount:,.0f}" if isinstance(amount, (int, float)) else str(amount)
+    from app.common.currency import format_money
+    from app.tenancy.settings import currency_code
+    tenant_currency = currency_code(tenant.settings if tenant else "{}")
+    fmt_amount = format_money(amount, tenant_currency) if isinstance(amount, (int, float)) else str(amount)
 
     await create_in_app_notification(
         session=session,

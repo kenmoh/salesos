@@ -15,6 +15,17 @@ from app.platform.models import FeeType, PlatformAdmin, PlatformSetting
 def require_super_admin(ctx: PlatformDep):
     if ctx.user.role != "super_admin":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Super admin required")
+
+
+def _tenant_currency(tenant) -> str:
+    """Read a tenant's currency from its settings JSON (defaults to NGN)."""
+    from app.common.currency import DEFAULT_CURRENCY, normalize_currency
+
+    try:
+        settings = json.loads(tenant.settings) if isinstance(tenant.settings, str) else (tenant.settings or {})
+    except (ValueError, TypeError):
+        settings = {}
+    return normalize_currency(settings.get("currency")) or DEFAULT_CURRENCY
 from app.platform.auth import (
     PlatformAuthError,
     PlatformTotpRequired,
@@ -455,6 +466,7 @@ async def list_tenants(
                     "owner_device_type": device_type,
                     "owner_browser": browser,
                     "owner_last_seen_at": last_seen.isoformat() if last_seen else None,
+                    "currency": _tenant_currency(t),
                     "created_at": t.created_at.isoformat() if t.created_at else None,
                 }
                 for t, device_type, browser, last_seen in rows
@@ -520,6 +532,7 @@ async def get_tenant(tenant_id: str, ctx: PlatformDep):
             "tier": tenant.tier,
             "status": tenant.status,
             "user_count": user_count.scalar(),
+            "currency": _tenant_currency(tenant),
             "created_at": tenant.created_at.isoformat() if tenant.created_at else None,
             "updated_at": tenant.updated_at.isoformat() if tenant.updated_at else None,
         }

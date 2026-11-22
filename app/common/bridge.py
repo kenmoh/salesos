@@ -11091,6 +11091,17 @@ async def validate_coupon(tenant_id: str, code: str, cart_subtotal) -> dict:
     from app.discounts.models import Coupon
     from sqlalchemy import select
     from datetime import UTC, datetime
+    from app.common.currency import format_money
+    from app.tenancy.settings import currency_code
+
+    currency = currency_code(None)
+    try:
+        from app.tenancy.repository import get_tenant_by_id
+        async with _get_sdb("tenancy").session() as tsession:
+            tenant_row = await get_tenant_by_id(tsession, UUID(tenant_id))
+            currency = currency_code(tenant_row.settings if tenant_row else None)
+    except Exception:
+        pass
 
     sdb = _get_sdb("customers")
     async with sdb.session() as session:
@@ -11119,7 +11130,7 @@ async def validate_coupon(tenant_id: str, code: str, cart_subtotal) -> dict:
         if subtotal < c.min_order:
             return {
                 "valid": False,
-                "message": f"Minimum order of ₦{c.min_order:,.2f} required",
+                "message": f"Minimum order of {format_money(c.min_order, currency, decimals=2)} required",
             }
 
         if c.discount_type == "percentage":
