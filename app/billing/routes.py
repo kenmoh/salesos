@@ -39,6 +39,7 @@ from app.billing.models import (
     WalletTransaction,
 )
 from app.billing.schemas import (
+    AutoDebitToggle,
     FeeTierCreate,
     FeeTierOut,
     InvoiceOut,
@@ -329,6 +330,21 @@ async def tenant_change_plan(payload: PlanChangeRequest, ctx: DbTenantDep):
     sub = await sub_service.change_plan(ctx.session, ctx.user.business_id, payload.plan_slug)
     if sub is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Plan not found")
+    return sub
+
+
+@tenant_billing_router.patch(
+    "/billing/subscription/auto-debit",
+    response_model=SubscriptionOut,
+)
+async def tenant_toggle_auto_debit(
+    payload: AutoDebitToggle,
+    ctx: DbTenantDep,
+):
+    """Toggle wallet auto-debit on the tenant's subscription."""
+    sub = await sub_service.ensure_subscription(ctx.session, ctx.user.business_id)
+    sub.auto_debit_enabled = payload.auto_debit_enabled
+    await ctx.session.flush()
     return sub
 
 

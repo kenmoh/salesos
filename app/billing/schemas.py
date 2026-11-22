@@ -146,6 +146,10 @@ class PlanChangeRequest(BaseModel):
     plan_slug: str
 
 
+class AutoDebitToggle(BaseModel):
+    auto_debit_enabled: bool
+
+
 # ── Invoice ─────────────────────────────────────────────────────────────────
 
 class InvoiceBase(BaseModel):
