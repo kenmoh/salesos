@@ -14,7 +14,7 @@ from decimal import Decimal
 from typing import Annotated, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload, joinedload
@@ -389,6 +389,21 @@ async def tenant_change_plan(payload: PlanChangeRequest, ctx: DbTenantDep):
     return sub
 
 
+async def _tenant_display_currency(tenant_id, session) -> str:
+    """Tenant's stored currency setting (USD tenants get USD pricing)."""
+    from sqlalchemy import text
+
+    from app.tenancy.settings import currency_code
+
+    row = (
+        await session.execute(text("SELECT settings FROM tenants WHERE id = :tid"))
+        .mappings()
+        .first()
+    )
+    raw = row["settings"] if row else None
+    return currency_code(raw)
+
+
 @tenant_billing_router.post(
     "/billing/subscription/upgrade/quote",
 )
@@ -401,7 +416,10 @@ async def tenant_upgrade_quote(payload: UpgradeRequest, ctx: DbTenantDep):
     if not plan:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Plan not found")
     sub = await sub_service.ensure_subscription(ctx.session, _UUID(ctx.user.business_id))
-    quote = await build_quote(ctx.session, _UUID(ctx.user.business_id), plan, payload.interval, sub)
+    currency = await _tenant_display_currency(_UUID(ctx.user.business_id), ctx.session)
+    quote = await build_quote(
+        ctx.session, _UUID(ctx.user.business_id), plan, payload.interval, sub, currency
+    )
     return ok(quote)
 
 
@@ -422,7 +440,10 @@ async def tenant_upgrade_pay(payload: UpgradeRequest, ctx: DbTenantDep):
     if not plan:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Plan not found")
     sub = await sub_service.ensure_subscription(ctx.session, tenant_id)
-    quote = await upgrade_service.build_quote(ctx.session, tenant_id, plan, payload.interval, sub)
+    tenant_currency = await _tenant_display_currency(tenant_id, ctx.session)
+    quote = await upgrade_service.build_quote(
+        ctx.session, tenant_id, plan, payload.interval, sub, tenant_currency
+    )
 
     # Downgrades stay staged for period end — no immediate charge.
     current = await ctx.session.get(SubscriptionPlan, sub.plan_id)
@@ -492,6 +513,7 @@ async def tenant_upgrade_pay(payload: UpgradeRequest, ctx: DbTenantDep):
             n = int(attempt.group(1)) + 1 if attempt else 1
             tx_ref = f"{base_ref}-R{n}"
             open_intent.amount = float(amount)
+            open_intent.currency = quote["currency"]
             open_intent.gateway_reference = tx_ref
             open_intent.intent_metadata = json.dumps({
                 "type": "plan_upgrade",
@@ -502,6 +524,7 @@ async def tenant_upgrade_pay(payload: UpgradeRequest, ctx: DbTenantDep):
                 "gross": quote["gross"],
                 "credit": quote["credit"],
                 "amount": float(amount),
+                "currency": quote["currency"],
                 "created_by": ctx.user.user_id,
             })
             intent = open_intent
@@ -526,6 +549,7 @@ async def tenant_upgrade_pay(payload: UpgradeRequest, ctx: DbTenantDep):
                     "gross": quote["gross"],
                     "credit": quote["credit"],
                     "amount": float(amount),
+                    "currency": quote["currency"],
                     "created_by": ctx.user.user_id,
                 }),
             )
@@ -541,6 +565,7 @@ async def tenant_upgrade_pay(payload: UpgradeRequest, ctx: DbTenantDep):
 
     link = await flutterwave_service.create_payment_link(
         amount=amount,
+        currency=quote["currency"],
         tx_ref=tx_ref,
         customer_email=owner_email or "billing@storeflow.ng",
         title=f"Upgrade to {plan.name}",
@@ -701,7 +726,17 @@ async def tenant_list_billable_transactions(ctx: DbTenantDep):
     "/plans",
     response_model=list[PlanOut],
 )
-async def public_list_plans(session: Annotated[AsyncSession, Depends(get_db)]):
+async def public_list_plans(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_db)],
+    currency: str | None = Query(None),
+):
+    from app.common.geo import country_from_ip, display_currency
+    from app.core.device import client_ip
+
+    country = await country_from_ip(client_ip(request), request.headers)
+    currency = (currency or display_currency(country)).upper()
+
     result = await session.execute(
         select(SubscriptionPlan)
         .where(SubscriptionPlan.is_active.is_(True))
@@ -711,15 +746,38 @@ async def public_list_plans(session: Annotated[AsyncSession, Depends(get_db)]):
         )
         .order_by(SubscriptionPlan.sort_order, SubscriptionPlan.name)
     )
-    return result.scalars().all()
+    plans = result.scalars().all()
+
+    if currency == "USD":
+        from app.common.fx import get_rate, ngn_to_usd
+
+        snapshot = await get_rate()
+        rate = snapshot["rate_decimal"]
+        for plan in plans:
+            plan.monthly_price = ngn_to_usd(plan.monthly_price, rate)
+            plan.currency = "USD"
+            for tier in plan.fee_tiers:
+                tier.minimum_amount = ngn_to_usd(tier.minimum_amount, rate)
+                if tier.maximum_amount is not None:
+                    tier.maximum_amount = ngn_to_usd(tier.maximum_amount, rate)
+                tier.fee_amount = ngn_to_usd(tier.fee_amount, rate)
+                tier.currency = "USD"
+    return plans
 
 
 @public_pricing_router.get(
     "/settings",
     response_model=dict,
 )
-async def public_pricing_settings(session: Annotated[AsyncSession, Depends(get_db)]):
+async def public_pricing_settings(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_db)],
+):
     """Public-safe pricing settings for the landing page (no auth required)."""
+    from app.common.fx import get_rate, public_fx_settings
+    from app.common.geo import country_from_ip, display_currency
+    from app.core.device import client_ip
+
     result = await session.execute(
         select(PlatformSetting).where(PlatformSetting.key == "annual_discount_pct")
     )
@@ -728,7 +786,14 @@ async def public_pricing_settings(session: Annotated[AsyncSession, Depends(get_d
         discount = float(setting.value) if setting and setting.value else 17.0
     except (ValueError, TypeError):
         discount = 17.0
-    return {"annual_discount_pct": discount}
+
+    country = await country_from_ip(client_ip(request), request.headers)
+    snapshot = await get_rate()
+    return {
+        "annual_discount_pct": discount,
+        "display_currency": display_currency(country),
+        **public_fx_settings(snapshot),
+    }
 
 
 @public_pricing_router.get(
@@ -750,10 +815,31 @@ async def public_plan_features(
     "/fee-tiers",
     response_model=list[FeeTierOut],
 )
-async def public_fee_tiers(session: Annotated[AsyncSession, Depends(get_db)]):
+async def public_fee_tiers(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_db)],
+    currency: str | None = Query(None),
+):
+    from app.common.geo import country_from_ip, display_currency
+    from app.core.device import client_ip
+
+    country = await country_from_ip(client_ip(request), request.headers)
+    currency = (currency or display_currency(country)).upper()
     result = await session.execute(
         select(TransactionFeeTier)
         .where(TransactionFeeTier.is_active.is_(True))
         .order_by(TransactionFeeTier.plan_id, TransactionFeeTier.minimum_amount)
     )
-    return result.scalars().all()
+    tiers = result.scalars().all()
+    if currency == "USD":
+        from app.common.fx import get_rate, ngn_to_usd
+
+        snapshot = await get_rate()
+        rate = snapshot["rate_decimal"]
+        for tier in tiers:
+            tier.minimum_amount = ngn_to_usd(tier.minimum_amount, rate)
+            if tier.maximum_amount is not None:
+                tier.maximum_amount = ngn_to_usd(tier.maximum_amount, rate)
+            tier.fee_amount = ngn_to_usd(tier.fee_amount, rate)
+            tier.currency = "USD"
+    return tiers

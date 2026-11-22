@@ -83,6 +83,7 @@ async def build_quote(
     plan: SubscriptionPlan,
     interval: str,
     sub: MerchantSubscription,
+    display_currency: str = "NGN",
 ) -> dict:
     """Compute gross, unused-time credit, and amount due for an immediate upgrade."""
     days = period_days(interval)
@@ -122,6 +123,17 @@ async def build_quote(
         base_price = monthly
         discount_pct = 0.0
 
+    fx_snapshot = None
+    if display_currency.upper() == "USD":
+        from app.common.fx import get_rate, ngn_to_usd
+
+        fx_snapshot = await get_rate()
+        rate = fx_snapshot["rate_decimal"]
+        gross = ngn_to_usd(gross, rate)
+        base_price = ngn_to_usd(base_price, rate)
+        credit = ngn_to_usd(credit, rate)
+        amount_due = ngn_to_usd(amount_due, rate)
+
     return {
         "gross": float(gross),
         "base_price": float(base_price),
@@ -134,7 +146,9 @@ async def build_quote(
         "plan_id": str(plan.id),
         "plan_slug": plan.slug,
         "plan_name": plan.name,
-        "currency": plan.currency or "NGN",
+        "currency": display_currency.upper(),
+        "fx_rate": fx_snapshot.get("usd_per_ngn") if fx_snapshot else None,
+        "fx_as_of": fx_snapshot.get("as_of") if fx_snapshot else None,
     }
 
 

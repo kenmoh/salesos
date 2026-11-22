@@ -642,6 +642,21 @@ async def flutterwave_webhook(request: Request, verif_hash: str = Header(default
         # checkout confirmation path sees the same intent and misreads it
         # as a cart payment.
         if resolved_intent is not None:
+            # Reject a payment whose gateway amount/currency does not match the
+            # intent. Critical once links can be created in USD as well as NGN.
+            gateway_amount = data.get("amount")
+            gateway_currency = data.get("currency")
+            if gateway_amount is not None:
+                try:
+                    if abs(float(gateway_amount) - float(resolved_intent.amount)) > 1:
+                        raise HTTPException(status_code=400, detail="Payment amount mismatch")
+                except (TypeError, ValueError):
+                    pass
+            if gateway_currency and str(gateway_currency).upper() != str(
+                resolved_intent.currency or "NGN"
+            ).upper():
+                raise HTTPException(status_code=400, detail="Payment currency mismatch")
+
             try:
                 intent_meta = json.loads(resolved_intent.intent_metadata or "{}")
             except (TypeError, ValueError):

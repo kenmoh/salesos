@@ -88,6 +88,7 @@ async def create_payment_link(
     title: str = "StoreFlow Payment",
     meta: dict | None = None,
     subaccounts: list[dict] | None = None,
+    currency: str = "NGN",
 ) -> dict:
     """Create a hosted payment page on Flutterwave.
 
@@ -120,7 +121,7 @@ async def create_payment_link(
     payload = {
         "tx_ref": tx_ref,
         "amount": _flw_amount(amount),
-        "currency": "NGN",
+        "currency": (currency or "NGN").upper(),
         "redirect_url": callback_url or settings.app_callback_url,
         "customer": {
             "email": customer_email,
