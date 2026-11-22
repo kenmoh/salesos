@@ -25,6 +25,7 @@ from app.core.responses import DataResponse, ok
 from app.billing import fees as fee_service
 from app.billing import invoices as invoice_service
 from app.billing import subscriptions as sub_service
+from app.platform.models import PlatformSetting
 from app.billing.models import (
     BillingInvoice,
     BillingPayment,
@@ -490,6 +491,23 @@ async def public_list_plans(session: Annotated[AsyncSession, Depends(get_db)]):
         .order_by(SubscriptionPlan.sort_order, SubscriptionPlan.name)
     )
     return result.scalars().all()
+
+
+@public_pricing_router.get(
+    "/settings",
+    response_model=dict,
+)
+async def public_pricing_settings(session: Annotated[AsyncSession, Depends(get_db)]):
+    """Public-safe pricing settings for the landing page (no auth required)."""
+    result = await session.execute(
+        select(PlatformSetting).where(PlatformSetting.key == "annual_discount_pct")
+    )
+    setting = result.scalar_one_or_none()
+    try:
+        discount = float(setting.value) if setting and setting.value else 17.0
+    except (ValueError, TypeError):
+        discount = 17.0
+    return {"annual_discount_pct": discount}
 
 
 @public_pricing_router.get(
