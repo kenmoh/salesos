@@ -142,11 +142,6 @@ class SubscriptionOut(BaseModel):
     auto_debit_enabled: bool
     accrued_debt: Decimal = Decimal("0")
     debt_cap: Decimal = Decimal("0")
-    accrued_debt_display: Optional[Decimal] = None
-    debt_cap_display: Optional[Decimal] = None
-    display_currency: str = "NGN"
-    display_fx_rate: Optional[str] = None
-    display_fx_as_of: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -189,12 +184,6 @@ class InvoiceOut(InvoiceBase):
     transaction_fee_total: Decimal
     credit_total: Decimal
     auto_debit_attempted: bool
-    total_amount_display: Optional[Decimal] = None
-    amount_paid_display: Optional[Decimal] = None
-    amount_due_display: Optional[Decimal] = None
-    display_currency: str = "NGN"
-    display_fx_rate: Optional[str] = None
-    display_fx_as_of: Optional[str] = None
     created_at: datetime
 
 
@@ -205,10 +194,6 @@ class WalletOut(BaseModel):
     balance: Decimal
     currency: str
     status: str
-    balance_display: Optional[Decimal] = None
-    display_currency: str = "NGN"
-    display_fx_rate: Optional[str] = None
-    display_fx_as_of: Optional[str] = None
     updated_at: datetime
 
 
@@ -222,10 +207,6 @@ class WalletTransactionOut(BaseModel):
     reference: Optional[str]
     invoice_id: Optional[UUID]
     description: Optional[str]
-    amount_display: Optional[Decimal] = None
-    display_currency: str = "NGN"
-    display_fx_rate: Optional[str] = None
-    display_fx_as_of: Optional[str] = None
     created_at: datetime
 
 

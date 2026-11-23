@@ -9590,11 +9590,6 @@ async def confirm_billing_settlement(
         await update_intent_status(session, intent.id, "completed", gateway_data)
 
         tenant_id = UUID(metadata.get("tenant_id") or str(intent.tenant_id))
-        # For USD payments, validate the paid USD against the locked intent.
-        expected = Decimal(str(metadata.get("amount") or intent.amount))
-        if metadata.get("currency") == "USD" and abs(expected - Decimal(str(intent.amount))) > Decimal("0.01"):
-            raise ValueError("amount_mismatch")
-
         result = await session.execute(
             select(MerchantSubscription).where(MerchantSubscription.tenant_id == tenant_id)
         )
@@ -9637,22 +9632,16 @@ async def confirm_wallet_funding(
         await update_intent_status(session, intent.id, "completed", gateway_data)
 
         tenant_id = UUID(metadata.get("tenant_id") or str(intent.tenant_id))
-        # For USD payments the ledger is credited with the locked NGN equivalent.
-        amount = Decimal(str(metadata.get("ngn_amount") or intent.amount))
-        gateway_amount = Decimal(str(intent.amount))
-        currency = metadata.get("currency") or "NGN"
-        rate = metadata.get("fx_rate")
-        description = f"Wallet funding via Flutterwave - {intent.gateway_reference}"
-        if currency == "USD":
-            description += f" ({float(gateway_amount):,.2f} USD @ {rate})"
+        amount = Decimal(str(intent.amount))
 
+        # Credit the wallet.
         await credit_wallet(
             session,
             tenant_id=tenant_id,
             amount=amount,
             entry_type="funding",
             gateway_reference=intent.gateway_reference,
-            description=description,
+            description=f"Wallet funding via Flutterwave - {intent.gateway_reference}",
         )
 
         await session.commit()
