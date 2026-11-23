@@ -1157,7 +1157,7 @@ async def process_sync_batch(
             text(
                 "INSERT INTO sync_events "
                 "(tenant_id, user_id, client_id, event_type, payload, client_ts, status, retry_count, created_at) "
-                "VALUES (:bid, :uid, :cid, :etype, :payload::jsonb, :cts, 'pending', 0, now()) "
+                "VALUES (:bid, :uid, :cid, :etype, CAST(:payload AS jsonb), :cts, 'pending', 0, now()) "
                 "RETURNING id"
             ),
             {
@@ -1203,7 +1203,7 @@ async def queue_server_event(
         text(
             "INSERT INTO sync_events "
             "(tenant_id, user_id, client_id, event_type, payload, client_ts, status, retry_count, created_at) "
-            "VALUES (:bid, NULL, NULL, :etype, :payload::jsonb, NULL, 'pending', 0, now()) "
+            "VALUES (:bid, NULL, NULL, :etype, CAST(:payload AS jsonb), NULL, 'pending', 0, now()) "
             "RETURNING id"
         ),
         {
