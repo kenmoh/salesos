@@ -6,7 +6,7 @@ from uuid import UUID
 from app.core.dependencies import DbTenantDep, TenantDep, require_permission
 from app.billing.limits import PlanLimitError
 from app.core.responses import DataResponse, PaginatedResponse, ok, paginated
-from app.auth.schemas.schema import DocumentCreate, DocumentStatusUpdate
+from app.auth.schemas.schema import DocumentCreate, DocumentStatusUpdate, DocumentUpdate
 from app.auth.schemas.responses import (
     DocumentConverted,
     DocumentCreated,
@@ -29,6 +29,7 @@ from app.common.bridge import (
     convert_document_to_sale,
     get_document_by_id,
     list_documents,
+    update_document,
     update_document_status,
 )
 
@@ -209,6 +210,58 @@ async def update_document_status_endpoint(
         raise HTTPException(status_code=400, detail=message)
     await scope_bump(ctx.user.business_id, TENANT_SCOPE, (DOCUMENTS, ACCOUNTING, REPORTS))
     return result
+
+
+@router.patch(
+    "/{doc_id}",
+    response_model=DataResponse[DocumentDetail],
+    dependencies=[Depends(require_permission("documents:update"))],
+)
+async def update_document_endpoint(doc_id: str, payload: DocumentUpdate, ctx: TenantDep):
+    """Update a draft document's header and/or line items.
+
+    Only documents in ``draft`` status can be edited. Finalized documents
+    (sent, issued, paid, ...) are locked and return 400.
+    """
+    try:
+        result = await update_document(
+            tenant_id=ctx.user.business_id,
+            actor_id=ctx.user.user_id,
+            doc_id=doc_id,
+            customer_id=str(payload.customer_id) if payload.customer_id else None,
+            customer_name=payload.customer_name,
+            customer_email=payload.customer_email,
+            customer_phone=payload.customer_phone,
+            customer_address=payload.customer_addr,
+            due_date=payload.due_date,
+            notes=payload.notes,
+            terms=payload.terms,
+            store_id=str(payload.store_id) if payload.store_id else None,
+            show_bank_details=bool(payload.show_bank_details),
+            items=[
+                {
+                    "product_id": str(i.product_id) if i.product_id else None,
+                    "description": i.description,
+                    "qty": float(i.qty),
+                    "unit_price": float(i.unit_price),
+                    "discount_pct": float(i.discount_pct),
+                    "tax_rate": float(i.tax_rate) if i.tax_rate else None,
+                    "tax_ids": [str(t) for t in i.tax_ids],
+                }
+                for i in payload.items
+            ]
+            if payload.items is not None
+            else None,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if message == "document_not_found":
+            raise HTTPException(status_code=404, detail="Document not found")
+        if message == "document_not_draft":
+            raise HTTPException(status_code=400, detail="Only draft documents can be edited")
+        raise HTTPException(status_code=400, detail=message)
+    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (DOCUMENTS, ACCOUNTING, REPORTS))
+    return ok(result)
 
 
 @router.post(

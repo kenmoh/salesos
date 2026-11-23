@@ -322,6 +322,26 @@ class DocumentCreate(Base):
     items: list[DocumentItem] = Field(..., min_length=1)
 
 
+class DocumentUpdate(Base):
+    """Editable fields for a draft document.
+
+    Every field is optional; unset fields keep their current value. When
+    ``items`` is provided it replaces every existing line item.
+    """
+
+    customer_id: UUID | None = None
+    customer_name: str | None = None
+    customer_email: EmailStr | None = None
+    customer_phone: str | None = None
+    customer_addr: str | None = None
+    due_date: date | None = None
+    notes: str | None = None
+    terms: str | None = None
+    store_id: UUID | None = None
+    show_bank_details: bool | None = None
+    items: list[DocumentItem] | None = None
+
+
 class DocumentStatusUpdate(Base):
     status: str
 

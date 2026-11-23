@@ -17,7 +17,7 @@ Abbreviations Used in This Module
 
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.documents.models import Document, DocumentItem
@@ -45,6 +45,39 @@ async def create_document_items(session: AsyncSession, items: list[DocumentItem]
         session: The async SQLAlchemy database session to use.
         items: A list of DocumentItem model instances to persist.
     """
+    for item in items:
+        session.add(item)
+    await session.flush()
+
+
+async def update_document(session: AsyncSession, doc: Document) -> Document:
+    """Persist changes to an existing document.
+
+    Args:
+        session: The async SQLAlchemy database session to use.
+        doc: The Document model instance with changes already applied.
+
+    Returns:
+        The same Document instance.
+    """
+    session.add(doc)
+    await session.flush()
+    return doc
+
+
+async def replace_document_items(
+    session: AsyncSession, document_id: UUID, items: list[DocumentItem]
+) -> None:
+    """Replace all line items of a document.
+
+    Existing items are removed and the provided items are inserted in their place.
+
+    Args:
+        session: The async SQLAlchemy database session to use.
+        document_id: UUID of the document whose items are replaced.
+        items: The new line item models.
+    """
+    await session.execute(delete(DocumentItem).where(DocumentItem.document_id == document_id))
     for item in items:
         session.add(item)
     await session.flush()

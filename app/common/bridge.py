@@ -7811,6 +7811,7 @@ async def _settle_sale_receivable(
     """
     from sqlalchemy import or_, select as sa_select
 
+    from app.accounting.repository import get_account_by_code
     from app.accounting.models import AccountReceivable
     from app.accounting.rpc import post_journal
     from app.common.db.session import set_rls_context
@@ -9834,6 +9835,50 @@ async def convert_document_to_sale(
         }
 
 
+async def _resolve_document_item_lines(
+    session, tenant: UUID, items: list[dict]
+) -> list[DocumentItemLine]:
+    """Resolve catalog/custom taxes and build DocumentItemLine models from raw item dicts."""
+    from app.documents.schemas import DocumentItemLine
+
+    product_ids = [
+        UUID(str(i["product_id"])) for i in items if i.get("product_id")
+    ]
+    product_taxes = await product_tax_map(session, tenant, product_ids)
+
+    chosen_ids: set[UUID] = set()
+    for i in items:
+        if not i.get("product_id"):
+            for raw in i.get("tax_ids") or []:
+                chosen_ids.add(UUID(str(raw)))
+    chosen_map = {
+        entry["id"]: entry
+        for entry in await taxes_for_ids(session, tenant, sorted(chosen_ids))
+    }
+
+    lines = []
+    for i in items:
+        if i.get("product_id"):
+            line_taxes = product_taxes.get(str(UUID(str(i["product_id"]))), [])
+        else:
+            line_taxes = [
+                chosen_map[str(raw)] for raw in (i.get("tax_ids") or [])
+                if str(raw) in chosen_map
+            ]
+        lines.append(
+            DocumentItemLine(
+                product_id=UUID(str(i["product_id"])) if i.get("product_id") else None,
+                description=i["description"],
+                qty=Decimal(str(i["qty"])),
+                unit_price=Decimal(str(i["unit_price"])),
+                discount_pct=Decimal(str(i.get("discount_pct", 0))),
+                tax_rate=Decimal(str(i["tax_rate"])) if i.get("tax_rate") else None,
+                taxes=line_taxes,
+            )
+        )
+    return lines
+
+
 async def create_document(
     tenant_id: str,
     actor_id: str,
@@ -9920,41 +9965,7 @@ async def create_document(
         from app.taxes.resolve import taxes_for_ids
 
         tenant = UUID(tenant_id)
-        product_ids = [
-            UUID(str(i["product_id"])) for i in items if i.get("product_id")
-        ]
-        product_taxes = await product_tax_map(session, tenant, product_ids)
-
-        chosen_ids: set[UUID] = set()
-        for i in items:
-            if not i.get("product_id"):
-                for raw in i.get("tax_ids") or []:
-                    chosen_ids.add(UUID(str(raw)))
-        chosen_map = {
-            entry["id"]: entry
-            for entry in await taxes_for_ids(session, tenant, sorted(chosen_ids))
-        }
-
-        item_lines = []
-        for i in items:
-            if i.get("product_id"):
-                line_taxes = product_taxes.get(str(UUID(str(i["product_id"]))), [])
-            else:
-                line_taxes = [
-                    chosen_map[str(raw)] for raw in (i.get("tax_ids") or [])
-                    if str(raw) in chosen_map
-                ]
-            item_lines.append(
-                DocumentItemLine(
-                    product_id=UUID(str(i["product_id"])) if i.get("product_id") else None,
-                    description=i["description"],
-                    qty=Decimal(str(i["qty"])),
-                    unit_price=Decimal(str(i["unit_price"])),
-                    discount_pct=Decimal(str(i.get("discount_pct", 0))),
-                    tax_rate=Decimal(str(i["tax_rate"])) if i.get("tax_rate") else None,
-                    taxes=line_taxes,
-                )
-            )
+        item_lines = await _resolve_document_item_lines(session, tenant, items)
 
         command = DocumentCreateCommand(
             tenant_id=tenant,
@@ -9995,6 +10006,147 @@ async def create_document(
         await session.commit()
 
     return result.model_dump(mode="json")
+
+
+async def update_document(
+    tenant_id: str,
+    actor_id: str,
+    doc_id: str,
+    customer_id: str | None = None,
+    customer_name: str | None = None,
+    customer_email: str | None = None,
+    customer_phone: str | None = None,
+    customer_address: str | None = None,
+    due_date=None,
+    notes: str | None = None,
+    terms: str | None = None,
+    store_id: str | None = None,
+    show_bank_details: bool = False,
+    items: list[dict] | None = None,
+    correlation_id: str | None = None,
+) -> dict:
+    """Update an existing draft document.
+
+    Only documents in ``draft`` status can be edited. Customer details, dates,
+    notes, terms, store, and the bank-details flag are applied directly. When
+    ``items`` is provided it replaces every existing line item and the document
+    totals are recomputed.
+
+    Args:
+        tenant_id: Unique identifier of the tenant that owns the document.
+        actor_id: Identifier of the user performing the update.
+        doc_id: UUID of the document to update.
+        customer_id: Optional customer id this document belongs to.
+        customer_name: Optional customer name for the document.
+        customer_email: Optional customer email for the document.
+        customer_phone: Optional customer phone for the document.
+        customer_address: Optional customer address for the document.
+        due_date: Optional payment due date for invoices.
+        notes: Optional notes for the document.
+        terms: Optional terms and conditions text.
+        store_id: Optional store identifier to file the document against.
+        show_bank_details: Whether the document's PDF prints settlement bank details.
+        items: Optional replacement line items. When omitted the existing lines are kept.
+        correlation_id: Optional correlation identifier for distributed tracing.
+
+    Returns:
+        A dictionary containing the updated document details, including its line items.
+
+    Raises:
+        ValueError: If the document is not found, not owned by the tenant, or not
+            in ``draft`` status.
+    """
+    from app.documents.schemas import DocumentUpdateCommand
+    from app.documents.service import plan_document_update
+    from app.documents.repository import (
+        get_document_by_id as repo_get_document_by_id,
+        update_document as repo_update_document,
+        replace_document_items,
+        get_document_items,
+    )
+    from app.taxes.calc import group_tax_lines
+
+    sdb = _get_sdb("documents")
+    async with sdb.session() as session:
+        doc = await repo_get_document_by_id(session, UUID(doc_id))
+        if not doc or str(doc.tenant_id) != tenant_id:
+            raise ValueError("document_not_found")
+
+        item_lines = None
+        if items is not None:
+            item_lines = await _resolve_document_item_lines(session, UUID(tenant_id), items)
+
+        command = DocumentUpdateCommand(
+            tenant_id=UUID(tenant_id),
+            actor_id=UUID(actor_id),
+            customer_id=UUID(customer_id) if customer_id else None,
+            customer_name=customer_name,
+            customer_email=customer_email,
+            customer_phone=customer_phone,
+            customer_address=customer_address,
+            due_date=due_date,
+            notes=notes,
+            terms=terms,
+            store_id=UUID(store_id) if store_id else None,
+            show_bank_details=show_bank_details,
+            items=item_lines,
+            correlation_id=correlation_id,
+        )
+
+        _result, doc_model, new_items, _outbox = plan_document_update(command, doc)
+        await repo_update_document(session, doc_model)
+
+        if new_items:
+            await replace_document_items(session, doc_model.id, new_items)
+            final_items = new_items
+        else:
+            final_items = await get_document_items(session, doc_model.id)
+
+        await session.commit()
+
+    items_out = [
+        {
+            "id": str(i.id),
+            "product_id": str(i.product_id) if i.product_id else None,
+            "description": i.description,
+            "qty": int(i.qty),
+            "unit_price": str(i.unit_price),
+            "discount_pct": str(i.discount_pct),
+            "tax_rate": str(i.tax_rate) if i.tax_rate else None,
+            "taxes": list(i.tax_breakdown or []),
+            "line_total": str(i.line_total),
+        }
+        for i in final_items
+    ]
+    tax_breakdown = group_tax_lines(
+        tax for item in final_items for tax in (item.tax_breakdown or [])
+    )
+
+    return {
+        "id": str(doc_model.id),
+        "doc_number": doc_model.doc_number,
+        "doc_type": doc_model.doc_type,
+        "status": doc_model.status,
+        "customer_id": str(doc_model.customer_id) if doc_model.customer_id else None,
+        "customer_name": doc_model.customer_name,
+        "customer_email": doc_model.customer_email,
+        "customer_phone": doc_model.customer_phone,
+        "customer_address": doc_model.customer_address,
+        "store_id": str(doc_model.store_id) if doc_model.store_id else None,
+        "subtotal": float(doc_model.subtotal),
+        "discount": float(doc_model.discount),
+        "tax": str(doc_model.tax),
+        "tax_breakdown": tax_breakdown,
+        "total": str(doc_model.total),
+        "due_date": doc_model.due_date.isoformat() if doc_model.due_date else None,
+        "notes": doc_model.notes,
+        "terms": doc_model.terms,
+        "linked_sale_id": str(doc_model.linked_sale_id) if doc_model.linked_sale_id else None,
+        "pdf_url": doc_model.pdf_url,
+        "show_bank_details": bool(doc_model.show_bank_details),
+        "created_at": doc_model.created_at.isoformat() if doc_model.created_at else None,
+        "items": items_out,
+    }
 
 
 async def list_documents(

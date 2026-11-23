@@ -43,6 +43,7 @@ from app.documents.schemas import (
     DocumentCreateCommand,
     DocumentResult,
     DocumentStatusCommand,
+    DocumentUpdateCommand,
 )
 from app.taxes.calc import DEFAULT_TAX_ACCOUNT, TaxLine, compute_taxes
 
@@ -254,6 +255,103 @@ def plan_document_creation(
 
     outbox = [OutboxWrite(event=event, aggregate_type="document", aggregate_id=str(doc_id))]
     return result, doc, items, outbox
+
+
+def plan_document_update(
+    command: DocumentUpdateCommand,
+    doc: Document,
+) -> tuple[DocumentResult, Document, list[DocumentItem], list[OutboxWrite]]:
+    """Plan updates to an existing draft document.
+
+    Only draft documents may be edited. Customer details, dates, notes, terms,
+    store, and the bank-details flag are applied directly. When ``items`` is
+    provided it replaces every existing line item and the document totals are
+    recomputed from the new lines.
+
+    Args:
+        command: The DocumentUpdateCommand with the fields to change.
+        doc: The existing draft Document model to update.
+
+    Returns:
+        A tuple of:
+            - DocumentResult: Pydantic result schema reflecting the updated document.
+            - Document: The updated SQLAlchemy model (mutated in place).
+            - list[DocumentItem]: New line item models when ``items`` was provided,
+              otherwise an empty list (existing lines are left untouched).
+            - list[OutboxWrite]: Always empty for updates; no side effects are emitted.
+
+    Raises:
+        ValueError: If the document is not in ``draft`` status.
+    """
+    if doc.status != "draft":
+        raise ValueError("document_not_draft")
+
+    doc.customer_id = command.customer_id
+    doc.customer_name = command.customer_name
+    doc.customer_email = command.customer_email
+    doc.customer_phone = command.customer_phone
+    doc.customer_address = command.customer_address
+    doc.due_date = command.due_date
+    doc.notes = command.notes
+    doc.terms = command.terms
+    doc.store_id = command.store_id
+    doc.show_bank_details = command.show_bank_details
+
+    items = []
+    if command.items is not None:
+        calc = compute_taxes(
+            [
+                TaxLine(
+                    qty=float(i.qty),
+                    unit_price=float(i.unit_price),
+                    discount_pct=float(i.discount_pct),
+                    taxes=_line_taxes(i),
+                    tax_inclusive=any(t.get("tax_inclusive") for t in _line_taxes(i)),
+                )
+                for i in command.items
+            ]
+        )
+        doc.subtotal = calc.subtotal
+        doc.discount = calc.discount
+        doc.tax = calc.total_tax
+        doc.total = round(calc.taxable + calc.total_tax, 2)
+
+        for line, line_taxes, tax_rate, line_base, line_customer_total in zip(
+            command.items, calc.line_taxes, calc.line_rates, calc.line_bases, calc.line_totals
+        ):
+            line_inclusive = any(t.get("tax_inclusive") for t in line_taxes)
+            items.append(
+                DocumentItem(
+                    id=uuid4(),
+                    document_id=doc.id,
+                    product_id=line.product_id,
+                    description=line.description,
+                    qty=float(line.qty),
+                    unit_price=float(line.unit_price),
+                    discount_pct=float(line.discount_pct),
+                    tax_rate=tax_rate if line_taxes else None,
+                    tax_breakdown=line_taxes or None,
+                    line_total=line_customer_total if line_inclusive else line_base,
+                )
+            )
+
+    result = DocumentResult(
+        id=doc.id,
+        tenant_id=doc.tenant_id,
+        doc_number=doc.doc_number,
+        doc_type=doc.doc_type,
+        status=doc.status,
+        subtotal=doc.subtotal,
+        discount=doc.discount,
+        tax=doc.tax,
+        total=doc.total,
+        item_count=len(items) if command.items is not None else 0,
+        due_date=doc.due_date,
+        linked_sale_id=str(doc.linked_sale_id) if doc.linked_sale_id else None,
+        show_bank_details=doc.show_bank_details,
+    )
+
+    return result, doc, items, []
 
 
 def plan_status_change(

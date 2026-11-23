@@ -106,6 +106,49 @@ class DocumentCreateCommand(BaseModel):
     correlation_id: str | None = None
 
 
+class DocumentUpdateCommand(BaseModel):
+    """Command to update an existing draft document.
+
+    Only documents in ``draft`` status can be edited. Once a document has been
+    sent, issued, paid, or otherwise finalized its header and line items are
+    locked.
+
+    Fields left unset keep their current value. When ``items`` is provided it
+    replaces every existing line item and the document totals are recomputed.
+
+    Attributes:
+        tenant_id: The business tenant this document belongs to.
+        actor_id: UUID of the user performing the update.
+        customer_id: Optional UUID of the Customer this document belongs to.
+        customer_name: Optional name of the customer or contact person.
+        customer_email: Optional email address of the customer.
+        customer_phone: Optional phone number of the customer.
+        customer_address: Optional mailing or delivery address.
+        due_date: Optional date by which payment is expected (for invoices).
+        notes: Optional internal notes or comments.
+        terms: Optional terms and conditions.
+        store_id: Optional store the document is filed against.
+        show_bank_details: Whether the generated PDF prints settlement bank details.
+        items: Optional replacement line items. When omitted the existing lines are kept.
+        correlation_id: Optional request correlation ID for distributed tracing.
+    """
+
+    tenant_id: UUID
+    actor_id: UUID
+    customer_id: UUID | None = None
+    customer_name: str | None = None
+    customer_email: str | None = None
+    customer_phone: str | None = None
+    customer_address: str | None = None
+    due_date: datetime | None = None
+    notes: str | None = None
+    terms: str | None = None
+    store_id: UUID | None = None
+    show_bank_details: bool = False
+    items: list[DocumentItemLine] | None = None
+    correlation_id: str | None = None
+
+
 class DocumentResult(BaseModel):
     """Result returned after creating or querying a document.
 

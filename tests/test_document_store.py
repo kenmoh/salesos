@@ -513,3 +513,95 @@ class TestFeeLimitBlocksDocumentCreation:
 
         assert resp.status_code == 402
         assert "outstanding fees" in resp.json()["detail"]
+
+
+class TestDocumentUpdate:
+    async def test_patch_passes_fields_through(self):
+        from app.documents import routes as doc_routes
+
+        calls: list[dict] = []
+
+        async def _fake_update(**kwargs):
+            calls.append(kwargs)
+            return {
+                "id": str(uuid4()),
+                "doc_number": "INV-1",
+                "status": "draft",
+                "customer_name": "Ada",
+            }
+
+        app = FastAPI()
+        app.include_router(doc_routes.router)
+
+        async def override():
+            yield TenantContext(user=_token(), session=MagicMock())
+
+        app.dependency_overrides[get_tenant_context] = override
+        app.dependency_overrides[get_tenant_db_context] = override
+
+        with patch.object(doc_routes, "update_document", _fake_update):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                resp = await ac.patch(
+                    f"/documents/{uuid4()}",
+                    json={
+                        "customer_name": "Ada Lovelace",
+                        "customer_email": "ada@example.com",
+                        "notes": "Handle with care",
+                    },
+                )
+
+        assert resp.status_code == 200, resp.text
+        assert calls[0]["customer_name"] == "Ada Lovelace"
+        assert calls[0]["customer_email"] == "ada@example.com"
+        assert calls[0]["notes"] == "Handle with care"
+        assert calls[0]["show_bank_details"] is False
+
+    async def test_non_draft_document_answers_400(self):
+        from app.documents import routes as doc_routes
+
+        async def _fake_update(**kwargs):
+            raise ValueError("document_not_draft")
+
+        app = FastAPI()
+        app.include_router(doc_routes.router)
+
+        async def override():
+            yield TenantContext(user=_token(), session=MagicMock())
+
+        app.dependency_overrides[get_tenant_context] = override
+        app.dependency_overrides[get_tenant_db_context] = override
+
+        with patch.object(doc_routes, "update_document", _fake_update):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                resp = await ac.patch(f"/documents/{uuid4()}", json={"customer_name": "Ada"})
+
+        assert resp.status_code == 400
+        assert "draft" in resp.json()["detail"]
+
+    async def test_unknown_document_answers_404(self):
+        from app.documents import routes as doc_routes
+
+        async def _fake_update(**kwargs):
+            raise ValueError("document_not_found")
+
+        app = FastAPI()
+        app.include_router(doc_routes.router)
+
+        async def override():
+            yield TenantContext(user=_token(), session=MagicMock())
+
+        app.dependency_overrides[get_tenant_context] = override
+        app.dependency_overrides[get_tenant_db_context] = override
+
+        with patch.object(doc_routes, "update_document", _fake_update):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                resp = await ac.patch(f"/documents/{uuid4()}", json={"customer_name": "Ada"})
+
+        assert resp.status_code == 404
+

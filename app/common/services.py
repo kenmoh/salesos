@@ -985,10 +985,17 @@ async def _mark_sync_event(
     await session.execute(
         text(
             "UPDATE sync_events SET status = :status, error = :error, "
-            "applied_at = CASE WHEN :status IN ('processed','failed') THEN now() ELSE applied_at END, "
-            "retry_count = CASE WHEN :status = 'failed' THEN retry_count + 1 ELSE retry_count END WHERE id = :eid"
+            "applied_at = CASE WHEN :set_applied_at THEN now() ELSE applied_at END, "
+            "retry_count = CASE WHEN :increment_retry THEN retry_count + 1 ELSE retry_count END "
+            "WHERE id = :eid"
         ),
-        {"status": status, "error": error, "eid": event_id},
+        {
+            "status": status,
+            "error": error,
+            "set_applied_at": status in ("processed", "failed"),
+            "increment_retry": status == "failed",
+            "eid": event_id,
+        },
     )
 
 
