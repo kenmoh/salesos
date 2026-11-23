@@ -806,6 +806,7 @@ class DocumentDetail(_Base):
     tax_breakdown: list[dict] = []
     total: float = 0
     items: list[dict] = []
+    show_bank_details: bool = False
     created_at: datetime | None = None
 
 
@@ -859,12 +860,16 @@ class SyncPendingItem(_Base):
 
 class BusinessSettings(_Base):
     name: str | None = None
+    business_description: str | None = None
     phone: str | None = None
     address: str | None = None
     country: str | None = None
     tax_rate: float | None = None
     currency: str | None = None
     logo_url: str | None = None
+    account_number: str | None = None
+    account_name: str | None = None
+    bank_name: str | None = None
     allow_price_override: bool = False
     settings: dict = {}
 

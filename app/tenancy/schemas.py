@@ -6,7 +6,11 @@ from pydantic import BaseModel, Field
 class TenantCreateCommand(BaseModel):
     actor_id: UUID | None = None
     business_name: str = Field(..., min_length=2, max_length=120)
+    business_description: str | None = None
     business_email: str
+    account_number: str | None = Field(default=None, max_length=50)
+    account_name: str | None = Field(default=None, max_length=120)
+    bank_name: str | None = Field(default=None, max_length=120)
     owner_name: str = Field(..., min_length=2, max_length=100)
     owner_email: str
     owner_phone: str | None = None

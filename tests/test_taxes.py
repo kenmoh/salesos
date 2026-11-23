@@ -504,6 +504,7 @@ class TestTheDetailGroupsTheLinesByTax:
             notes=None,
             terms=None,
             linked_sale_id=None,
+            show_bank_details=False,
             pdf_url=None,
             created_at=None,
         )

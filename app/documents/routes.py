@@ -128,6 +128,7 @@ async def _create_document(payload: DocumentCreate, ctx, store_id: str | None):
             ],
             linked_sale_id=str(payload.sale_id) if payload.sale_id else None,
             store_id=store_id,
+            show_bank_details=payload.show_bank_details,
         )
     )
 
@@ -256,8 +257,10 @@ def _build_document_pdf(doc: dict, business: dict | None = None) -> tuple[str, s
     """Generate PDF bytes for a document dict.
 
     ``business`` carries the tenant profile: name, logo bytes, address,
-    phone, and the dynamic note to print on documents. Any piece may be
-    missing; the generator falls back to plain output.
+    phone, business description and email, and the settlement bank details.
+    The document's ``show_bank_details`` flag decides whether the bank block
+    is printed. Any piece may be missing; the generator falls back to plain
+    output.
     Returns (doc_type, doc_number, pdf_bytes).
     """
     from app.common.pdf_service import (
@@ -284,6 +287,17 @@ def _build_document_pdf(doc: dict, business: dict | None = None) -> tuple[str, s
         address=business.get("address") or "",
         phone=business.get("phone") or "",
         currency=business.get("currency"),
+        business_description=business.get("business_description") or "",
+        business_email=business.get("business_email") or "",
+        account_number=business.get("account_number") or "",
+        account_name=business.get("account_name") or "",
+        bank_name=business.get("bank_name") or "",
+        show_bank_details=bool(doc.get("show_bank_details")),
+    )
+    customer_kwargs = dict(
+        customer_phone=doc.get("customer_phone") or "",
+        customer_email=doc.get("customer_email") or "",
+        customer_address=doc.get("customer_address") or "",
     )
 
     if doc_type == "receipt":
@@ -297,6 +311,7 @@ def _build_document_pdf(doc: dict, business: dict | None = None) -> tuple[str, s
             notes=notes,
             tax_breakdown=tax_breakdown,
             **business_kwargs,
+            **customer_kwargs,
         )
     elif doc_type == "quote":
         pdf_bytes = generate_quote_pdf(
@@ -310,6 +325,7 @@ def _build_document_pdf(doc: dict, business: dict | None = None) -> tuple[str, s
             terms=terms,
             tax_breakdown=tax_breakdown,
             **business_kwargs,
+            **customer_kwargs,
         )
     else:
         pdf_bytes = generate_invoice_pdf(
@@ -325,6 +341,7 @@ def _build_document_pdf(doc: dict, business: dict | None = None) -> tuple[str, s
             tax_breakdown=tax_breakdown,
             title="Purchase Order" if doc_type == "purchase_order" else "Invoice",
             **business_kwargs,
+            **customer_kwargs,
         )
     return doc_type, doc_number, _ensure_pdf_bytes(pdf_bytes)
 
@@ -343,7 +360,11 @@ def _format_due_date(value) -> str:
 
 
 async def _business_profile(ctx) -> dict:
-    """Collect tenant branding for the PDF: name, contacts, logo, note."""
+    """Collect tenant branding for the PDF: name, contacts, logo, note.
+
+    Also carries the settlement bank details. Whether they are printed is the
+    document's decision (``show_bank_details``), not this function's.
+    """
     import base64
     import json
 
@@ -389,10 +410,15 @@ async def _business_profile(ctx) -> dict:
 
     return {
         "name": tenant.business_name,
+        "business_description": tenant.business_description or "",
+        "business_email": tenant.business_email or "",
         "address": settings.get("address") or "",
         "phone": tenant.owner_phone or "",
         "logo_bytes": logo_bytes,
         "currency": currency_code(settings),
+        "account_number": tenant.account_number or "",
+        "account_name": tenant.account_name or tenant.business_name or "",
+        "bank_name": tenant.bank_name or "",
     }
 
 

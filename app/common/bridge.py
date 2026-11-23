@@ -243,6 +243,10 @@ async def create_tenant(
     owner_email: str,
     owner_phone: str | None,
     owner_password_hash: str,
+    business_description: str | None = None,
+    account_number: str | None = None,
+    account_name: str | None = None,
+    bank_name: str | None = None,
     actor_id: str | None = None,
     correlation_id: str | None = None,
 ) -> dict:
@@ -261,6 +265,11 @@ async def create_tenant(
         owner_email: Email address of the tenant owner.
         owner_phone: Optional phone number of the tenant owner.
         owner_password_hash: Hashed password for the owner account.
+        business_description: Optional description of the business.
+        account_number: Optional settlement bank account number.
+        account_name: Optional settlement bank account name; defaults to
+            the business name when not provided.
+        bank_name: Optional settlement bank name.
         actor_id: Optional identifier of the user performing this action
             (used for audit logging).
         correlation_id: Optional correlation identifier for distributed
@@ -298,7 +307,11 @@ async def create_tenant(
     command = TenantCreateCommand(
         actor_id=UUID(actor_id) if actor_id else None,
         business_name=business_name,
+        business_description=business_description,
         business_email=business_email,
+        account_number=account_number,
+        account_name=account_name,
+        bank_name=bank_name,
         owner_name=owner_name,
         owner_email=owner_email,
         owner_phone=owner_phone,
@@ -9836,6 +9849,7 @@ async def create_document(
     terms: str | None = None,
     linked_sale_id: str | None = None,
     store_id: str | None = None,
+    show_bank_details: bool = False,
     correlation_id: str | None = None,
 ) -> dict:
     """Create a business document (quote, invoice, receipt, or delivery note).
@@ -9861,6 +9875,9 @@ async def create_document(
         notes: Optional notes for the document.
         terms: Optional terms and conditions text.
         linked_sale_id: Optional sale identifier to link this document to.
+        store_id: Optional store identifier to file the document against.
+        show_bank_details: Whether the document's PDF prints the tenant's
+            settlement bank details in the header.
         correlation_id: Optional correlation identifier for distributed
             tracing.
 
@@ -9954,6 +9971,7 @@ async def create_document(
             items=item_lines,
             linked_sale_id=UUID(linked_sale_id) if linked_sale_id else None,
             store_id=UUID(store_id) if store_id else None,
+            show_bank_details=show_bank_details,
             correlation_id=correlation_id,
         )
 
@@ -10096,6 +10114,7 @@ async def get_document_by_id(tenant_id: str, document_id: str) -> dict | None:
             "notes": doc.notes,
             "terms": doc.terms,
             "linked_sale_id": str(doc.linked_sale_id) if doc.linked_sale_id else None,
+            "show_bank_details": bool(doc.show_bank_details),
             "pdf_url": doc.pdf_url,
             "created_at": doc.created_at.isoformat() if doc.created_at else None,
             "items": [

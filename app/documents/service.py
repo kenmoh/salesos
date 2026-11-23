@@ -200,6 +200,7 @@ def plan_document_creation(
         terms=command.terms,
         linked_sale_id=command.linked_sale_id,
         store_id=command.store_id,
+        show_bank_details=command.show_bank_details,
         created_by=command.actor_id,
     )
 
@@ -248,6 +249,7 @@ def plan_document_creation(
         item_count=len(items),
         due_date=command.due_date,
         linked_sale_id=str(command.linked_sale_id) if command.linked_sale_id else None,
+        show_bank_details=command.show_bank_details,
     )
 
     outbox = [OutboxWrite(event=event, aggregate_type="document", aggregate_id=str(doc_id))]

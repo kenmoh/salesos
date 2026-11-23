@@ -20,6 +20,12 @@ class StoreFlowPDF(FPDF):
         address: str = "",
         phone: str = "",
         currency: str | None = None,
+        business_description: str = "",
+        business_email: str = "",
+        account_number: str = "",
+        account_name: str = "",
+        bank_name: str = "",
+        show_bank_details: bool = False,
     ):
         super().__init__()
         self.business_name = business_name
@@ -27,42 +33,113 @@ class StoreFlowPDF(FPDF):
         self.address = address
         self.phone = phone
         self.currency = currency or DEFAULT_CURRENCY
+        self.business_description = business_description
+        self.business_email = business_email
+        self.account_number = account_number
+        self.account_name = account_name
+        self.bank_name = bank_name
+        self.show_bank_details = show_bank_details
 
     def money(self, amount: float) -> str:
         # Helvetica is latin-1 only; use the currency code rather than a symbol.
         return format_money_ascii(amount, self.currency, decimals=2)
 
+    def header_contact_lines(self) -> list[str]:
+        """Company contact lines, each on its own row under the business name."""
+        lines = []
+        for value in (self.address, self.phone, self.business_email):
+            text = (value or "").strip()
+            if text:
+                lines.append(text)
+        return lines
+
+    def bank_detail_rows(self) -> list[tuple[str, str]]:
+        """Settlement bank rows to print at the far right of the header.
+
+        The document decides whether they are shown at all, and a business with
+        no bank details stored gets no block rather than a set of empty labels.
+        """
+        if not self.show_bank_details:
+            return []
+        candidates = (
+            ("Account Number:", self.account_number),
+            ("Account Name:", self.account_name),
+            ("Bank Name:", self.bank_name),
+        )
+        return [
+            (label, text)
+            for label, value in candidates
+            if (text := (value or "").strip())
+        ]
+
+    def _bank_block(self, x: float, width: float, top: float) -> None:
+        label_width = 30.0
+        value_width = width - label_width
+        for label, value in self.bank_detail_rows():
+            self.set_xy(x, top)
+            self.set_font("Helvetica", "B", 8.5)
+            self.set_text_color(90, 90, 90)
+            self.cell(label_width, 4.5, label, align="R")
+            self.set_font("Helvetica", "", 9)
+            self.set_text_color(0, 0, 0)
+            self.multi_cell(value_width, 4.5, value, align="R")
+            top = self.get_y()
+
     def header(self):
-        contact_bits = [bit for bit in (self.address.strip(), self.phone.strip()) if bit]
-        contact_line = "  |  ".join(contact_bits)
-        logo_bottom = 0.0
+        top = 8.0
+        right_width = 70.0
+        has_bank = bool(self.bank_detail_rows())
+
+        logo_bottom = top
         if self.logo_bytes:
             try:
                 from PIL import Image
 
                 with Image.open(BytesIO(self.logo_bytes)) as image:
                     ratio = image.height / image.width
-                self.image(BytesIO(self.logo_bytes), x=self.l_margin, y=8, w=20)
-                logo_bottom = 8 + 20 * ratio + 4
+                self.image(BytesIO(self.logo_bytes), x=self.l_margin, y=top, w=20)
+                logo_bottom = top + 20 * ratio + 3
             except Exception:
                 self.logo_bytes = None
 
-        name_font = 16 if self.logo_bytes else 18
-        if self.logo_bytes:
-            self.set_xy(self.l_margin + 24, 8)
+        left_x = self.l_margin + (24.0 if self.logo_bytes else 0.0)
+        right_x = self.w - self.r_margin - right_width
+        if has_bank:
+            left_width = right_x - 6.0 - left_x
         else:
-            self.set_x(self.l_margin)
-        self.set_font("Helvetica", "B", name_font)
-        self.cell(0, 9, self.business_name)
-        self.ln(9)
-        if contact_line:
-            self.set_x(self.l_margin + (24 if self.logo_bytes else 0))
+            left_width = self.w - self.r_margin - left_x
+
+        self.set_xy(left_x, top)
+        self.set_font("Helvetica", "B", 16 if self.logo_bytes else 18)
+        self.multi_cell(left_width, 9, self.business_name)
+
+        description = (self.business_description or "").strip()
+        if description:
+            self.set_x(left_x)
             self.set_font("Helvetica", "", 9)
-            self.set_text_color(110, 110, 110)
-            self.multi_cell(0, 4.5, contact_line)
+            self.set_text_color(90, 90, 90)
+            self.multi_cell(left_width, 4.5, description)
             self.set_text_color(0, 0, 0)
-        self.set_y(max(self.get_y(), logo_bottom))
-        self.ln(3)
+
+        for line in self.header_contact_lines():
+            self.set_x(left_x)
+            self.set_font("Helvetica", "", 9)
+            self.set_text_color(90, 90, 90)
+            self.multi_cell(left_width, 4.5, line)
+            self.set_text_color(0, 0, 0)
+
+        left_bottom = max(self.get_y(), logo_bottom)
+
+        if has_bank:
+            self._bank_block(right_x, right_width, top)
+
+        bottom = max(left_bottom, self.get_y())
+        self.set_y(bottom + 1.5)
+        self.set_draw_color(215, 215, 215)
+        self.set_line_width(0.2)
+        self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
+        self.set_draw_color(0, 0, 0)
+        self.ln(4)
 
     def footer(self):
         self.set_y(-18)
@@ -82,8 +159,25 @@ class StoreFlowPDF(FPDF):
         self.set_font("Helvetica", "B", 10)
         self.cell(40, 6, label)
         self.set_font("Helvetica", "", 10)
-        self.cell(0, 6, value)
-        self.ln(6)
+        self.multi_cell(0, 6, value, new_x="LMARGIN", new_y="NEXT")
+
+    def customer_rows(
+        self,
+        customer_name: str,
+        customer_phone: str = "",
+        customer_email: str = "",
+        customer_address: str = "",
+    ):
+        """Customer block: name first, then whichever contact details exist."""
+        self.info_row("Customer:", customer_name)
+        for label, value in (
+            ("Phone:", customer_phone),
+            ("Email:", customer_email),
+            ("Address:", customer_address),
+        ):
+            text = (value or "").strip()
+            if text:
+                self.info_row(label, text)
 
     def items_table(self, items: list[dict]):
         self.ln(3)
@@ -171,13 +265,39 @@ def generate_invoice_pdf(
     title: str = "Invoice",
     tax_breakdown: list[dict] | None = None,
     currency: str | None = None,
+    business_description: str = "",
+    business_email: str = "",
+    account_number: str = "",
+    account_name: str = "",
+    bank_name: str = "",
+    show_bank_details: bool = False,
+    customer_phone: str = "",
+    customer_email: str = "",
+    customer_address: str = "",
 ) -> bytes:
-    pdf = StoreFlowPDF(business_name, logo_bytes=logo_bytes, address=address, phone=phone, currency=currency)
+    pdf = StoreFlowPDF(
+        business_name,
+        logo_bytes=logo_bytes,
+        address=address,
+        phone=phone,
+        currency=currency,
+        business_description=business_description,
+        business_email=business_email,
+        account_number=account_number,
+        account_name=account_name,
+        bank_name=bank_name,
+        show_bank_details=show_bank_details,
+    )
     pdf.alias_nb_pages()
     pdf.add_page()
 
     pdf.document_title(title, doc_number)
-    pdf.info_row("Customer:", customer_name)
+    pdf.customer_rows(
+        customer_name,
+        customer_phone=customer_phone,
+        customer_email=customer_email,
+        customer_address=customer_address,
+    )
     if due_date:
         pdf.info_row("Due Date:", due_date)
     pdf.ln(3)
@@ -204,13 +324,39 @@ def generate_receipt_pdf(
     tax: float = 0,
     tax_breakdown: list[dict] | None = None,
     currency: str | None = None,
+    business_description: str = "",
+    business_email: str = "",
+    account_number: str = "",
+    account_name: str = "",
+    bank_name: str = "",
+    show_bank_details: bool = False,
+    customer_phone: str = "",
+    customer_email: str = "",
+    customer_address: str = "",
 ) -> bytes:
-    pdf = StoreFlowPDF(business_name, logo_bytes=logo_bytes, address=address, phone=phone, currency=currency)
+    pdf = StoreFlowPDF(
+        business_name,
+        logo_bytes=logo_bytes,
+        address=address,
+        phone=phone,
+        currency=currency,
+        business_description=business_description,
+        business_email=business_email,
+        account_number=account_number,
+        account_name=account_name,
+        bank_name=bank_name,
+        show_bank_details=show_bank_details,
+    )
     pdf.alias_nb_pages()
     pdf.add_page()
 
     pdf.document_title("Receipt", sale_number)
-    pdf.info_row("Customer:", customer_name)
+    pdf.customer_rows(
+        customer_name,
+        customer_phone=customer_phone,
+        customer_email=customer_email,
+        customer_address=customer_address,
+    )
     pdf.info_row("Payment:", payment_method)
     pdf.ln(3)
 
@@ -236,13 +382,39 @@ def generate_quote_pdf(
     phone: str = "",
     tax_breakdown: list[dict] | None = None,
     currency: str | None = None,
+    business_description: str = "",
+    business_email: str = "",
+    account_number: str = "",
+    account_name: str = "",
+    bank_name: str = "",
+    show_bank_details: bool = False,
+    customer_phone: str = "",
+    customer_email: str = "",
+    customer_address: str = "",
 ) -> bytes:
-    pdf = StoreFlowPDF(business_name, logo_bytes=logo_bytes, address=address, phone=phone, currency=currency)
+    pdf = StoreFlowPDF(
+        business_name,
+        logo_bytes=logo_bytes,
+        address=address,
+        phone=phone,
+        currency=currency,
+        business_description=business_description,
+        business_email=business_email,
+        account_number=account_number,
+        account_name=account_name,
+        bank_name=bank_name,
+        show_bank_details=show_bank_details,
+    )
     pdf.alias_nb_pages()
     pdf.add_page()
 
     pdf.document_title("Quote", doc_number)
-    pdf.info_row("Customer:", customer_name)
+    pdf.customer_rows(
+        customer_name,
+        customer_phone=customer_phone,
+        customer_email=customer_email,
+        customer_address=customer_address,
+    )
     pdf.ln(3)
 
     pdf.items_table(items)

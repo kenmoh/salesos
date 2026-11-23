@@ -11,12 +11,16 @@ class Base(BaseModel):
 
 class BusinessUpdate(Base):
     name: str | None = None
+    business_description: str | None = None
     phone: str | None = None
     address: str | None = None
     country: str | None = None
     tax_rate: Decimal | None = None
     currency: str | None = None
     logo_url: str | None = None
+    account_number: str | None = None
+    account_name: str | None = None
+    bank_name: str | None = None
     settings: dict | None = None
     allow_price_override: bool | None = None
 
@@ -314,6 +318,7 @@ class DocumentCreate(Base):
     notes: str | None = None
     terms: str | None = None
     store_id: UUID | None = None
+    show_bank_details: bool = False
     items: list[DocumentItem] = Field(..., min_length=1)
 
 

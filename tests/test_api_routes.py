@@ -2021,7 +2021,11 @@ class TestSync:
         tenant = SimpleNamespace(
             id=uuid4(),
             business_name="Old Name",
+            business_description=None,
             owner_phone="000",
+            account_number=None,
+            account_name=None,
+            bank_name=None,
             settings="{}",
         )
         session = _make_session()
@@ -2044,9 +2048,23 @@ class TestSync:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as ac:
-            resp = await ac.patch("/business/settings", json={"name": "N"})
+            resp = await ac.patch(
+                "/business/settings",
+                json={
+                    "name": "N",
+                    "business_description": "Retail chain",
+                    "account_number": "0123456789",
+                    "account_name": "N Ventures",
+                    "bank_name": "Wema Bank",
+                },
+            )
         assert resp.status_code == 200
         assert "data" in resp.json()
+        data = resp.json()["data"]
+        assert data["business_description"] == "Retail chain"
+        assert data["account_number"] == "0123456789"
+        assert data["account_name"] == "N Ventures"
+        assert data["bank_name"] == "Wema Bank"
 
     async def test_business_permissions(self, client):
         resp = await client.get("/business/permissions")

@@ -34,7 +34,7 @@ Status Lifecycle by Document Type:
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, JSON, Numeric, String, Text
+from sqlalchemy import Boolean, DateTime, JSON, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -83,6 +83,8 @@ class Document(StoreFlowBase):
         terms: Optional terms and conditions (e.g., "Payment due within 30 days").
         linked_sale_id: Optional UUID linking this document to a Sale record.
             Set when a quote/invoice is converted to a sale via convert_document_to_sale().
+        show_bank_details: Whether the generated PDF prints the tenant's
+            settlement bank details in the header.
         pdf_url: Optional URL to a generated PDF version of the document (stored in Cloudinary).
         created_by: UUID of the user who created this document.
         created_at: Timestamp when this document was created (UTC).
@@ -115,6 +117,9 @@ class Document(StoreFlowBase):
     )
     store_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), nullable=True, index=True
+    )
+    show_bank_details: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
     )
     pdf_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_by: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)

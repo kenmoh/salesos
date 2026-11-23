@@ -83,6 +83,8 @@ class DocumentCreateCommand(BaseModel):
         terms: Optional terms and conditions (e.g., "Payment due within 30 days").
         items: List of line items (at least 1 required).
         linked_sale_id: Optional UUID of a Sale this document is linked to.
+        show_bank_details: Whether the generated PDF prints the tenant's
+            settlement bank details in the header.
         correlation_id: Optional request correlation ID for distributed tracing.
     """
 
@@ -100,6 +102,7 @@ class DocumentCreateCommand(BaseModel):
     items: list[DocumentItemLine] = Field(..., min_length=1)
     linked_sale_id: UUID | None = None
     store_id: UUID | None = None
+    show_bank_details: bool = False
     correlation_id: str | None = None
 
 
@@ -122,6 +125,7 @@ class DocumentResult(BaseModel):
         item_count: Number of line items in this document.
         due_date: Optional date by which payment is expected.
         linked_sale_id: Optional UUID of the linked Sale.
+        show_bank_details: Whether the PDF prints settlement bank details.
     """
 
     id: UUID
@@ -136,6 +140,7 @@ class DocumentResult(BaseModel):
     item_count: int
     due_date: datetime | None = None
     linked_sale_id: str | None = None
+    show_bank_details: bool = False
 
 
 class DocumentStatusCommand(BaseModel):

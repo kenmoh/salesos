@@ -98,12 +98,16 @@ async def business_settings(ctx: DbTenantDep):
     settings = json.loads(tenant.settings) if isinstance(tenant.settings, str) else (tenant.settings or {})
     return ok(BusinessSettings(
         name=tenant.business_name,
+        business_description=tenant.business_description,
         phone=tenant.owner_phone,
         address=settings.get("address"),
         country=settings.get("country"),
         tax_rate=settings.get("tax_rate"),
         currency=settings.get("currency"),
         logo_url=settings.get("logo_url"),
+        account_number=tenant.account_number,
+        account_name=tenant.account_name or tenant.business_name,
+        bank_name=tenant.bank_name,
         allow_price_override=bool(settings.get("allow_price_override", False)),
         settings=settings,
     ))
@@ -127,8 +131,16 @@ async def update_business_settings(payload: BusinessUpdate, ctx: DbTenantDep):
     # Update top-level columns
     if payload.name is not None:
         tenant.business_name = payload.name
+    if payload.business_description is not None:
+        tenant.business_description = payload.business_description.strip() or None
     if payload.phone is not None:
         tenant.owner_phone = payload.phone
+    if payload.account_number is not None:
+        tenant.account_number = payload.account_number.strip() or None
+    if payload.account_name is not None:
+        tenant.account_name = payload.account_name.strip() or None
+    if payload.bank_name is not None:
+        tenant.bank_name = payload.bank_name.strip() or None
 
     # The price-override flag is the owner's decision, however it is sent.
     requested_override = payload.allow_price_override
@@ -168,12 +180,16 @@ async def update_business_settings(payload: BusinessUpdate, ctx: DbTenantDep):
 
     return ok(BusinessSettings(
         name=tenant.business_name,
+        business_description=tenant.business_description,
         phone=tenant.owner_phone,
         address=settings.get("address"),
         country=settings.get("country"),
         tax_rate=settings.get("tax_rate"),
         currency=settings.get("currency"),
         logo_url=settings.get("logo_url"),
+        account_number=tenant.account_number,
+        account_name=tenant.account_name or tenant.business_name,
+        bank_name=tenant.bank_name,
         allow_price_override=bool(settings.get("allow_price_override", False)),
         settings=settings,
     ))
@@ -225,12 +241,16 @@ async def upload_business_logo(
 
     settings = BusinessSettings(
         name=tenant.business_name,
+        business_description=tenant.business_description,
         phone=tenant.owner_phone,
         address=settings.get("address"),
         country=settings.get("country"),
         tax_rate=settings.get("tax_rate"),
         currency=settings.get("currency"),
         logo_url=logo_url,
+        account_number=tenant.account_number,
+        account_name=tenant.account_name or tenant.business_name,
+        bank_name=tenant.bank_name,
         allow_price_override=bool(settings.get("allow_price_override", False)),
         settings=settings,
     )

@@ -1,10 +1,14 @@
 import re
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from app.common.events.outbox import OutboxWrite
 from app.tenancy.events import tenant_created_event, tier_changed_event
 from app.tenancy.models import Tenant, TenantTierProjection
 from app.tenancy.schemas import TenantCreateCommand, TenantResult, TIER_LIMITS
+
+if TYPE_CHECKING:
+    from app.identity.models import User
 
 SUBDOMAIN_SUFFIX = ".storeflow.ng"
 
@@ -20,7 +24,7 @@ def slugify(name: str) -> str:
 
 def plan_tenant_creation(
     command: TenantCreateCommand, slug: str
-) -> tuple[TenantResult, Tenant, list[OutboxWrite]]:
+) -> tuple[TenantResult, Tenant, "User", list[OutboxWrite]]:
     """Create tenant + owner user + owner role in one plan."""
     tenant_id = uuid4()
     subdomain = f"{slug}{SUBDOMAIN_SUFFIX}"
@@ -30,7 +34,11 @@ def plan_tenant_creation(
         slug=slug,
         subdomain=subdomain,
         business_name=command.business_name,
+        business_description=(command.business_description or "").strip() or None,
         business_email=command.business_email,
+        account_number=(command.account_number or "").strip() or None,
+        account_name=(command.account_name or "").strip() or command.business_name,
+        bank_name=(command.bank_name or "").strip() or None,
         owner_name=command.owner_name,
         owner_email=command.owner_email,
         owner_phone=command.owner_phone,

@@ -31,7 +31,12 @@ class Tenant(StoreFlowBase):
         slug: URL-friendly unique identifier (e.g., "acme-retail").
         subdomain: Unique subdomain for the business.
         business_name: Display name of the business.
+        business_description: Optional description of the business.
         business_email: Optional business contact email.
+        account_number: Optional settlement bank account number.
+        account_name: Optional settlement bank account name; defaults to
+            the business name when not provided.
+        bank_name: Optional settlement bank name.
         tier: Subscription tier (starter, professional, enterprise).
         status: Account status (active, suspended, cancelled).
         owner_name: Business owner's full name.
@@ -47,7 +52,11 @@ class Tenant(StoreFlowBase):
     slug: Mapped[str] = mapped_column(String(80), unique=True, nullable=False, index=True)
     subdomain: Mapped[str] = mapped_column(String(160), unique=True, nullable=False, index=True)
     business_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    business_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     business_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    account_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    account_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    bank_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     tier: Mapped[str] = mapped_column(String(30), nullable=False, default="starter")
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
     owner_name: Mapped[str] = mapped_column(String(100), nullable=False)
