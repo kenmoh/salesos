@@ -324,8 +324,17 @@ async def platform_get_invoice(invoice_id: UUID, ctx: PlatformDep):
     response_model=SubscriptionOut,
 )
 async def tenant_get_subscription(ctx: DbTenantDep):
+    from app.billing.display import display_amount, display_context, fx_fields
+
     sub = await sub_service.ensure_subscription(ctx.session, ctx.user.business_id)
-    return sub
+    ctx_display = await display_context(ctx.user.business_id, ctx.session)
+    payload = SubscriptionOut.model_validate(sub).model_dump()
+    payload.update(
+        accrued_debt_display=display_amount(sub.accrued_debt, ctx_display),
+        debt_cap_display=display_amount(sub.debt_cap, ctx_display),
+        **fx_fields(ctx_display),
+    )
+    return payload
 
 
 @tenant_billing_router.get(
@@ -395,11 +404,10 @@ async def _tenant_display_currency(tenant_id, session) -> str:
 
     from app.tenancy.settings import currency_code
 
-    row = (
-        await session.execute(text("SELECT settings FROM tenants WHERE id = :tid"))
-        .mappings()
-        .first()
+    result = await session.execute(
+        text("SELECT settings FROM tenants WHERE id = :tid"), {"tid": tenant_id}
     )
+    row = result.mappings().first()
     raw = row["settings"] if row else None
     return currency_code(raw)
 
@@ -603,13 +611,27 @@ async def tenant_list_invoices(
     ctx: DbTenantDep,
     status: Optional[str] = Query(None),
 ):
+    from app.billing.display import display_amount, display_context, fx_fields
+
     stmt = select(BillingInvoice).where(
         BillingInvoice.tenant_id == ctx.user.business_id
     ).order_by(BillingInvoice.issued_at.desc())
     if status:
         stmt = stmt.where(BillingInvoice.status == status)
     result = await ctx.session.execute(stmt)
-    return result.scalars().all()
+    rows = result.scalars().all()
+    display_ctx = await display_context(ctx.user.business_id, ctx.session)
+    payload = []
+    for row in rows:
+        item = InvoiceOut.model_validate(row).model_dump()
+        item.update(
+            total_amount_display=display_amount(row.total_amount, display_ctx),
+            amount_paid_display=display_amount(row.amount_paid, display_ctx),
+            amount_due_display=display_amount(row.amount_due, display_ctx),
+            **fx_fields(display_ctx),
+        )
+        payload.append(item)
+    return payload
 
 
 @tenant_billing_router.get(
@@ -617,13 +639,21 @@ async def tenant_list_invoices(
     response_model=WalletOut,
 )
 async def tenant_get_wallet(ctx: DbTenantDep):
+    from app.billing.display import display_amount, display_context, fx_fields
+
     result = await ctx.session.execute(
         select(TenantWallet).where(TenantWallet.tenant_id == ctx.user.business_id)
     )
     wallet = result.scalar_one_or_none()
     if wallet is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Wallet not found")
-    return wallet
+    display_ctx = await display_context(ctx.user.business_id, ctx.session)
+    payload = WalletOut.model_validate(wallet).model_dump()
+    payload.update(
+        balance_display=display_amount(wallet.balance, display_ctx),
+        **fx_fields(display_ctx),
+    )
+    return payload
 
 
 @tenant_billing_router.get(
@@ -631,13 +661,25 @@ async def tenant_get_wallet(ctx: DbTenantDep):
     response_model=list[WalletTransactionOut],
 )
 async def tenant_list_wallet_transactions(ctx: DbTenantDep):
+    from app.billing.display import display_amount, display_context, fx_fields
+
     result = await ctx.session.execute(
         select(WalletTransaction)
         .where(WalletTransaction.tenant_id == ctx.user.business_id)
         .order_by(WalletTransaction.created_at.desc())
         .limit(100)
     )
-    return result.scalars().all()
+    rows = result.scalars().all()
+    display_ctx = await display_context(ctx.user.business_id, ctx.session)
+    payload = []
+    for row in rows:
+        item = WalletTransactionOut.model_validate(row).model_dump()
+        item.update(
+            amount_display=display_amount(row.amount, display_ctx),
+            **fx_fields(display_ctx),
+        )
+        payload.append(item)
+    return payload
 
 
 @tenant_billing_router.post(

@@ -35,6 +35,36 @@ def money(value) -> Decimal:
     return Decimal(str(value or 0)).quantize(Decimal("0.01"))
 
 
+async def _gateway_price(session: AsyncSession, tenant_id: UUID, ngn_amount: Decimal) -> dict:
+    """Price an NGN charge for the gateway, converting to USD for USD tenants.
+
+    Returns {amount, currency, ngn_amount, fx_rate, fx_as_of}. The rate is
+    locked into the intent metadata so the webhook credits the NGN equivalent.
+    """
+    from app.billing.display import display_context
+
+    ctx = await display_context(tenant_id, session)
+    if ctx.get("rate") is None:
+        return {
+            "amount": money(ngn_amount),
+            "currency": "NGN",
+            "ngn_amount": money(ngn_amount),
+            "fx_rate": None,
+            "fx_as_of": None,
+        }
+    from app.common.fx import ngn_to_usd
+    from decimal import Decimal as _D
+
+    rate = _D(str(ctx["rate"]))
+    return {
+        "amount": ngn_to_usd(ngn_amount, rate),
+        "currency": "USD",
+        "ngn_amount": money(ngn_amount),
+        "fx_rate": str(rate),
+        "fx_as_of": ctx.get("as_of"),
+    }
+
+
 async def generate_invoice_for_period(
     session: AsyncSession, period: BillingPeriod
 ) -> BillingInvoice | None:
@@ -295,6 +325,7 @@ async def create_billing_settlement_link(
         raise ValueError("nothing_pending")
 
     total = money(sub.accrued_debt)
+    price = await _gateway_price(session, tenant_id, total)
 
     sdb = _get_sdb("payments")
     async with sdb.session() as pay_session:
@@ -320,7 +351,13 @@ async def create_billing_settlement_link(
                 metadata = {}
             metadata["type"] = "billing_settlement"
             metadata["tenant_id"] = str(tenant_id)
-            open_intent.amount = float(total)
+            metadata["currency"] = price["currency"]
+            metadata["amount"] = float(price["amount"])
+            metadata["ngn_amount"] = float(price["ngn_amount"])
+            metadata["fx_rate"] = price["fx_rate"]
+            metadata["fx_as_of"] = price["fx_as_of"]
+            open_intent.amount = float(price["amount"])
+            open_intent.currency = price["currency"]
             open_intent.gateway_reference = tx_ref
             open_intent.intent_metadata = json.dumps(metadata)
             intent = open_intent
@@ -333,14 +370,19 @@ async def create_billing_settlement_link(
                 sale_id=None,
                 cart_id=None,
                 method="card",
-                amount=float(total),
-                currency="NGN",
+                amount=float(price["amount"]),
+                currency=price["currency"],
                 status="pending",
                 gateway_reference=tx_ref,
                 intent_metadata=json.dumps({
                     "type": "billing_settlement",
                     "tenant_id": str(tenant_id),
                     "created_by": actor_id,
+                    "currency": price["currency"],
+                    "amount": float(price["amount"]),
+                    "ngn_amount": float(price["ngn_amount"]),
+                    "fx_rate": price["fx_rate"],
+                    "fx_as_of": price["fx_as_of"],
                 }),
             )
 
@@ -358,7 +400,8 @@ async def create_billing_settlement_link(
         await pay_session.commit()
 
     link_result = await flutterwave_service.create_payment_link(
-        amount=total,
+        amount=price["amount"],
+        currency=price["currency"],
         tx_ref=tx_ref,
         customer_email=owner_email or "settlements@storeflow.ng",
         title="Clear Billing Debt",
@@ -376,7 +419,8 @@ async def create_billing_settlement_link(
 
     return {
         "link": link_result["link"],
-        "amount": float(total),
+        "amount": float(price["amount"]),
+        "currency": price["currency"],
         "intent_id": str(intent.id),
         "tx_ref": tx_ref,
         "regenerated": regenerated,
@@ -406,6 +450,17 @@ async def create_wallet_funding_link(
     if total <= 0:
         raise ValueError("amount_must_be_positive")
 
+    # For USD tenants the entered amount is in their display currency (USD).
+    # Convert it to the NGN amount credited to the ledger, then price the link.
+    from app.billing.display import display_context
+    from decimal import Decimal as _D
+    from app.common.fx import usd_to_ngn
+
+    ctx = await display_context(tenant_id, session)
+    if ctx.get("rate") is not None:
+        total = usd_to_ngn(total, _D(str(ctx["rate"])))
+    price = await _gateway_price(session, tenant_id, total)
+
     sdb = _get_sdb("payments")
     async with sdb.session() as pay_session:
         open_intent = (
@@ -430,7 +485,13 @@ async def create_wallet_funding_link(
                 metadata = {}
             metadata["type"] = "wallet_funding"
             metadata["tenant_id"] = str(tenant_id)
-            open_intent.amount = float(total)
+            metadata["currency"] = price["currency"]
+            metadata["amount"] = float(price["amount"])
+            metadata["ngn_amount"] = float(price["ngn_amount"])
+            metadata["fx_rate"] = price["fx_rate"]
+            metadata["fx_as_of"] = price["fx_as_of"]
+            open_intent.amount = float(price["amount"])
+            open_intent.currency = price["currency"]
             open_intent.gateway_reference = tx_ref
             open_intent.intent_metadata = json.dumps(metadata)
             intent = open_intent
@@ -443,14 +504,19 @@ async def create_wallet_funding_link(
                 sale_id=None,
                 cart_id=None,
                 method="card",
-                amount=float(total),
-                currency="NGN",
+                amount=float(price["amount"]),
+                currency=price["currency"],
                 status="pending",
                 gateway_reference=tx_ref,
                 intent_metadata=json.dumps({
                     "type": "wallet_funding",
                     "tenant_id": str(tenant_id),
                     "created_by": actor_id,
+                    "currency": price["currency"],
+                    "amount": float(price["amount"]),
+                    "ngn_amount": float(price["ngn_amount"]),
+                    "fx_rate": price["fx_rate"],
+                    "fx_as_of": price["fx_as_of"],
                 }),
             )
 
@@ -467,7 +533,8 @@ async def create_wallet_funding_link(
         await pay_session.commit()
 
     link_result = await flutterwave_service.create_payment_link(
-        amount=total,
+        amount=price["amount"],
+        currency=price["currency"],
         tx_ref=tx_ref,
         customer_email=owner_email or "settlements@storeflow.ng",
         title="Fund Wallet",
@@ -485,7 +552,8 @@ async def create_wallet_funding_link(
 
     return {
         "link": link_result["link"],
-        "amount": float(total),
+        "amount": float(price["amount"]),
+        "currency": price["currency"],
         "intent_id": str(intent.id),
         "tx_ref": tx_ref,
         "regenerated": regenerated,
