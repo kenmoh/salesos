@@ -37,14 +37,17 @@ if [ ! -f "$REPO_DIR/.env" ]; then
   echo "WARNING: Edit $REPO_DIR/.env with real values before starting services."
 fi
 
-echo "=== 6. Install systemd units ==="
+echo "=== 6. Apply database migrations ==="
+uv run alembic upgrade head
+
+echo "=== 7. Install systemd units ==="
 sudo cp "$REPO_DIR/deploy/celery-worker.service" /etc/systemd/system/
 sudo cp "$REPO_DIR/deploy/outbox-relay.service" /etc/systemd/system/
 sudo cp "$REPO_DIR/deploy/event-consumer.service" /etc/systemd/system/
 sudo cp "$REPO_DIR/deploy/celery-beat.service" /etc/systemd/system/
 sudo systemctl daemon-reload
 
-echo "=== 7. Start services ==="
+echo "=== 8. Start services ==="
 sudo systemctl enable --now celery-worker
 sudo systemctl enable --now outbox-relay
 sudo systemctl enable --now event-consumer

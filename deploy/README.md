@@ -22,10 +22,20 @@ ssh -i "C:/Users/kenne/Downloads/ssh-key-2026-11-03.key" ubuntu@130.162.165.234
 
 ## Deploy / update steps
 
+Apply database migrations before deploying application code that depends on them:
+
+```
+uv run alembic upgrade head
+```
+
+For example, the sales API requires the `cart_id` migration before the latest
+sales model can be used.
+
 ```
 cd /opt/storeflow
 git pull
-bash uv sync --frozen          # use: uv sync --frozen (uv in ~/.local/bin)
+uv sync --frozen
+uv run alembic upgrade head
 sudo cp deploy/*.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now celery-worker outbox-relay event-consumer celery-beat
