@@ -1,3 +1,4 @@
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.events.envelope import EventEnvelope
@@ -14,7 +15,7 @@ async def handle_sale_receipt_created(envelope: EventEnvelope, session: AsyncSes
     if not tenant_id or not total:
         return
 
-    summary = plan_upsert_daily_summary(
+    _, summary = plan_upsert_daily_summary(
         tenant_id=tenant_id,
         sales_total=float(total),
         sales_count=1,
@@ -33,7 +34,7 @@ async def handle_sale_voided(envelope: EventEnvelope, session: AsyncSession) -> 
     if not tenant_id or not total:
         return
 
-    summary = plan_upsert_daily_summary(
+    _, summary = plan_upsert_daily_summary(
         tenant_id=tenant_id,
         sales_total=-float(total),
         sales_count=-1,
@@ -53,7 +54,7 @@ async def handle_payment_succeeded(envelope: EventEnvelope, session: AsyncSessio
     if not tenant_id or not amount:
         return
 
-    summary = plan_upsert_payment_method_summary(
+    _, summary = plan_upsert_payment_method_summary(
         tenant_id=tenant_id,
         payment_method=method,
         amount=float(amount),
