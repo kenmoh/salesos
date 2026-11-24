@@ -3,7 +3,7 @@
 from datetime import date, datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class TipRow(BaseModel):
@@ -40,6 +40,15 @@ class SettlementRequest(BaseModel):
     period_start: date
     period_end: date
     note: str | None = Field(default=None, max_length=500)
+
+    @field_validator("period_start", "period_end", mode="before")
+    @classmethod
+    def normalize_datetime_dates(cls, value: object) -> object:
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, str) and "T" in value:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+        return value
 
 
 class SettlementResult(BaseModel):

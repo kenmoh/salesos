@@ -96,6 +96,16 @@ class TestPlanSettlement:
             ],
         )
 
+    def test_datetime_inputs_are_normalized_to_calendar_dates(self):
+        request = SettlementRequest(
+            cashier_id=uuid4(),
+            period_start=datetime(2026, 11, 1, 8, 30, tzinfo=UTC),
+            period_end="2026-11-24T09:52:45.852Z",
+        )
+
+        assert request.period_start == date(2026, 11, 1)
+        assert request.period_end == date(2026, 11, 24)
+
     def test_sums_locked_tips_into_a_paid_settlement(self):
         sale = _sale()
         tips = self._tips(sale)
