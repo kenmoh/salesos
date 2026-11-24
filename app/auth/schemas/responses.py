@@ -797,6 +797,7 @@ class DocumentDetail(_Base):
     customer_name: str | None = None
     customer_email: str | None = None
     customer_phone: str | None = None
+    customer_address: str | None = None
     due_date: datetime | None = None
     store_id: str | None = None
     subtotal: float = 0
@@ -806,6 +807,8 @@ class DocumentDetail(_Base):
     tax_breakdown: list[dict] = []
     total: float = 0
     items: list[dict] = []
+    notes: str | None = None
+    terms: str | None = None
     show_bank_details: bool = False
     created_at: datetime | None = None
 

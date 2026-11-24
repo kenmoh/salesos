@@ -7411,6 +7411,10 @@ async def checkout_cart(
             # one database, so they commit atomically here instead.
             result, sale_model, sale_item_models, sale_outbox = plan_sale_creation(sale_command)
 
+            # Record which cart this sale was checked out from, so payment
+            # completion can mark the cart as checked out.
+            sale_model.cart_id = cart_uid
+
             # ── Billing headroom: refuse the sale if the tenant cannot cover
             # the transaction fee from wallet or within the debt cap. This is
             # checked before the sale is persisted so a blocked sale costs
@@ -7958,6 +7962,17 @@ async def record_payment(
                 sale.status = "completed"
             elif sale.amount_paid > 0:
                 sale.status = "partial"
+
+            # When a sale is completed through payment, mark its cart as
+            # checked out so the cart lifecycle matches the sale lifecycle.
+            if sale.status == "completed" and not was_completed and sale.cart_id:
+                from app.cart.repository import get_cart_by_id, update_cart_status
+
+                sdb_cart = _get_sdb("cart")
+                async with sdb_cart.session() as cart_session:
+                    cart = await get_cart_by_id(cart_session, sale.cart_id)
+                    if cart and cart.status != "checked_out":
+                        await update_cart_status(cart_session, cart.id, "checked_out")
 
             if sale.status == "completed":
                 from app.platform.fee_calculator import calculate_platform_fee, sale_fee_base

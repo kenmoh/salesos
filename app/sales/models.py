@@ -50,6 +50,7 @@ class Sale(StoreFlowBase):
         customer_phone: Optional customer phone number.
     store_identifier: Reference to the store.
     cashier_identifier: Reference to the cashier.
+    cart_id: Reference to the cart that was checked out for this sale, if any.
         subtotal: Sum of all line items before discount/tax.
         discount: Total discount amount.
         tax: Total tax amount.
@@ -73,6 +74,9 @@ class Sale(StoreFlowBase):
     customer_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
     store_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     cashier_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    cart_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True, index=True
+    )
     subtotal: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False, default=0)
     discount: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False, default=0)
     tax: Mapped[float] = mapped_column(Numeric(15, 2), nullable=False, default=0)

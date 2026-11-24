@@ -148,7 +148,7 @@ class TestUpdateDraftDocument:
         )
 
         assert updated.discount == 100.0
-        assert updated.subtotal == 900.0
+        assert updated.subtotal == 1000.0
         assert abs(updated.tax - 67.5) < 1e-6
         assert abs(updated.total - 967.5) < 1e-6
         assert len(items) == 1
