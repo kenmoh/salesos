@@ -44,6 +44,7 @@ class ApiSettings(BaseSettings):
             "http://localhost:4319",
             "http://localhost:4321",
             "http://localhost:4322",
+            "https://storeflow.servi-pal.com",
         ],
         alias="ALLOWED_ORIGINS",
     )

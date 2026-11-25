@@ -86,8 +86,9 @@ def create_app() -> FastAPI:
             "Accept",
             "Origin",
             "X-Requested-With",
+            "X-Idempontency-Key",
         ],
-        expose_headers=["X-Request-ID", "X-Process-Time", "X-RateLimit-IP", "Retry-After"],
+        expose_headers=["X-Request-ID", "X-Process-Time", "X-RateLimit-IP", "Retry-After", "X-Idempontency-Key"],
         max_age=600,
     )
     app.add_middleware(GZipMiddleware, minimum_size=1000)
