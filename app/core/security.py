@@ -61,6 +61,7 @@ def create_access_token(
     role: str,
     permissions: list[str],
     roles: list[str] | None = None,
+    extra_claims: dict | None = None,
 ) -> tuple[str, datetime]:
     """Mint an access token.
 
@@ -79,6 +80,8 @@ def create_access_token(
     }
     if roles:
         claims["roles"] = roles
+    if extra_claims:
+        claims.update(extra_claims)
     return _token(claims, settings.jwt_access_secret, minutes=settings.access_token_expire_minutes)
 
 

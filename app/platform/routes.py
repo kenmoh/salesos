@@ -9,6 +9,7 @@ from sqlalchemy.orm import aliased
 from app.core.platform_deps import PlatformDep, require_platform_permission
 from app.core.ratelimit import auth_rate_limit
 from app.core.responses import ok, paginated
+from app.platform.access import assert_platform_role
 from app.platform.models import FeeType, PlatformAdmin, PlatformSetting
 
 
@@ -34,6 +35,8 @@ from app.platform.auth import (
 )
 
 router = APIRouter(prefix="/platform", tags=["Platform"])
+
+PLATFORM_ROLES = ("super_admin", "admin", "support", "readonly")
 
 
 class PlatformLoginRequest(BaseModel):
@@ -64,6 +67,12 @@ class CreateAdminRequest(BaseModel):
 
 class AdminUpdateRequest(BaseModel):
     status: str | None = None
+    role: str | None = None
+    full_name: str | None = None
+
+
+class AdminPasswordResetRequest(BaseModel):
+    new_password: str
 
 
 class DeleteTenantRequest(BaseModel):
@@ -84,6 +93,8 @@ class TenantUpdateRequest(BaseModel):
     # Subscriptions are gone — tier changes parked; PATCH now ignores tier.
     # tier: str | None = None
     business_name: str | None = None
+    # Why the status changed; stored in the tenant status history.
+    reason: str | None = None
 
 
 # ── Auth ──────────────────────────────────────────────────────────
@@ -273,8 +284,9 @@ async def create_admin(payload: CreateAdminRequest, ctx: PlatformDep):
     from app.core.security import hash_password
     from app.platform.audit import log_platform_audit
 
-    PLATFORM_ROLE_RANK = {"super_admin", "admin", "support", "readonly"}
-    if payload.role not in PLATFORM_ROLE_RANK:
+    assert_platform_role(ctx, "admin")
+
+    if payload.role not in PLATFORM_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
     if len(payload.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
@@ -320,32 +332,78 @@ async def create_admin(payload: CreateAdminRequest, ctx: PlatformDep):
 async def update_admin(admin_id: str, payload: AdminUpdateRequest, ctx: PlatformDep):
     from app.platform.audit import log_platform_audit
 
+    assert_platform_role(ctx, "admin")
+
     admin_row = (
         await ctx.session.execute(select(PlatformAdmin).where(PlatformAdmin.id == admin_id))
     ).scalar_one_or_none()
     if not admin_row:
         raise HTTPException(status_code=404, detail="Admin not found")
 
-    if payload.status is not None:
+    changes: dict = {}
+
+    if payload.role is not None and payload.role != admin_row.role:
+        assert_platform_role(ctx, "super_admin")
+        if payload.role not in PLATFORM_ROLES:
+            raise HTTPException(status_code=400, detail="Invalid role")
+        if admin_row.role == "super_admin" and payload.role != "super_admin":
+            active_supers = (
+                await ctx.session.execute(
+                    select(func.count(PlatformAdmin.id)).where(
+                        PlatformAdmin.role == "super_admin",
+                        PlatformAdmin.status == "active",
+                    )
+                )
+            ).scalar() or 0
+            if active_supers <= 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot demote the last active super admin",
+                )
+        changes["role"] = {"from": admin_row.role, "to": payload.role}
+        admin_row.role = payload.role
+
+    if payload.status is not None and payload.status != admin_row.status:
         if payload.status not in ("active", "disabled"):
             raise HTTPException(status_code=400, detail="Invalid status")
         if admin_row.id == ctx.user.admin_id and payload.status != "active":
             raise HTTPException(status_code=400, detail="You cannot disable your own account")
+        if admin_row.role == "super_admin" and payload.status != "active":
+            active_supers = (
+                await ctx.session.execute(
+                    select(func.count(PlatformAdmin.id)).where(
+                        PlatformAdmin.role == "super_admin",
+                        PlatformAdmin.status == "active",
+                    )
+                )
+            ).scalar() or 0
+            if active_supers <= 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot disable the last active super admin",
+                )
+        changes["status"] = {"from": admin_row.status, "to": payload.status}
         admin_row.status = payload.status
         if payload.status == "disabled":
             from app.core.security import revoke_all_sessions
 
             await revoke_all_sessions(str(admin_row.id))
 
+    if payload.full_name is not None and payload.full_name != admin_row.full_name:
+        changes["full_name"] = {"from": admin_row.full_name, "to": payload.full_name}
+        admin_row.full_name = payload.full_name
+
+    await ctx.session.flush()
+
+    if changes:
         await log_platform_audit(
             ctx.session,
             admin_id=ctx.user.admin_id,
-            action="admin.update_status",
+            action="admin.update",
             resource="platform_admin",
             resource_id=str(admin_row.id),
-            details={"status": payload.status, "email": admin_row.email},
+            details={"email": admin_row.email, **changes},
         )
-    await ctx.session.flush()
 
     return ok(
         {
@@ -356,6 +414,127 @@ async def update_admin(admin_id: str, payload: AdminUpdateRequest, ctx: Platform
             "status": admin_row.status,
         }
     )
+
+
+@router.get(
+    "/admins/{admin_id}",
+    dependencies=[Depends(require_platform_permission("platform:*"))],
+)
+async def get_admin(admin_id: str, ctx: PlatformDep):
+    """One admin with their recent actions and live sessions."""
+    from app.core.security import list_user_sessions
+    from app.platform.models import PlatformAuditLog
+
+    admin_row = (
+        await ctx.session.execute(select(PlatformAdmin).where(PlatformAdmin.id == admin_id))
+    ).scalar_one_or_none()
+    if not admin_row:
+        raise HTTPException(status_code=404, detail="Admin not found")
+
+    actions = (
+        await ctx.session.execute(
+            select(PlatformAuditLog)
+            .where(PlatformAuditLog.admin_id == admin_row.id)
+            .order_by(desc(PlatformAuditLog.created_at))
+            .limit(20)
+        )
+    ).scalars().all()
+    sessions = await list_user_sessions(str(admin_row.id))
+
+    return ok(
+        {
+            "id": str(admin_row.id),
+            "email": admin_row.email,
+            "full_name": admin_row.full_name,
+            "role": admin_row.role,
+            "status": admin_row.status,
+            "totp_enabled": bool(admin_row.totp_enabled),
+            "last_login_at": admin_row.last_login_at.isoformat()
+            if admin_row.last_login_at
+            else None,
+            "last_device_type": admin_row.last_device_type,
+            "last_browser": admin_row.last_browser,
+            "last_seen_at": admin_row.last_seen_at.isoformat()
+            if admin_row.last_seen_at
+            else None,
+            "last_ip_address": admin_row.last_ip_address,
+            "created_at": admin_row.created_at.isoformat() if admin_row.created_at else None,
+            "recent_actions": [
+                {
+                    "id": str(a.id),
+                    "action": a.action,
+                    "resource": a.resource,
+                    "resource_id": a.resource_id,
+                    "ip_address": a.ip_address,
+                    "created_at": a.created_at.isoformat() if a.created_at else None,
+                }
+                for a in actions
+            ],
+            "sessions": sessions,
+        }
+    )
+
+
+@router.post(
+    "/admins/{admin_id}/revoke-sessions",
+    dependencies=[Depends(require_platform_permission("platform:*"))],
+)
+async def revoke_admin_sessions(admin_id: str, ctx: PlatformDep):
+    from app.core.security import revoke_all_sessions
+    from app.platform.audit import log_platform_audit
+
+    assert_platform_role(ctx, "admin")
+    admin_row = (
+        await ctx.session.execute(select(PlatformAdmin).where(PlatformAdmin.id == admin_id))
+    ).scalar_one_or_none()
+    if not admin_row:
+        raise HTTPException(status_code=404, detail="Admin not found")
+
+    await revoke_all_sessions(str(admin_row.id))
+    await log_platform_audit(
+        ctx.session,
+        admin_id=ctx.user.admin_id,
+        action="admin.revoke_sessions",
+        resource="platform_admin",
+        resource_id=str(admin_row.id),
+        details={"email": admin_row.email},
+    )
+    return ok({"admin_id": str(admin_row.id), "revoked": True})
+
+
+@router.post(
+    "/admins/{admin_id}/reset-password",
+    dependencies=[Depends(require_platform_permission("platform:*"))],
+)
+async def reset_admin_password(
+    admin_id: str, payload: AdminPasswordResetRequest, ctx: PlatformDep
+):
+    from app.core.security import hash_password, revoke_all_sessions, validate_password_strength
+    from app.platform.audit import log_platform_audit
+
+    assert_platform_role(ctx, "super_admin")
+    admin_row = (
+        await ctx.session.execute(select(PlatformAdmin).where(PlatformAdmin.id == admin_id))
+    ).scalar_one_or_none()
+    if not admin_row:
+        raise HTTPException(status_code=404, detail="Admin not found")
+
+    problems = validate_password_strength(payload.new_password)
+    if problems:
+        raise HTTPException(status_code=400, detail="; ".join(problems))
+
+    admin_row.password_hash = hash_password(payload.new_password)
+    await revoke_all_sessions(str(admin_row.id))
+    await ctx.session.flush()
+    await log_platform_audit(
+        ctx.session,
+        admin_id=ctx.user.admin_id,
+        action="admin.reset_password",
+        resource="platform_admin",
+        resource_id=str(admin_row.id),
+        details={"email": admin_row.email},
+    )
+    return ok({"admin_id": str(admin_row.id), "sessions_revoked": True})
 
 
 # ── Tenants ───────────────────────────────────────────────────────
@@ -377,6 +556,8 @@ class CreateTenantRequest(BaseModel):
 async def create_tenant(payload: CreateTenantRequest, ctx: PlatformDep):
     from app.common.bridge import create_tenant as bridge_create_tenant
     from app.core.security import hash_password
+
+    assert_platform_role(ctx, "admin")
 
     result = await bridge_create_tenant(
         business_name=payload.business_name,
@@ -507,17 +688,195 @@ async def tenant_stats(ctx: PlatformDep):
     "/tenants/{tenant_id}", dependencies=[Depends(require_platform_permission("platform:*"))]
 )
 async def get_tenant(tenant_id: str, ctx: PlatformDep):
-    from app.tenancy.models import Tenant
-    from app.identity.models import User
+    """Full tenant profile: identity, settlement, owner activity, billing,
+    fee debt and entity counts, in one call for the admin detail page."""
+    from datetime import datetime, timezone
 
-    result = await ctx.session.execute(select(Tenant).where(Tenant.id == tenant_id))
-    tenant = result.scalar_one_or_none()
+    from app.billing.models import (
+        BillingInvoice,
+        MerchantSubscription,
+        SubscriptionPlan,
+        TenantWallet,
+    )
+    from app.catalog.models import Product
+    from app.customers.models import Customer
+    from app.documents.models import Document
+    from app.identity.models import User
+    from app.platform.models import (
+        PlatformDataRequest,
+        PlatformFeeLedger,
+        PlatformTenantNote,
+        PlatformTenantTag,
+    )
+    from app.sales.models import Sale
+    from app.stores.models import Store
+    from app.tenancy.models import Tenant
+
+    tenant = (
+        await ctx.session.execute(select(Tenant).where(Tenant.id == tenant_id))
+    ).scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    user_count = await ctx.session.execute(
-        select(func.count(User.id)).where(User.tenant_id == tenant.id)
+    now = datetime.now(timezone.utc)
+
+    def _count(model, *where):
+        return (
+            select(func.count(model.id))
+            .where(model.tenant_id == Tenant.id, *where)
+            .correlate(Tenant)
+            .scalar_subquery()
+        )
+
+    stats = (
+        await ctx.session.execute(
+            select(
+                _count(User).label("users"),
+                _count(Store).label("stores"),
+                _count(Product).label("products"),
+                _count(Customer).label("customers"),
+                _count(Sale).label("sales"),
+                _count(Document).label("documents"),
+                _count(PlatformTenantNote).label("notes"),
+                _count(
+                    PlatformDataRequest,
+                    PlatformDataRequest.status.in_(("pending", "in_progress")),
+                ).label("open_data_requests"),
+                select(func.max(Sale.created_at))
+                .where(Sale.tenant_id == Tenant.id, Sale.status != "voided")
+                .correlate(Tenant)
+                .scalar_subquery()
+                .label("last_sale_at"),
+                select(func.max(User.last_login_at))
+                .where(User.tenant_id == Tenant.id)
+                .correlate(Tenant)
+                .scalar_subquery()
+                .label("last_login_at"),
+            ).where(Tenant.id == tenant.id)
+        )
+    ).one()
+
+    fee_stats = (
+        await ctx.session.execute(
+            select(
+                func.coalesce(
+                    func.sum(case((PlatformFeeLedger.status == "pending", PlatformFeeLedger.amount), else_=0)),
+                    0,
+                ).label("pending"),
+                func.coalesce(
+                    func.sum(case((PlatformFeeLedger.status == "deducted", PlatformFeeLedger.amount), else_=0)),
+                    0,
+                ).label("settled"),
+                func.count(PlatformFeeLedger.id)
+                .filter(PlatformFeeLedger.status == "pending")
+                .label("pending_count"),
+                func.max(PlatformFeeLedger.created_at).label("last_fee_at"),
+            ).where(PlatformFeeLedger.tenant_id == tenant.id)
+        )
+    ).one()
+
+    invoice_stats = (
+        await ctx.session.execute(
+            select(
+                func.count(BillingInvoice.id).label("total"),
+                func.coalesce(func.sum(BillingInvoice.amount_due), 0).label("outstanding"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                and_(
+                                    BillingInvoice.due_at < now,
+                                    BillingInvoice.status.notin_(("paid", "void", "cancelled")),
+                                ),
+                                BillingInvoice.amount_due,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("overdue"),
+                func.count(BillingInvoice.id)
+                .filter(BillingInvoice.status == "paid")
+                .label("paid_count"),
+            ).where(BillingInvoice.tenant_id == tenant.id)
+        )
+    ).one()
+
+    owner = (
+        await ctx.session.execute(select(User).where(User.email == tenant.owner_email))
+    ).scalar_one_or_none()
+
+    sub_row = (
+        await ctx.session.execute(
+            select(MerchantSubscription, SubscriptionPlan)
+            .outerjoin(SubscriptionPlan, SubscriptionPlan.id == MerchantSubscription.plan_id)
+            .where(MerchantSubscription.tenant_id == tenant.id)
+        )
+    ).first()
+    wallet = (
+        await ctx.session.execute(
+            select(TenantWallet).where(TenantWallet.tenant_id == tenant.id)
+        )
+    ).scalar_one_or_none()
+    tags = (
+        (
+            await ctx.session.execute(
+                select(PlatformTenantTag.tag)
+                .where(PlatformTenantTag.tenant_id == tenant.id)
+                .order_by(PlatformTenantTag.tag)
+            )
+        )
+        .scalars()
+        .all()
     )
+
+    def _settings(raw):
+        if isinstance(raw, dict):
+            return raw
+        try:
+            return json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return {}
+
+    last_sale_at = stats.last_sale_at
+    last_login_at = stats.last_login_at
+    subscription = None
+    plan = None
+    if sub_row:
+        sub, plan_row = sub_row
+        subscription = {
+            "id": str(sub.id),
+            "status": sub.status,
+            "billing_interval": sub.billing_interval,
+            "current_period_start": sub.current_period_start.isoformat()
+            if sub.current_period_start
+            else None,
+            "current_period_end": sub.current_period_end.isoformat()
+            if sub.current_period_end
+            else None,
+            "next_billing_date": sub.next_billing_date.isoformat()
+            if sub.next_billing_date
+            else None,
+            "grace_period_end": sub.grace_period_end.isoformat()
+            if sub.grace_period_end
+            else None,
+            "auto_debit_enabled": bool(sub.auto_debit_enabled),
+            "accrued_debt": float(sub.accrued_debt or 0),
+            "debt_cap": float(sub.debt_cap or 0),
+            "pending_plan_id": str(sub.pending_plan_id) if sub.pending_plan_id else None,
+            "plan_change_requested_at": sub.plan_change_requested_at.isoformat()
+            if sub.plan_change_requested_at
+            else None,
+        }
+        if plan_row:
+            plan = {
+                "id": str(plan_row.id),
+                "name": plan_row.name,
+                "slug": plan_row.slug,
+                "monthly_price": float(plan_row.monthly_price or 0),
+                "currency": plan_row.currency,
+                "is_active": bool(plan_row.is_active),
+            }
 
     return ok(
         {
@@ -525,14 +884,74 @@ async def get_tenant(tenant_id: str, ctx: PlatformDep):
             "slug": tenant.slug,
             "subdomain": tenant.subdomain,
             "business_name": tenant.business_name,
+            "business_description": tenant.business_description,
             "business_email": tenant.business_email,
             "owner_name": tenant.owner_name,
             "owner_email": tenant.owner_email,
             "owner_phone": tenant.owner_phone,
             "tier": tenant.tier,
             "status": tenant.status,
-            "user_count": user_count.scalar(),
+            "user_count": int(stats.users or 0),
             "currency": _tenant_currency(tenant),
+            "settings": _settings(tenant.settings),
+            "settlement": {
+                "bank_name": tenant.bank_name,
+                "account_name": tenant.account_name,
+                "account_number": tenant.account_number,
+            },
+            "owner_activity": {
+                "last_login_at": owner.last_login_at.isoformat()
+                if owner and owner.last_login_at
+                else None,
+                "last_device_type": owner.last_device_type if owner else None,
+                "last_browser": owner.last_browser if owner else None,
+                "last_seen_at": owner.last_seen_at.isoformat()
+                if owner and owner.last_seen_at
+                else None,
+                "last_ip_address": owner.last_ip_address if owner else None,
+            },
+            "counts": {
+                "users": int(stats.users or 0),
+                "stores": int(stats.stores or 0),
+                "products": int(stats.products or 0),
+                "customers": int(stats.customers or 0),
+                "sales": int(stats.sales or 0),
+                "documents": int(stats.documents or 0),
+                "notes": int(stats.notes or 0),
+                "open_data_requests": int(stats.open_data_requests or 0),
+            },
+            "activity": {
+                "last_sale_at": last_sale_at.isoformat() if last_sale_at else None,
+                "last_login_at": last_login_at.isoformat() if last_login_at else None,
+                "days_since_last_sale": (now - last_sale_at).days if last_sale_at else None,
+                "days_since_last_login": (now - last_login_at).days if last_login_at else None,
+            },
+            "billing": {
+                "subscription": subscription,
+                "plan": plan,
+                "wallet": {
+                    "balance": float(wallet.balance or 0),
+                    "currency": wallet.currency,
+                    "status": wallet.status,
+                }
+                if wallet
+                else None,
+                "invoices": {
+                    "total": int(invoice_stats.total or 0),
+                    "paid": int(invoice_stats.paid_count or 0),
+                    "outstanding_amount": float(invoice_stats.outstanding or 0),
+                    "overdue_amount": float(invoice_stats.overdue or 0),
+                },
+            },
+            "fees": {
+                "pending_total": float(fee_stats.pending or 0),
+                "pending_count": int(fee_stats.pending_count or 0),
+                "settled_total": float(fee_stats.settled or 0),
+                "last_fee_at": fee_stats.last_fee_at.isoformat()
+                if fee_stats.last_fee_at
+                else None,
+            },
+            "tags": list(tags),
             "created_at": tenant.created_at.isoformat() if tenant.created_at else None,
             "updated_at": tenant.updated_at.isoformat() if tenant.updated_at else None,
         }
@@ -583,7 +1002,10 @@ async def _reinstate_tenant_users(session, tenant_id: str) -> int:
 )
 async def update_tenant(tenant_id: str, payload: TenantUpdateRequest, ctx: PlatformDep):
     from app.platform.audit import log_platform_audit
+    from app.platform.models import PlatformTenantStatusHistory
     from app.tenancy.models import Tenant
+
+    assert_platform_role(ctx, "admin")
 
     result = await ctx.session.execute(select(Tenant).where(Tenant.id == tenant_id))
     tenant = result.scalar_one_or_none()
@@ -645,6 +1067,19 @@ async def update_tenant(tenant_id: str, payload: TenantUpdateRequest, ctx: Platf
 
     await ctx.session.flush()
 
+    if "status" in changes:
+        ctx.session.add(
+            PlatformTenantStatusHistory(
+                tenant_id=tenant.id,
+                from_status=changes["status"].get("from"),
+                to_status=changes["status"].get("to"),
+                reason=payload.reason,
+                admin_id=ctx.user.admin_id,
+            )
+        )
+        if payload.reason:
+            details_extra["reason"] = payload.reason
+
     if changes:
         await log_platform_audit(
             ctx.session,
@@ -678,6 +1113,8 @@ async def delete_tenant(
     from app.identity.models import User
     from app.platform.audit import log_platform_audit
     from app.tenancy.models import Tenant
+
+    assert_platform_role(ctx, "admin")
 
     result = await ctx.session.execute(select(Tenant).where(Tenant.id == tenant_id))
     tenant = result.scalar_one_or_none()
@@ -1795,13 +2232,19 @@ async def platform_audit_log_feed(
     ctx: PlatformDep,
     resource: str | None = None,
     admin_id: str | None = None,
+    action: str | None = None,
+    search: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    format: str | None = None,
     page: int = 1,
     page_size: int = 50,
 ):
-    """Global platform action feed (all platform admin actions)."""
+    """Global platform action feed with filters, resolved admin names and CSV."""
     from datetime import datetime
 
-    from app.platform.models import PlatformAuditLog
+    from app.platform.exporting import csv_response, parse_iso_date
+    from app.platform.models import PlatformAdmin, PlatformAuditLog
 
     def _parse_details(raw):
         if raw is None:
@@ -1818,8 +2261,30 @@ async def platform_audit_log_feed(
 
     page = max(page, 1)
     page_size = min(max(page_size, 1), 200)
+    d_from = parse_iso_date(from_date, "from_date")
+    d_to = parse_iso_date(to_date, "to_date")
 
-    count_q = select(func.count(PlatformAuditLog.id))
+    conditions = []
+    if resource:
+        conditions.append(PlatformAuditLog.resource == resource)
+    if admin_id:
+        conditions.append(PlatformAuditLog.admin_id == admin_id)
+    if action:
+        conditions.append(PlatformAuditLog.action.ilike(f"%{action}%"))
+    if search:
+        like = f"%{search}%"
+        conditions.append(
+            PlatformAuditLog.action.ilike(like)
+            | PlatformAuditLog.resource.ilike(like)
+            | PlatformAuditLog.resource_id.ilike(like)
+            | PlatformAuditLog.details.ilike(like)
+        )
+    if d_from:
+        conditions.append(cast(PlatformAuditLog.created_at, Date) >= d_from)
+    if d_to:
+        conditions.append(cast(PlatformAuditLog.created_at, Date) <= d_to)
+
+    count_q = select(func.count(PlatformAuditLog.id)).select_from(PlatformAuditLog)
     query = (
         select(
             PlatformAuditLog.id,
@@ -1830,15 +2295,16 @@ async def platform_audit_log_feed(
             PlatformAuditLog.details,
             PlatformAuditLog.ip_address,
             PlatformAuditLog.created_at,
+            PlatformAdmin.full_name.label("admin_name"),
+            PlatformAdmin.email.label("admin_email"),
         )
+        .select_from(PlatformAuditLog)
+        .outerjoin(PlatformAdmin, PlatformAdmin.id == PlatformAuditLog.admin_id)
         .order_by(PlatformAuditLog.created_at.desc(), PlatformAuditLog.id.desc())
     )
-    if resource:
-        count_q = count_q.where(PlatformAuditLog.resource == resource)
-        query = query.where(PlatformAuditLog.resource == resource)
-    if admin_id:
-        count_q = count_q.where(PlatformAuditLog.admin_id == admin_id)
-        query = query.where(PlatformAuditLog.admin_id == admin_id)
+    for condition in conditions:
+        count_q = count_q.where(condition)
+        query = query.where(condition)
 
     total = (await ctx.session.execute(count_q)).scalar()
     rows = (
@@ -1847,12 +2313,46 @@ async def platform_audit_log_feed(
         )
     ).all()
 
+    if format == "csv":
+        return csv_response(
+            "platform-audit-log.csv",
+            [
+                "created_at",
+                "action",
+                "resource",
+                "resource_id",
+                "admin_id",
+                "admin_name",
+                "admin_email",
+                "ip_address",
+                "details",
+            ],
+            [
+                {
+                    "created_at": _iso(r.created_at),
+                    "action": r.action,
+                    "resource": r.resource,
+                    "resource_id": r.resource_id,
+                    "admin_id": str(r.admin_id) if r.admin_id else None,
+                    "admin_name": r.admin_name,
+                    "admin_email": r.admin_email,
+                    "ip_address": r.ip_address,
+                    "details": json.dumps(_parse_details(r.details))
+                    if _parse_details(r.details) is not None
+                    else None,
+                }
+                for r in rows
+            ],
+        )
+
     return ok(
         {
             "items": [
                 {
                     "id": str(r.id),
                     "admin_id": str(r.admin_id) if r.admin_id else None,
+                    "admin_name": r.admin_name,
+                    "admin_email": r.admin_email,
                     "action": r.action,
                     "resource": r.resource,
                     "resource_id": r.resource_id,
@@ -2027,18 +2527,19 @@ async def analytics_top_tenants(
     sort: str = "revenue",
     limit: int = 10,
 ):
+    """Top tenants by GMV, platform fee revenue or transaction count."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.billing.models import MerchantSubscription, SubscriptionPlan
+    from app.platform.exporting import parse_iso_date
+    from app.platform.models import PlatformFeeLedger as Fee
     from app.sales.models import Sale
     from app.tenancy.models import Tenant
-    from datetime import datetime, timezone, timedelta
 
     now = datetime.now(timezone.utc)
-    if not from_date:
-        from_date = (now - timedelta(days=30)).date().isoformat()
-    if not to_date:
-        to_date = now.date().isoformat()
-
-    d_from = date.fromisoformat(from_date)
-    d_to = date.fromisoformat(to_date)
+    d_from = parse_iso_date(from_date, "from_date") or (now - timedelta(days=30)).date()
+    d_to = parse_iso_date(to_date, "to_date") or now.date()
+    limit = min(max(limit, 1), 100)
 
     agg = (
         select(
@@ -2051,8 +2552,27 @@ async def analytics_top_tenants(
         .group_by(Sale.tenant_id)
         .subquery()
     )
+    fee_agg = (
+        select(
+            Fee.tenant_id.label("tid"),
+            func.coalesce(
+                func.sum(case((Fee.status == "deducted", Fee.amount), else_=0)), 0
+            ).label("settled_fees"),
+            func.coalesce(
+                func.sum(case((Fee.status == "pending", Fee.amount), else_=0)), 0
+            ).label("pending_fees"),
+        )
+        .where(cast(Fee.created_at, Date) >= d_from, cast(Fee.created_at, Date) <= d_to)
+        .group_by(Fee.tenant_id)
+        .subquery()
+    )
 
-    sort_col = agg.c.total_revenue if sort == "revenue" else agg.c.total_transactions
+    sort_map = {
+        "revenue": func.coalesce(agg.c.total_revenue, 0),
+        "fees": func.coalesce(fee_agg.c.settled_fees, 0),
+        "transactions": func.coalesce(agg.c.total_transactions, 0),
+    }
+    sort_col = sort_map.get(sort, sort_map["revenue"])
 
     rows = await ctx.session.execute(
         select(
@@ -2060,10 +2580,20 @@ async def analytics_top_tenants(
             Tenant.business_name.label("business_name"),
             Tenant.slug.label("slug"),
             Tenant.tier.label("tier"),
+            Tenant.status.label("status"),
             agg.c.total_revenue.label("total_revenue"),
             agg.c.total_transactions.label("total_transactions"),
+            fee_agg.c.settled_fees.label("settled_fees"),
+            fee_agg.c.pending_fees.label("pending_fees"),
+            SubscriptionPlan.name.label("plan_name"),
+            MerchantSubscription.status.label("subscription_status"),
         )
-        .join(agg, agg.c.tenant_id == Tenant.id)
+        .outerjoin(agg, agg.c.tid == Tenant.id)
+        .outerjoin(fee_agg, fee_agg.c.tid == Tenant.id)
+        .outerjoin(
+            MerchantSubscription, MerchantSubscription.tenant_id == Tenant.id
+        )
+        .outerjoin(SubscriptionPlan, SubscriptionPlan.id == MerchantSubscription.plan_id)
         .order_by(desc(sort_col))
         .limit(limit)
     )
@@ -2076,12 +2606,17 @@ async def analytics_top_tenants(
                 "business_name": r["business_name"],
                 "slug": r["slug"],
                 "tier": r["tier"],
-                "total_revenue": float(r["total_revenue"]),
-                "total_transactions": int(r["total_transactions"]),
+                "status": r["status"],
+                "plan": r["plan_name"],
+                "subscription_status": r["subscription_status"],
+                "total_revenue": float(r["total_revenue"] or 0),
+                "total_transactions": int(r["total_transactions"] or 0),
+                "fee_revenue": float(r["settled_fees"] or 0),
+                "pending_fees": float(r["pending_fees"] or 0),
             }
         )
 
-    return ok({"items": items})
+    return ok({"items": items, "from_date": d_from.isoformat(), "to_date": d_to.isoformat()})
 
 
 @router.get(
@@ -2241,17 +2776,17 @@ async def analytics_system_health(
     to_date: str | None = None,
     group_by: str = "day",
 ):
+    from datetime import datetime, timedelta, timezone
+
     from app.auth.audit import AuditEvent
-    from datetime import datetime, timezone, timedelta
+    from app.common.events.outbox import OutboxEvent
+    from app.notifications.models import Notification
+    from app.payments.models import WebhookLog
+    from app.platform.exporting import parse_iso_date
 
     now = datetime.now(timezone.utc)
-    if not from_date:
-        from_date = (now - timedelta(days=7)).date().isoformat()
-    if not to_date:
-        to_date = now.date().isoformat()
-
-    d_from = date.fromisoformat(from_date)
-    d_to = date.fromisoformat(to_date)
+    d_from = parse_iso_date(from_date, "from_date") or (now - timedelta(days=7)).date()
+    d_to = parse_iso_date(to_date, "to_date") or now.date()
 
     total = (
         await ctx.session.execute(
@@ -2323,6 +2858,60 @@ async def analytics_system_health(
         for r in error_trend
     ]
 
+    top_error_paths = (
+        await ctx.session.execute(
+            select(
+                AuditEvent.path.label("path"),
+                func.count(AuditEvent.id).label("count"),
+                func.max(AuditEvent.created_at).label("last_seen"),
+            )
+            .where(
+                AuditEvent.status_code >= 400,
+                cast(AuditEvent.created_at, Date) >= d_from,
+                cast(AuditEvent.created_at, Date) <= d_to,
+            )
+            .group_by(AuditEvent.path)
+            .order_by(desc("count"))
+            .limit(10)
+        )
+    ).all()
+
+    outbox = (
+        await ctx.session.execute(
+            select(
+                func.count(OutboxEvent.id).label("total"),
+                func.count(OutboxEvent.id).filter(OutboxEvent.status == "pending").label("pending"),
+                func.count(OutboxEvent.id).filter(OutboxEvent.status == "failed").label("failed"),
+                func.min(OutboxEvent.available_at)
+                .filter(OutboxEvent.status == "pending")
+                .label("oldest_pending"),
+                func.max(OutboxEvent.attempts).label("max_attempts"),
+            )
+        )
+    ).one()
+    webhooks = (
+        await ctx.session.execute(
+            select(
+                func.count(WebhookLog.id).label("total"),
+                func.count(WebhookLog.id).filter(WebhookLog.processed == 0).label("unprocessed"),
+                func.count(WebhookLog.id).filter(WebhookLog.error.isnot(None)).label("errors"),
+                func.max(WebhookLog.created_at).label("last_seen"),
+            )
+        )
+    ).one()
+    notifications = (
+        await ctx.session.execute(
+            select(
+                func.count(Notification.id).label("total"),
+                func.count(Notification.id).filter(Notification.status == "pending").label("pending"),
+                func.count(Notification.id).filter(Notification.status == "failed").label("failed"),
+                func.min(Notification.created_at)
+                .filter(Notification.status == "pending")
+                .label("oldest_pending"),
+            )
+        )
+    ).one()
+
     return ok(
         {
             "summary": {
@@ -2331,6 +2920,39 @@ async def analytics_system_health(
             },
             "by_status": status_breakdown,
             "error_trend": error_trend_data,
+            "top_error_paths": [
+                {
+                    "path": r.path,
+                    "count": int(r.count),
+                    "last_seen": r.last_seen.isoformat() if r.last_seen else None,
+                }
+                for r in top_error_paths
+            ],
+            "ops": {
+                "outbox": {
+                    "total": int(outbox.total or 0),
+                    "pending": int(outbox.pending or 0),
+                    "failed": int(outbox.failed or 0),
+                    "oldest_pending": outbox.oldest_pending.isoformat()
+                    if outbox.oldest_pending
+                    else None,
+                    "max_attempts": int(outbox.max_attempts or 0),
+                },
+                "webhooks": {
+                    "total": int(webhooks.total or 0),
+                    "unprocessed": int(webhooks.unprocessed or 0),
+                    "errors": int(webhooks.errors or 0),
+                    "last_seen": webhooks.last_seen.isoformat() if webhooks.last_seen else None,
+                },
+                "notifications": {
+                    "total": int(notifications.total or 0),
+                    "pending": int(notifications.pending or 0),
+                    "failed": int(notifications.failed or 0),
+                    "oldest_pending": notifications.oldest_pending.isoformat()
+                    if notifications.oldest_pending
+                    else None,
+                },
+            },
         }
     )
 
@@ -2409,14 +3031,18 @@ async def analytics_churn_risk(
     ctx: PlatformDep,
     inactive_days: int = 30,
 ):
-    """Per-tenant staleness in ONE aggregate SQL (was O(N) queries/tenant)."""
-    from app.tenancy.models import Tenant
-    from app.sales.models import Sale
+    """Per-tenant staleness plus the revenue and fee exposure behind it."""
+    from datetime import datetime, timedelta, timezone
+
     from app.identity.models import User
-    from datetime import datetime, timezone, timedelta
+    from app.platform.models import PlatformFeeLedger as Fee
+    from app.sales.models import Sale
+    from app.tenancy.models import Tenant
 
     now = datetime.now(timezone.utc)
+    inactive_days = min(max(inactive_days, 1), 365)
     cutoff = now - timedelta(days=inactive_days)
+    rev_cutoff = now - timedelta(days=30)
 
     last_sale_sq = (
         select(func.max(Sale.created_at))
@@ -2430,12 +3056,36 @@ async def analytics_churn_risk(
         .correlate(Tenant)
         .scalar_subquery()
     )
+    rev_30_sq = (
+        select(func.coalesce(func.sum(Sale.total), 0))
+        .where(
+            Sale.tenant_id == Tenant.id,
+            Sale.status != "voided",
+            Sale.created_at >= rev_cutoff,
+        )
+        .correlate(Tenant)
+        .scalar_subquery()
+    )
+    fee_30_sq = (
+        select(func.coalesce(func.sum(Fee.amount), 0))
+        .where(Fee.tenant_id == Tenant.id, Fee.created_at >= rev_cutoff)
+        .correlate(Tenant)
+        .scalar_subquery()
+    )
+    fee_pending_sq = (
+        select(func.coalesce(func.sum(Fee.amount), 0))
+        .where(Fee.tenant_id == Tenant.id, Fee.status == "pending")
+        .correlate(Tenant)
+        .scalar_subquery()
+    )
 
     user_stats_sq = (
         select(
             User.tenant_id.label("tenant_id"),
             func.count(User.id).label("total_users"),
-            func.sum(case((and_(User.status == "active", User.last_login_at >= cutoff), 1), else_=0)).label("active_users"),
+            func.sum(
+                case((and_(User.status == "active", User.last_login_at >= cutoff), 1), else_=0)
+            ).label("active_users"),
         )
         .group_by(User.tenant_id)
         .subquery()
@@ -2450,6 +3100,9 @@ async def analytics_churn_risk(
                 Tenant.tier,
                 last_sale_sq.label("last_sale"),
                 last_login_sq.label("last_login"),
+                rev_30_sq.label("rev_30"),
+                fee_30_sq.label("fee_30"),
+                fee_pending_sq.label("fee_pending"),
                 func.coalesce(user_stats_sq.c.active_users, 0).label("active_users"),
                 func.coalesce(user_stats_sq.c.total_users, 0).label("total_users"),
             )
@@ -2460,9 +3113,12 @@ async def analytics_churn_risk(
 
     items = []
     healthy = at_risk = churned = 0
+    revenue_at_risk = 0.0
     for r in rows:
         last_sale = r.last_sale
         days_inactive = (now - last_sale).days if last_sale else 999
+        days_since_login = (now - r.last_login).days if r.last_login else 999
+        rev_30 = float(r.rev_30 or 0)
 
         if days_inactive <= 7:
             risk = "low"
@@ -2470,9 +3126,20 @@ async def analytics_churn_risk(
         elif days_inactive <= inactive_days:
             risk = "medium"
             at_risk += 1
+            revenue_at_risk += rev_30
         else:
             risk = "high"
             churned += 1
+            revenue_at_risk += rev_30
+
+        if risk == "high":
+            action = "Call the owner; offer a re-onboarding session"
+        elif risk == "medium":
+            action = "Check in on stock, pricing and staff activity"
+        elif int(r.active_users or 0) == 0:
+            action = "No recent user logins; verify access"
+        else:
+            action = "Healthy; leave to normal account management"
 
         items.append(
             {
@@ -2483,16 +3150,29 @@ async def analytics_churn_risk(
                 "last_sale": last_sale.date().isoformat() if last_sale else None,
                 "days_inactive": days_inactive,
                 "last_user_login": r.last_login.date().isoformat() if r.last_login else None,
+                "days_since_login": days_since_login,
                 "risk_level": risk,
+                "revenue_30d": round(rev_30, 2),
+                "fee_revenue_30d": round(float(r.fee_30 or 0), 2),
+                "pending_fees": round(float(r.fee_pending or 0), 2),
                 "total_users": int(r.total_users or 0),
                 "active_users": int(r.active_users or 0),
+                "recommended_action": action,
             }
         )
 
     return ok(
         {
             "items": sorted(items, key=lambda x: x["days_inactive"], reverse=True),
-            "summary": {"healthy": healthy, "at_risk": at_risk, "churned": churned},
+            "summary": {
+                "healthy": healthy,
+                "at_risk": at_risk,
+                "churned": churned,
+                "revenue_at_risk_30d": round(revenue_at_risk, 2),
+                "pending_fees_at_risk": round(
+                    sum(i["pending_fees"] for i in items if i["risk_level"] != "low"), 2
+                ),
+            },
         }
     )
 
@@ -2663,6 +3343,8 @@ async def create_commission(payload: CommissionCreate, request: Request, ctx: Pl
     from app.platform.audit import log_platform_audit
     from app.platform.models import PlatformCommission
 
+    assert_platform_role(ctx, "admin")
+
     if payload.fee_type not in [e.value for e in FeeType]:
         raise HTTPException(
             status_code=400,
@@ -2741,6 +3423,8 @@ async def contact_inbox(
 async def contact_mark(message_id: str, payload: ContactStatusRequest, ctx: PlatformDep):
     from app.contact import routes as contact_routes
 
+    assert_platform_role(ctx, "support")
+
     row = await contact_routes.platform_update_message_status(
         ctx.session, message_id, payload.status
     )
@@ -2772,6 +3456,8 @@ async def waitlist_signups(
 )
 async def waitlist_mark(signup_id: str, payload: WaitlistStatusRequest, ctx: PlatformDep):
     from app.waitlist import routes as waitlist_routes
+
+    assert_platform_role(ctx, "support")
 
     try:
         row = await waitlist_routes.platform_update_signup_status(
@@ -2859,6 +3545,8 @@ async def update_commission(
     from app.platform.audit import log_platform_audit
     from app.platform.models import PlatformCommission
 
+    assert_platform_role(ctx, "admin")
+
     result = await ctx.session.execute(
         select(PlatformCommission).where(PlatformCommission.id == commission_id)
     )
@@ -2932,6 +3620,8 @@ async def delete_commission(commission_id: str, request: Request, ctx: PlatformD
     from app.platform.audit import log_platform_audit
     from app.platform.models import PlatformCommission
 
+    assert_platform_role(ctx, "admin")
+
     result = await ctx.session.execute(
         select(PlatformCommission).where(PlatformCommission.id == commission_id)
     )
@@ -2984,38 +3674,166 @@ class ClearDebtRequest(BaseModel):
     dependencies=[Depends(require_platform_permission("platform:*"))],
 )
 async def list_fee_ledger(
+    ctx: PlatformDep,
     tenant_id: str | None = None,
     status: str | None = None,
-    ctx: PlatformDep = None,
+    payment_method: str | None = None,
+    fee_category: str | None = None,
+    search: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    format: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
 ):
-    from app.platform.models import PlatformFeeLedger
+    """Paginated fee ledger with filters, per-status summary and CSV export."""
+    from app.platform.exporting import csv_response, parse_iso_date
+    from app.platform.models import PlatformFeeLedger as Fee
+    from app.tenancy.models import Tenant
 
-    query = select(PlatformFeeLedger).order_by(desc(PlatformFeeLedger.created_at))
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 200)
+    d_from = parse_iso_date(from_date, "from_date")
+    d_to = parse_iso_date(to_date, "to_date")
+
+    conditions = []
     if tenant_id:
-        query = query.where(PlatformFeeLedger.tenant_id == tenant_id)
+        conditions.append(Fee.tenant_id == tenant_id)
     if status:
-        query = query.where(PlatformFeeLedger.status == status)
+        conditions.append(Fee.status == status)
+    if payment_method:
+        conditions.append(Fee.payment_method == payment_method)
+    if fee_category:
+        conditions.append(Fee.fee_category == fee_category)
+    if d_from:
+        conditions.append(cast(Fee.created_at, Date) >= d_from)
+    if d_to:
+        conditions.append(cast(Fee.created_at, Date) <= d_to)
 
-    result = await ctx.session.execute(query)
-    items = result.scalars().all()
+    base = (
+        select(
+            Fee.id,
+            Fee.tenant_id,
+            Fee.sale_id,
+            Fee.document_id,
+            Fee.fee_category,
+            Fee.amount,
+            Fee.fee_type,
+            Fee.rate,
+            Fee.payment_method,
+            Fee.status,
+            Fee.settled_at,
+            Fee.created_at,
+            Tenant.business_name.label("business_name"),
+            Tenant.slug.label("tenant_slug"),
+        )
+        .select_from(Fee)
+        .outerjoin(Tenant, Tenant.id == Fee.tenant_id)
+    )
+    count_q = select(func.count(Fee.id)).select_from(Fee)
+    summary_q = select(
+        func.coalesce(func.sum(case((Fee.status == "pending", Fee.amount), else_=0)), 0).label(
+            "pending_total"
+        ),
+        func.coalesce(func.sum(case((Fee.status == "deducted", Fee.amount), else_=0)), 0).label(
+            "settled_total"
+        ),
+        func.count(Fee.id).label("total_count"),
+        func.count(Fee.id).filter(Fee.status == "pending").label("pending_count"),
+    ).select_from(Fee)
+
+    if search:
+        like = f"%{search}%"
+        matching_tenants = select(Tenant.id).where(
+            Tenant.business_name.ilike(like) | Tenant.slug.ilike(like)
+        )
+        conditions.append(
+            Fee.tenant_id.in_(matching_tenants)
+            | Fee.fee_type.ilike(like)
+            | Fee.payment_method.ilike(like)
+        )
+
+    for condition in conditions:
+        base = base.where(condition)
+        count_q = count_q.where(condition)
+        summary_q = summary_q.where(condition)
+
+    total = (await ctx.session.execute(count_q)).scalar() or 0
+    summary = (await ctx.session.execute(summary_q)).one()
+    rows = (
+        await ctx.session.execute(
+            base.order_by(desc(Fee.created_at))
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+
+    if format == "csv":
+        return csv_response(
+            "platform-fee-ledger.csv",
+            [
+                "created_at",
+                "tenant_id",
+                "business_name",
+                "sale_id",
+                "document_id",
+                "fee_category",
+                "fee_type",
+                "rate",
+                "amount",
+                "payment_method",
+                "status",
+                "settled_at",
+            ],
+            [
+                {
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "tenant_id": str(r.tenant_id),
+                    "business_name": r.business_name,
+                    "sale_id": str(r.sale_id) if r.sale_id else None,
+                    "document_id": str(r.document_id) if r.document_id else None,
+                    "fee_category": r.fee_category,
+                    "fee_type": r.fee_type,
+                    "rate": float(r.rate),
+                    "amount": float(r.amount),
+                    "payment_method": r.payment_method,
+                    "status": r.status,
+                    "settled_at": r.settled_at.isoformat() if r.settled_at else None,
+                }
+                for r in rows
+            ],
+        )
+
     return ok(
         {
             "items": [
                 {
-                    "id": str(e.id),
-                    "tenant_id": str(e.tenant_id),
-                    "sale_id": str(e.sale_id),
-                    "amount": float(e.amount),
-                    "fee_type": e.fee_type,
-                    "rate": float(e.rate),
-                    "payment_method": e.payment_method,
-                    "status": e.status,
-                    "settled_at": e.settled_at.isoformat() if e.settled_at else None,
-                    "created_at": e.created_at.isoformat(),
+                    "id": str(r.id),
+                    "tenant_id": str(r.tenant_id),
+                    "business_name": r.business_name,
+                    "tenant_slug": r.tenant_slug,
+                    "sale_id": str(r.sale_id) if r.sale_id else None,
+                    "document_id": str(r.document_id) if r.document_id else None,
+                    "fee_category": r.fee_category,
+                    "amount": float(r.amount),
+                    "fee_type": r.fee_type,
+                    "rate": float(r.rate),
+                    "payment_method": r.payment_method,
+                    "status": r.status,
+                    "settled_at": r.settled_at.isoformat() if r.settled_at else None,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
                 }
-                for e in items
+                for r in rows
             ],
-            "total": len(items),
+            "summary": {
+                "total_count": int(summary.total_count or 0),
+                "pending_count": int(summary.pending_count or 0),
+                "pending_total": float(summary.pending_total or 0),
+                "settled_total": float(summary.settled_total or 0),
+            },
+            "total": int(total),
+            "page": page,
+            "page_size": page_size,
         }
     )
 
@@ -3029,6 +3847,8 @@ async def clear_debt(payload: ClearDebtRequest, request: Request, ctx: PlatformD
 
     from app.platform.audit import log_platform_audit
     from app.platform.models import PlatformFeeLedger
+
+    assert_platform_role(ctx, "admin")
 
     query = (
         select(PlatformFeeLedger)
@@ -3135,22 +3955,46 @@ async def update_platform_settings(
     request: Request,
 ):
     from app.platform.audit import log_platform_audit
+    from app.platform.models import PlatformSettingHistory
 
     updated: list[PlatformSetting] = []
+    changes: dict[str, dict] = {}
     for item in payload:
+        key = (item.key or "").strip()
+        if not key:
+            raise HTTPException(status_code=400, detail="Setting key cannot be empty")
+        try:
+            json.loads(item.value)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Setting '{key}' must be valid JSON (quote plain strings)",
+            )
+
         setting = await ctx.session.scalar(
-            select(PlatformSetting).where(PlatformSetting.key == item.key)
+            select(PlatformSetting).where(PlatformSetting.key == key)
         )
         if setting:
+            if setting.value != item.value:
+                ctx.session.add(
+                    PlatformSettingHistory(
+                        key=key,
+                        old_value=setting.value,
+                        new_value=item.value,
+                        admin_id=ctx.user.admin_id,
+                    )
+                )
+                changes[key] = {"from": setting.value, "to": item.value}
             setting.value = item.value
             setting.description = item.description
         else:
             setting = PlatformSetting(
-                key=item.key,
+                key=key,
                 value=item.value,
                 description=item.description,
             )
             ctx.session.add(setting)
+            changes[key] = {"from": None, "to": item.value}
         updated.append(setting)
 
     await ctx.session.flush()
@@ -3160,8 +4004,53 @@ async def update_platform_settings(
         admin_id=ctx.user.admin_id,
         action="platform_settings.update",
         resource="platform_settings",
-        details={"keys": [item.key for item in payload]},
+        details={"keys": [item.key for item in payload], "changes": changes},
         ip_address=_get_client_ip(request),
     )
 
     return updated
+
+
+@router.get(
+    "/settings/history",
+    dependencies=[Depends(require_platform_permission("platform:*"))],
+)
+async def platform_settings_history(
+    ctx: PlatformDep,
+    key: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+):
+    from app.platform.models import PlatformSettingHistory
+
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 200)
+    query = select(PlatformSettingHistory).order_by(desc(PlatformSettingHistory.created_at))
+    count_q = select(func.count(PlatformSettingHistory.id))
+    if key:
+        query = query.where(PlatformSettingHistory.key == key)
+        count_q = count_q.where(PlatformSettingHistory.key == key)
+    total = (await ctx.session.execute(count_q)).scalar() or 0
+    rows = (
+        await ctx.session.execute(
+            query.offset((page - 1) * page_size).limit(page_size)
+        )
+    ).scalars().all()
+    return ok(
+        {
+            "items": [
+                {
+                    "id": str(r.id),
+                    "key": r.key,
+                    "old_value": r.old_value,
+                    "new_value": r.new_value,
+                    "admin_id": str(r.admin_id) if r.admin_id else None,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in rows
+            ],
+            "total": int(total),
+            "page": page,
+            "page_size": page_size,
+        }
+    )

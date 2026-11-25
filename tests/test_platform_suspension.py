@@ -36,6 +36,8 @@ async def _suspend_via_route(tenant_id: str, *, initial_status="active", to_stat
     tenant.slug = "ked-mart"
 
     ctx = MagicMock()
+    ctx.user.role = "admin"
+    ctx.user.admin_id = str(uuid4())
     ctx.session.execute = AsyncMock(
         return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=tenant))
     )

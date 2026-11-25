@@ -34,6 +34,7 @@ def _tenant():
 def _ctx(tenant):
     ctx = MagicMock()
     ctx.user.admin_id = str(uuid4())
+    ctx.user.role = "admin"
     ctx.session.execute = AsyncMock(
         side_effect=[
             MagicMock(scalar_one_or_none=MagicMock(return_value=tenant)),  # tenant fetch
@@ -56,6 +57,7 @@ class TestPlatformDelete:
 
     async def test_missing_tenant_404(self):
         ctx = MagicMock()
+        ctx.user.role = "admin"
         ctx.session.execute = AsyncMock(
             return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
         )

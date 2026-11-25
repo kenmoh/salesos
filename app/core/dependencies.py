@@ -128,6 +128,10 @@ class TokenData:
         self.permissions: list[str] = payload.get("perms", [])
         self.jti = payload["jti"]
         self.exp = payload["exp"]
+        # Set on impersonation tokens. ``read_only`` lets the tenant guards
+        # reject every non-read permission without a second token type.
+        self.impersonated_by = payload.get("impersonated_by")
+        self.read_only = bool(payload.get("read_only"))
 
     @property
     def primary_role(self) -> str:
@@ -135,7 +139,11 @@ class TokenData:
         return self.roles[0] if self.roles else self.role
 
     def has_perm(self, perm: str) -> bool:
-        return perm in self.permissions
+        if perm not in self.permissions:
+            return False
+        if self.read_only and not perm.endswith((":read", ":view", ":list")):
+            return False
+        return True
 
     def has_role(self, *roles: str) -> bool:
         """True when the token holds any of ``roles``.

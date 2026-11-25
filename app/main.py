@@ -171,8 +171,12 @@ def create_app() -> FastAPI:
     app.include_router(waitlist_router, prefix=prefix)
 
     from app.platform.routes import router as platform_router
+    from app.platform.analytics_extra import router as platform_analytics_router
+    from app.platform.management import router as platform_management_router
 
     app.include_router(platform_router, prefix=prefix)
+    app.include_router(platform_management_router, prefix=prefix)
+    app.include_router(platform_analytics_router, prefix=prefix)
 
     from app.billing import routes as billing_routes
 
