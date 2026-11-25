@@ -10,11 +10,16 @@ This module defines the FastAPI routes for all accounting operations including:
 - Financial dashboard
 """
 
-from datetime import datetime, timedelta
+import hashlib
+import json
+from collections.abc import Awaitable, Callable
+from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 from app.core.approval import require_supervisor_approval
 from app.core.dependencies import DbTenantDep, require_permission
@@ -29,7 +34,7 @@ from app.common.scope_cache import (
     scope_read,
 )
 from . import rpc
-from .models import Journal
+from .models import AccountPayable, AccountReceivable, ApPayment, ArPayment, Journal
 from .repository import get_account_by_code
 from .service import _determine_entry_type
 from .schemas import (
@@ -63,6 +68,145 @@ from .schemas import (
 )
 
 router = APIRouter(prefix="/accounting", tags=["Accounting"])
+
+
+def _payment_request_fingerprint(
+    *,
+    parent_id: UUID,
+    amount: float,
+    payment_date: str,
+    notes: str | None,
+    store_id: UUID | None,
+) -> tuple[date, str]:
+    try:
+        normalized_amount = Decimal(str(amount)).quantize(Decimal("0.01"))
+        if Decimal(str(amount)) != normalized_amount:
+            raise HTTPException(
+                status_code=422,
+                detail="Payment amount must have no more than two decimal places",
+            )
+        normalized_date = date.fromisoformat(payment_date)
+    except (InvalidOperation, ValueError):
+        raise HTTPException(
+            status_code=422,
+            detail="Payment amount or date is invalid",
+        )
+
+    canonical_request = {
+        "parent_id": str(parent_id),
+        "amount": format(normalized_amount, "f"),
+        "payment_date": normalized_date.isoformat(),
+        "notes": notes,
+        "store_id": str(store_id) if store_id else None,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            canonical_request,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    return normalized_date, fingerprint
+
+
+def _validate_idempotency_key(idempotency_key: str) -> None:
+    if not idempotency_key.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Idempotency-Key must not be empty",
+        )
+
+
+def _raise_payment_error(error: str) -> None:
+    status_code = 409 if error.startswith("Idempotency-Key") else 400
+    raise HTTPException(status_code=status_code, detail=error)
+
+
+async def _record_payment_idempotently(
+    ctx,
+    *,
+    payment_model: type[ArPayment] | type[ApPayment],
+    store_id: UUID | None,
+    idempotency_key: str,
+    request_fingerprint: str,
+    payment_date: date,
+    amount: float,
+    debit_code: str,
+    credit_code: str,
+    description: str,
+    ref_type: str,
+    record_payment: Callable[[], Awaitable[dict]],
+) -> dict:
+    tenant_id = UUID(ctx.user.business_id)
+    try:
+        async with ctx.session.begin_nested():
+            result = await record_payment()
+            if error := result.get("error"):
+                _raise_payment_error(error)
+
+            if result.get("replayed"):
+                if not result.get("journal_id"):
+                    raise HTTPException(
+                        status_code=500,
+                        detail="The original payment has no linked journal",
+                    )
+            else:
+                payment_id = result.get("payment_id")
+                if not payment_id:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="The payment record was not returned",
+                    )
+                journal_id = await _post_payment_journal(
+                    ctx,
+                    amount=amount,
+                    debit_code=debit_code,
+                    credit_code=credit_code,
+                    description=description,
+                    ref_id=payment_id,
+                    ref_type=ref_type,
+                    store_id=str(store_id) if store_id else None,
+                    accounting_date=payment_date.isoformat(),
+                )
+                update_result = await ctx.session.execute(
+                    update(payment_model)
+                    .where(
+                        payment_model.id == UUID(payment_id),
+                        payment_model.tenant_id == tenant_id,
+                    )
+                    .values(journal_id=UUID(journal_id))
+                )
+                if getattr(update_result, "rowcount", 1) == 0:
+                    raise RuntimeError(
+                        f"Payment {payment_id} was created without a journal link"
+                    )
+                result["journal_id"] = journal_id
+    except IntegrityError:
+        existing_result = await ctx.session.execute(
+            select(payment_model).where(
+                payment_model.tenant_id == tenant_id,
+                payment_model.idempotency_key == idempotency_key,
+                payment_model.store_id == store_id,
+            )
+        )
+        existing = existing_result.scalar_one_or_none()
+        if existing is None:
+            raise
+        if existing.request_fingerprint != request_fingerprint:
+            raise HTTPException(
+                status_code=409,
+                detail="Idempotency-Key has already been used with a different request",
+            )
+        result = await record_payment()
+        if error := result.get("error"):
+            _raise_payment_error(error)
+        if not result.get("replayed") or not result.get("journal_id"):
+            raise RuntimeError(
+                "A concurrent payment retry did not return its saved journal"
+            )
+
+    return result
 
 
 # The ledger screens re-run date-range sums on the whole journal table, so
@@ -242,7 +386,8 @@ async def _post_payment_journal(
     ref_id: str,
     ref_type: str,
     store_id: str | None = None,
-) -> None:
+    accounting_date: str,
+) -> str:
     """Post the cash leg of an AR/AP payment (Dr cash / Cr receivable, etc.).
 
     ``fn_record_ar_payment``/``fn_record_ap_payment`` only update balances;
@@ -279,7 +424,7 @@ async def _post_payment_journal(
             "type": _determine_entry_type(credit_acct.code),
         },
     ]
-    await rpc.post_journal(
+    return await rpc.post_journal(
         session=ctx.session,
         business_id=ctx.user.business_id,
         user_id=ctx.user.user_id,
@@ -288,6 +433,7 @@ async def _post_payment_journal(
         ref_id=ref_id,
         ref_type=ref_type,
         store_id=store_id,
+        accounting_date=accounting_date,
     )
 
 
@@ -962,40 +1108,86 @@ async def record_ar_payment(
     ar_id: str,
     payload: RecordPaymentRequest,
     ctx: DbTenantDep,
+    idempotency_key: str = Header(
+        ..., alias="Idempotency-Key", min_length=1, max_length=255
+    ),
 ):
-    result = await rpc.record_ar_payment(
-        session=ctx.session,
-        business_id=ctx.user.business_id,
-        ar_id=ar_id,
+    _validate_idempotency_key(idempotency_key)
+    tenant_id = UUID(ctx.user.business_id)
+    try:
+        parent_id = UUID(ar_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid receivable ID")
+
+    parent_result = await ctx.session.execute(
+        select(AccountReceivable)
+        .where(
+            AccountReceivable.id == parent_id,
+            AccountReceivable.tenant_id == tenant_id,
+        )
+        .with_for_update()
+    )
+    parent = parent_result.scalar_one_or_none()
+    if parent is None:
+        raise HTTPException(status_code=404, detail="Receivable not found")
+
+    prior_result = await ctx.session.execute(
+        select(ArPayment)
+        .where(
+            ArPayment.tenant_id == tenant_id,
+            ArPayment.ar_id == parent_id,
+            ArPayment.idempotency_key == idempotency_key,
+        )
+        .limit(1)
+    )
+    prior_payment = prior_result.scalar_one_or_none()
+    store_id = prior_payment.store_id if prior_payment else parent.store_id
+    payment_date, fingerprint = _payment_request_fingerprint(
+        parent_id=parent_id,
         amount=payload.amount,
         payment_date=payload.payment_date,
         notes=payload.notes,
-        recorded_by=ctx.user.user_id,
+        store_id=store_id,
     )
-    # The ledger row and the balance update happen together in one SQL
-    # function; a refusal leaves both untouched, so stop before the journal.
-    if error := result.get("error"):
-        raise HTTPException(status_code=400, detail=error)
-    await _post_payment_journal(
+    result = await _record_payment_idempotently(
         ctx,
+        payment_model=ArPayment,
+        store_id=store_id,
+        idempotency_key=idempotency_key,
+        request_fingerprint=fingerprint,
+        payment_date=payment_date,
         amount=payload.amount,
         debit_code="1000",
         credit_code="1100",
-        description=f"AR payment: {result.get('invoice_number') or ar_id}",
-        ref_id=ar_id,
+        description=f"AR payment: {parent.invoice_number}",
         ref_type="ar_payment",
-        store_id=result.get("store_id"),
+        record_payment=lambda: rpc.record_ar_payment(
+            session=ctx.session,
+            business_id=ctx.user.business_id,
+            ar_id=str(parent_id),
+            amount=payload.amount,
+            payment_date=payment_date.isoformat(),
+            notes=payload.notes,
+            recorded_by=ctx.user.user_id,
+            idempotency_key=idempotency_key,
+            request_fingerprint=fingerprint,
+            store_id=str(store_id) if store_id else None,
+        ),
     )
-    await _log_account_action(
-        ctx,
-        "ar_payment_received",
-        {
-            "invoice_number": result.get("invoice_number"),
-            "amount": float(payload.amount),
-            "payment_date": payload.payment_date,
-        },
-    )
-    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
+    if not result.get("replayed"):
+        await _log_account_action(
+            ctx,
+            "ar_payment_received",
+            {
+                "invoice_number": result.get("invoice_number"),
+                "amount": float(payload.amount),
+                "payment_date": payment_date.isoformat(),
+                "payment_id": result.get("payment_id"),
+                "journal_id": result.get("journal_id"),
+            },
+        )
+        await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
+    result.pop("replayed", None)
     return ok(result)
 
 
@@ -1161,38 +1353,86 @@ async def record_ap_payment(
     ap_id: str,
     payload: RecordPaymentRequest,
     ctx: DbTenantDep,
+    idempotency_key: str = Header(
+        ..., alias="Idempotency-Key", min_length=1, max_length=255
+    ),
 ):
-    result = await rpc.record_ap_payment(
-        session=ctx.session,
-        business_id=ctx.user.business_id,
-        ap_id=ap_id,
+    _validate_idempotency_key(idempotency_key)
+    tenant_id = UUID(ctx.user.business_id)
+    try:
+        parent_id = UUID(ap_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid payable ID")
+
+    parent_result = await ctx.session.execute(
+        select(AccountPayable)
+        .where(
+            AccountPayable.id == parent_id,
+            AccountPayable.tenant_id == tenant_id,
+        )
+        .with_for_update()
+    )
+    parent = parent_result.scalar_one_or_none()
+    if parent is None:
+        raise HTTPException(status_code=404, detail="Payable not found")
+
+    prior_result = await ctx.session.execute(
+        select(ApPayment)
+        .where(
+            ApPayment.tenant_id == tenant_id,
+            ApPayment.ap_id == parent_id,
+            ApPayment.idempotency_key == idempotency_key,
+        )
+        .limit(1)
+    )
+    prior_payment = prior_result.scalar_one_or_none()
+    store_id = prior_payment.store_id if prior_payment else parent.store_id
+    payment_date, fingerprint = _payment_request_fingerprint(
+        parent_id=parent_id,
         amount=payload.amount,
         payment_date=payload.payment_date,
         notes=payload.notes,
-        recorded_by=ctx.user.user_id,
+        store_id=store_id,
     )
-    if error := result.get("error"):
-        raise HTTPException(status_code=400, detail=error)
-    await _post_payment_journal(
+    result = await _record_payment_idempotently(
         ctx,
+        payment_model=ApPayment,
+        store_id=store_id,
+        idempotency_key=idempotency_key,
+        request_fingerprint=fingerprint,
+        payment_date=payment_date,
         amount=payload.amount,
         debit_code="2000",
         credit_code="1000",
-        description=f"AP payment: {result.get('bill_number') or ap_id}",
-        ref_id=ap_id,
+        description=f"AP payment: {parent.bill_number}",
         ref_type="ap_payment",
-        store_id=result.get("store_id"),
+        record_payment=lambda: rpc.record_ap_payment(
+            session=ctx.session,
+            business_id=ctx.user.business_id,
+            ap_id=str(parent_id),
+            amount=payload.amount,
+            payment_date=payment_date.isoformat(),
+            notes=payload.notes,
+            recorded_by=ctx.user.user_id,
+            idempotency_key=idempotency_key,
+            request_fingerprint=fingerprint,
+            store_id=str(store_id) if store_id else None,
+        ),
     )
-    await _log_account_action(
-        ctx,
-        "ap_payment_recorded",
-        {
-            "bill_number": result.get("bill_number"),
-            "amount": float(payload.amount),
-            "payment_date": payload.payment_date,
-        },
-    )
-    await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
+    if not result.get("replayed"):
+        await _log_account_action(
+            ctx,
+            "ap_payment_recorded",
+            {
+                "bill_number": result.get("bill_number"),
+                "amount": float(payload.amount),
+                "payment_date": payment_date.isoformat(),
+                "payment_id": result.get("payment_id"),
+                "journal_id": result.get("journal_id"),
+            },
+        )
+        await scope_bump(ctx.user.business_id, TENANT_SCOPE, (ACCOUNTING, REPORTS,))
+    result.pop("replayed", None)
     return ok(result)
 
 

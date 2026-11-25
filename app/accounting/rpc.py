@@ -102,6 +102,7 @@ async def post_journal(
     ref_id: str | None = None,
     ref_type: str | None = None,
     store_id: str | None = None,
+    accounting_date: str | None = None,
 ) -> str:
     """Create and post a journal with balanced debit/credit entries.
 
@@ -121,6 +122,7 @@ async def post_journal(
         p_ref_id=UUID(ref_id) if ref_id else None,
         p_ref_type=ref_type,
         p_store_id=UUID(store_id) if store_id else None,
+        p_accounting_date=accounting_date,
     )
     return str(journal_id)
 
@@ -323,6 +325,9 @@ async def record_ar_payment(
     ar_id: str,
     amount: float,
     payment_date: str,
+    idempotency_key: str,
+    request_fingerprint: str,
+    store_id: str | None,
     notes: str | None = None,
     recorded_by: str | None = None,
 ) -> dict:
@@ -333,8 +338,8 @@ async def record_ar_payment(
     - Updates the AR record (amount_paid, balance, status)
     - Appends a row to the ar_payments ledger
 
-    Returns the updated AR row plus ``payment_id``, or ``error`` when the
-    payment was refused (the caller turns that into a 400).
+    Returns the updated AR row with payment and journal identifiers. A matching
+    key and fingerprint replays the original payment without changing balances.
     """
     rows = await call(
         session,
@@ -345,6 +350,9 @@ async def record_ar_payment(
         p_payment_date=payment_date,
         p_notes=notes,
         p_recorded_by=UUID(recorded_by) if recorded_by else None,
+        p_idempotency_key=idempotency_key,
+        p_request_fingerprint=request_fingerprint,
+        p_store_id=UUID(store_id) if store_id else None,
     )
     row = _stringify(rows[0]) if rows else {}
     if "out_id" in row:
@@ -353,6 +361,12 @@ async def record_ar_payment(
         row["tenant_id"] = row.pop("out_tenant_id")
     if "out_payment_id" in row:
         row["payment_id"] = row.pop("out_payment_id")
+    if "out_journal_id" in row:
+        row["journal_id"] = row.pop("out_journal_id")
+    if "out_store_id" in row:
+        row["store_id"] = row.pop("out_store_id")
+    if "out_replayed" in row:
+        row["replayed"] = row.pop("out_replayed")
     if "out_error" in row:
         row["error"] = row.pop("out_error")
     return row
@@ -461,6 +475,9 @@ async def record_ap_payment(
     ap_id: str,
     amount: float,
     payment_date: str,
+    idempotency_key: str,
+    request_fingerprint: str,
+    store_id: str | None,
     notes: str | None = None,
     recorded_by: str | None = None,
 ) -> dict:
@@ -471,8 +488,8 @@ async def record_ap_payment(
     - Updates the AP record (amount_paid, balance, status)
     - Appends a row to the ap_payments ledger
 
-    Returns the updated AP row plus ``payment_id``, or ``error`` when the
-    payment was refused (the caller turns that into a 400).
+    Returns the updated AP row with payment and journal identifiers. A matching
+    key and fingerprint replays the original payment without changing balances.
     """
     rows = await call(
         session,
@@ -483,6 +500,9 @@ async def record_ap_payment(
         p_payment_date=payment_date,
         p_notes=notes,
         p_recorded_by=UUID(recorded_by) if recorded_by else None,
+        p_idempotency_key=idempotency_key,
+        p_request_fingerprint=request_fingerprint,
+        p_store_id=UUID(store_id) if store_id else None,
     )
     row = _stringify(rows[0]) if rows else {}
     if "out_id" in row:
@@ -491,6 +511,12 @@ async def record_ap_payment(
         row["tenant_id"] = row.pop("out_tenant_id")
     if "out_payment_id" in row:
         row["payment_id"] = row.pop("out_payment_id")
+    if "out_journal_id" in row:
+        row["journal_id"] = row.pop("out_journal_id")
+    if "out_store_id" in row:
+        row["store_id"] = row.pop("out_store_id")
+    if "out_replayed" in row:
+        row["replayed"] = row.pop("out_replayed")
     if "out_error" in row:
         row["error"] = row.pop("out_error")
     return row

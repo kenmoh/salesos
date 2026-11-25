@@ -26,7 +26,17 @@ from uuid import UUID
 from sqlalchemy import Date, case, cast, desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.accounting.models import AccountPayable, AccountReceivable, ChartOfAccount, CommissionLedger, Expense, Journal, JournalEntry
+from app.accounting.models import (
+    AccountPayable,
+    AccountReceivable,
+    ApPayment,
+    ArPayment,
+    ChartOfAccount,
+    CommissionLedger,
+    Expense,
+    Journal,
+    JournalEntry,
+)
 
 # from app.accounting.models import (
 #     AccountPayable,
@@ -133,6 +143,8 @@ async def update_account(
     account_id: UUID,
     tenant_id: UUID,
     name: str,
+    cash_flow_class: str | None = None,
+    is_cash_equivalent: bool = False,
 ) -> ChartOfAccount | None:
     result = await session.execute(
         select(ChartOfAccount).where(
@@ -144,6 +156,8 @@ async def update_account(
     if not account:
         return None
     account.name = name
+    account.cash_flow_class = cash_flow_class
+    account.is_cash_equivalent = is_cash_equivalent
     await session.flush()
     return account
 
@@ -811,8 +825,12 @@ async def get_balance_sheet(
     # created without the offsetting journal, or a payment lands on a row that
     # was never booked, these two drift apart and the difference is the size of
     # the hole in the books.
-    receivable_subledger = await _sum_ar_balances(session, tenant_id, store_id)
-    payable_subledger = await _sum_ap_balances(session, tenant_id, store_id)
+    receivable_subledger = await _sum_ar_balances(
+        session, tenant_id, store_id, as_at_date
+    )
+    payable_subledger = await _sum_ap_balances(
+        session, tenant_id, store_id, as_at_date
+    )
     receivable_control = await _control_account_balance(
         session, tenant_id, "1100", as_at_date, store_id
     )
@@ -843,7 +861,10 @@ async def get_balance_sheet(
 
 
 async def _sum_ar_balances(
-    session: AsyncSession, tenant_id: UUID, store_id: UUID | None = None
+    session: AsyncSession,
+    tenant_id: UUID,
+    store_id: UUID | None = None,
+    as_at_date: datetime | None = None,
 ) -> float:
     """Total of every receivable's outstanding balance.
 
@@ -853,9 +874,25 @@ async def _sum_ar_balances(
     difference against a control account that only counts that store's
     journals.
     """
-    stmt = select(func.coalesce(func.sum(AccountReceivable.balance), 0)).where(
-        AccountReceivable.tenant_id == tenant_id
-    )
+    cutoff = (as_at_date or datetime.now(UTC)).date()
+    stmt = select(
+        func.coalesce(
+            func.sum(
+                AccountReceivable.amount
+                - func.coalesce(
+                    select(func.coalesce(func.sum(ArPayment.amount), 0))
+                    .where(
+                        ArPayment.tenant_id == tenant_id,
+                        ArPayment.ar_id == AccountReceivable.id,
+                        ArPayment.payment_date <= cutoff,
+                    )
+                    .scalar_subquery(),
+                    0,
+                )
+            ),
+            0,
+        )
+    ).where(AccountReceivable.tenant_id == tenant_id)
     if store_id is not None:
         stmt = stmt.where(AccountReceivable.store_id == store_id)
     total = await session.execute(stmt)
@@ -863,12 +900,31 @@ async def _sum_ar_balances(
 
 
 async def _sum_ap_balances(
-    session: AsyncSession, tenant_id: UUID, store_id: UUID | None = None
+    session: AsyncSession,
+    tenant_id: UUID,
+    store_id: UUID | None = None,
+    as_at_date: datetime | None = None,
 ) -> float:
     """Total of every payable's outstanding balance. Store-scoped like AR."""
-    stmt = select(func.coalesce(func.sum(AccountPayable.balance), 0)).where(
-        AccountPayable.tenant_id == tenant_id
-    )
+    cutoff = (as_at_date or datetime.now(UTC)).date()
+    stmt = select(
+        func.coalesce(
+            func.sum(
+                AccountPayable.amount
+                - func.coalesce(
+                    select(func.coalesce(func.sum(ApPayment.amount), 0))
+                    .where(
+                        ApPayment.tenant_id == tenant_id,
+                        ApPayment.ap_id == AccountPayable.id,
+                        ApPayment.payment_date <= cutoff,
+                    )
+                    .scalar_subquery(),
+                    0,
+                )
+            ),
+            0,
+        )
+    ).where(AccountPayable.tenant_id == tenant_id)
     if store_id is not None:
         stmt = stmt.where(AccountPayable.store_id == store_id)
     total = await session.execute(stmt)
@@ -928,17 +984,12 @@ async def _get_account_balance(
     query = select(
         func.coalesce(func.sum(JournalEntry.debit), 0).label("total_debit"),
         func.coalesce(func.sum(JournalEntry.credit), 0).label("total_credit"),
+    ).join(
+        Journal, Journal.id == JournalEntry.journal_id
     ).where(
         JournalEntry.account_id == account_id,
         JournalEntry.status == "posted",
-        # A posted line with no timestamp is a legacy data bug. Excluding it
-        # would drop the entry from the balance sheet while P&L and the trial
-        # balance (which allow NULL) still counted it, so the statements could
-        # disagree. Count it and let the reconciliation surface it instead.
-        or_(
-            JournalEntry.posted_at <= as_at_date,
-            JournalEntry.posted_at.is_(None),
-        ),
+        Journal.accounting_date <= as_at_date.date(),
     )
     if store_id is not None:
         query = query.join(Journal, Journal.id == JournalEntry.journal_id).where(
@@ -1004,27 +1055,118 @@ async def get_cash_flow(
     if to_date is None:
         to_date = datetime.now(UTC)
 
-    # Cash inflows: Debits to Cash account (1000) from revenue journals
-    inflows = await _get_cash_flows_by_type(
-        session=session,
-        tenant_id=tenant_id,
-        account_code="1000",
-        flow_type="inflow",
-        from_date=from_date,
-        to_date=to_date,
-        store_id=store_id,
-    )
+    cash_accounts = (
+        await session.execute(
+            select(ChartOfAccount).where(
+                ChartOfAccount.tenant_id == tenant_id,
+                ChartOfAccount.is_cash_equivalent.is_(True),
+            )
+        )
+    ).scalars().all()
+    cash_ids = {account.id for account in cash_accounts}
+    if not cash_ids:
+        return {
+            "period": {
+                "from": from_date.date().isoformat(),
+                "to": to_date.date().isoformat(),
+            },
+            "operating": {"inflows": [], "outflows": [], "net": 0.0},
+            "total_inflows": 0.0,
+            "total_outflows": 0.0,
+            "net_cash_flow": 0.0,
+            "investing": {"inflows": [], "outflows": [], "net": 0.0},
+            "financing": {"inflows": [], "outflows": [], "net": 0.0},
+            "excluded": {"inflows": [], "outflows": [], "net": 0.0},
+        }
 
-    # Cash outflows: Credits to Cash account (1000) from expense/payment journals
-    outflows = await _get_cash_flows_by_type(
-        session=session,
-        tenant_id=tenant_id,
-        account_code="1000",
-        flow_type="outflow",
-        from_date=from_date,
-        to_date=to_date,
-        store_id=store_id,
-    )
+    journal_ids = (
+        await session.execute(
+            select(Journal.id).join(
+                JournalEntry, JournalEntry.journal_id == Journal.id
+            ).where(
+                Journal.tenant_id == tenant_id,
+                Journal.status == "posted",
+                Journal.accounting_date >= from_date.date(),
+                Journal.accounting_date <= to_date.date(),
+                JournalEntry.account_id.in_(cash_ids),
+                JournalEntry.status == "posted",
+                (Journal.store_id == store_id) if store_id is not None else True,
+            ).distinct()
+        )
+    ).scalars().all()
+
+    categories = ("operating", "investing", "financing", "excluded")
+    totals = {
+        category: {"inflows": [], "outflows": [], "net": 0.0}
+        for category in categories
+    }
+    inflows: list[dict] = []
+    outflows: list[dict] = []
+
+    for journal_id in journal_ids:
+        journal = (
+            await session.execute(
+                select(Journal).where(Journal.id == journal_id)
+            )
+        ).scalar_one()
+        entries = (
+            await session.execute(
+                select(JournalEntry).where(JournalEntry.journal_id == journal_id)
+            )
+        ).scalars().all()
+
+        cash_entries = [entry for entry in entries if entry.account_id in cash_ids]
+        noncash_entries = [entry for entry in entries if entry.account_id not in cash_ids]
+        if not cash_entries or not noncash_entries:
+            continue
+        if all(entry.account_id in cash_ids for entry in entries):
+            continue
+
+        for cash_entry in cash_entries:
+            if cash_entry.debit > 0:
+                movement = float(cash_entry.debit)
+                direction = "inflows"
+            else:
+                movement = float(cash_entry.credit)
+                direction = "outflows"
+
+            for counterpart in noncash_entries:
+                counterpart_account = (
+                    await session.execute(
+                        select(ChartOfAccount).where(
+                            ChartOfAccount.id == counterpart.account_id,
+                            ChartOfAccount.tenant_id == tenant_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if counterpart_account is None:
+                    raise ValueError(
+                        f"Unclassified cash movement: account {counterpart.account_id} "
+                        f"is missing for journal {journal.id}"
+                    )
+                category = counterpart_account.cash_flow_class
+                if category is None:
+                    raise ValueError(
+                        f"Unclassified cash movement: account "
+                        f"{counterpart_account.code} ({counterpart_account.id}) "
+                        f"has no cash flow category in journal {journal.id}"
+                    )
+                item = {
+                    "journal_number": journal.journal_number,
+                    "date": journal.accounting_date.isoformat(),
+                    "description": counterpart.description or journal.description,
+                    "amount": round(movement, 2),
+                }
+                totals[category][direction].append(item)
+                if direction == "inflows":
+                    inflows.append(item)
+                else:
+                    outflows.append(item)
+
+    for category in categories:
+        inflow_total = sum(item["amount"] for item in totals[category]["inflows"])
+        outflow_total = sum(item["amount"] for item in totals[category]["outflows"])
+        totals[category]["net"] = round(inflow_total - outflow_total, 2)
 
     total_inflows = sum(item["amount"] for item in inflows)
     total_outflows = sum(item["amount"] for item in outflows)
@@ -1034,11 +1176,10 @@ async def get_cash_flow(
             "from": from_date.date().isoformat() if hasattr(from_date, "date") else str(from_date),
             "to": to_date.date().isoformat() if hasattr(to_date, "date") else str(to_date),
         },
-        "operating": {
-            "inflows": inflows,
-            "outflows": outflows,
-            "net": round(total_inflows - total_outflows, 2),
-        },
+        "operating": totals["operating"],
+        "investing": totals["investing"],
+        "financing": totals["financing"],
+        "excluded": totals["excluded"],
         "total_inflows": round(total_inflows, 2),
         "total_outflows": round(total_outflows, 2),
         "net_cash_flow": round(total_inflows - total_outflows, 2),
@@ -1362,77 +1503,6 @@ async def get_taxes_collected(
         "total_items": total_items,
         "has_more": page * page_size < total_items,
     }
-
-
-async def _get_cash_flows_by_type(
-    session: AsyncSession,
-    tenant_id: UUID,
-    account_code: str,
-    flow_type: str,
-    from_date: datetime,
-    to_date: datetime,
-    store_id: UUID | None = None,
-) -> list[dict]:
-    """Get cash inflows or outflows for a specific account code.
-
-    Args:
-        session: The async SQLAlchemy database session to use.
-        tenant_id: The business tenant to filter by.
-        account_code: The account code to query (e.g., "1000" for Cash).
-        flow_type: Either "inflow" (debits to cash) or "outflow" (credits to cash).
-        from_date: Start of the date range.
-        to_date: End of the date range.
-        store_id: When given, only journals tagged with this store are
-            counted (NULL = all stores).
-
-    Returns:
-        A list of dictionaries with "date", "description", and "amount" keys.
-    """
-    if flow_type == "inflow":
-        # Cash inflows are debits to the cash account
-        amount_col = JournalEntry.debit
-        filter_condition = JournalEntry.debit > 0
-    else:
-        # Cash outflows are credits to the cash account
-        amount_col = JournalEntry.credit
-        filter_condition = JournalEntry.credit > 0
-
-    query = select(
-        Journal.journal_number,
-        JournalEntry.description,
-        func.sum(amount_col).label("amount"),
-        Journal.posted_at,
-    ).join(
-        Journal, Journal.id == JournalEntry.journal_id
-    ).where(
-        JournalEntry.account_code == account_code,
-        Journal.tenant_id == tenant_id,
-        Journal.status == "posted",
-        filter_condition,
-        Journal.posted_at >= from_date,
-        Journal.posted_at <= to_date,
-    )
-    if store_id is not None:
-        query = query.where(Journal.store_id == store_id)
-    query = query.group_by(
-        Journal.journal_number,
-        JournalEntry.description,
-        Journal.posted_at,
-    ).order_by(
-        desc(Journal.posted_at),
-    )
-
-    result = await session.execute(query)
-    flows = []
-    for row in result.all():
-        flows.append({
-            "journal_number": row.journal_number or "",
-            "date": row.posted_at.date().isoformat() if row.posted_at else None,
-            "description": row.description or "Unknown",
-            "amount": round(float(row.amount), 2),
-        })
-
-    return flows
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

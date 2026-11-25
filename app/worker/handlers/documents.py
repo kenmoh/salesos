@@ -163,6 +163,8 @@ async def handle_document_status_changed(
             reference_type="invoice_sent",
             status="posted",
             posted_at=datetime.now(UTC),
+            accounting_date=datetime.now(UTC).date(),
+            store_id=doc_store_id,
         )
 
         # Debit entry: Accounts Receivable (customer now owes us)
@@ -267,6 +269,8 @@ async def handle_document_status_changed(
             reference_type="invoice_paid",
             status="posted",
             posted_at=datetime.now(UTC),
+            accounting_date=datetime.now(UTC).date(),
+            store_id=ar.store_id,
         )
 
         # Debit entry: Cash (we received money)

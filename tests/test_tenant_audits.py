@@ -92,22 +92,52 @@ class TestAccountingAudits:
         assert json.loads(rows[-1].details)["total"] == 100.0
 
     async def test_recording_an_ar_payment_writes_an_audit_row(self, tenant_session):
-        app, _, session = tenant_session
+        app, ctx, session = tenant_session
 
         from app.accounting import routes as accounting_routes
 
+        ar_id = str(uuid.uuid4())
+        parent = type(
+            "Receivable",
+            (),
+            {
+                "id": uuid.UUID(ar_id),
+                "tenant_id": uuid.UUID(ctx.user.business_id),
+                "store_id": None,
+                "invoice_number": "INV-7",
+            },
+        )()
+        parent_row = type(
+            "Result",
+            (),
+            {"scalar_one_or_none": lambda self: parent},
+        )()
+        no_row = type(
+            "Result",
+            (),
+            {"scalar_one_or_none": lambda self: None},
+        )()
+        session.execute = AsyncMock(side_effect=[parent_row, no_row, None])
         accounting_routes.rpc.record_ar_payment = AsyncMock(
-            return_value={"invoice_number": "INV-7", "store_id": None}
+            return_value={
+                "invoice_number": "INV-7",
+                "store_id": None,
+                "payment_id": str(uuid.uuid4()),
+                "replayed": False,
+            }
         )
-        accounting_routes._post_payment_journal = AsyncMock()
+        accounting_routes._post_payment_journal = AsyncMock(
+            return_value=str(uuid.uuid4())
+        )
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",
         ) as client:
             resp = await client.post(
-                "/accounting/receivable/ar-1/payment",
+                f"/accounting/receivable/{ar_id}/payment",
                 json={"amount": 100, "payment_date": "2026-10-22"},
+                headers={"Idempotency-Key": "audit-payment"},
             )
 
         assert resp.status_code == 200

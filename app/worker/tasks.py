@@ -87,6 +87,25 @@ def task_process_notifications() -> dict:
     return result
 
 
+@celery_app.task(name="app.worker.tasks.task_send_subscription_reminders")
+def task_send_subscription_reminders() -> dict:
+    """Create subscription renewal reminders for paid tenants."""
+    from app.billing.subscription_notifications import send_due_subscription_reminders
+    from app.common.db.engine import create_service_database
+
+    sdb = create_service_database(settings.database_url)
+
+    async def _process():
+        async with sdb.session() as session:
+            created = await send_due_subscription_reminders(session)
+            await session.commit()
+            return {"created": created}
+
+    result = asyncio.run(_process())
+    logger.info("Subscription reminders created: %d", result["created"])
+    return result
+
+
 @celery_app.task(
     name="app.worker.tasks.task_generate_product_qr", bind=True, max_retries=3, default_retry_delay=10
 )
@@ -631,6 +650,7 @@ def task_generate_billing_invoices() -> dict:
     from app.billing import invoices as invoice_service
     from app.billing import subscriptions as sub_service
     from app.billing.models import MerchantSubscription, TenantWallet
+    from app.billing.subscription_notifications import notify_subscription_expired
     from app.common.db.engine import create_service_database
     from sqlalchemy import select
 
@@ -652,6 +672,9 @@ def task_generate_billing_invoices() -> dict:
             skipped_grace = 0
 
             for sub in subs:
+                # Notify before advancing the period, which replaces current_period_end.
+                await notify_subscription_expired(session, sub, now=now)
+
                 # Skip subscriptions still inside their grace window.
                 if sub.status == "past_due" and sub.grace_period_end and sub.grace_period_end > now:
                     skipped_grace += 1

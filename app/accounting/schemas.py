@@ -441,6 +441,7 @@ class ReceivableResponse(BaseModel):
     store_id: str | None = None
     # Set when the row comes from a payment call: the ledger row just written.
     payment_id: str | None = None
+    journal_id: str | None = None
     error: str | None = None
 
 
@@ -456,6 +457,8 @@ class PayableResponse(BaseModel):
     due_date: str = ""
     status: str = "pending"
     store_id: str | None = None
+    payment_id: str | None = None
+    journal_id: str | None = None
 
 
 class ExpenseResponse(BaseModel):

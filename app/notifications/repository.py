@@ -168,6 +168,40 @@ async def has_recent_low_stock_notification(
     return result.first() is not None
 
 
+async def has_subscription_reminder(
+    session: AsyncSession,
+    tenant_id: UUID,
+    reminder_key: str,
+) -> bool:
+    result = await session.execute(
+        select(InAppNotification.id)
+        .where(
+            InAppNotification.tenant_id == tenant_id,
+            InAppNotification.type == "system",
+            InAppNotification.meta["subscription_reminder_key"].astext == reminder_key,
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def has_debt_cap_notification(
+    session: AsyncSession,
+    tenant_id: UUID,
+    notification_key: str,
+) -> bool:
+    result = await session.execute(
+        select(InAppNotification.id)
+        .where(
+            InAppNotification.tenant_id == tenant_id,
+            InAppNotification.type == "system",
+            InAppNotification.meta["debt_cap_notification_key"].astext == notification_key,
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
 # ── In-App Notifications ────────────────────────────────────────────────────
 
 

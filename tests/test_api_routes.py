@@ -3,7 +3,7 @@ import json
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import app.common.auth_service as auth_service
 import app.common.bridge as bridge
@@ -130,6 +130,8 @@ def _make_session():
     session.__aexit__.return_value = None
     session.begin.return_value.__aenter__.return_value = session
     session.begin.return_value.__aexit__.return_value = None
+    session.begin_nested.return_value.__aenter__.return_value = session
+    session.begin_nested.return_value.__aexit__.return_value = None
     session.execute = AsyncMock(
         return_value=MagicMock(
             scalar_one_or_none=MagicMock(return_value=None),
@@ -1009,15 +1011,39 @@ class TestRecordPayments:
         return patch.object(
             accounting.rpc, "record_ar_payment", new=AsyncMock(return_value=result)
         ), patch.object(
-            accounting, "_post_payment_journal", new=AsyncMock()
+            accounting,
+            "_post_payment_journal",
+            new=AsyncMock(return_value=str(uuid4())),
         )
 
-    async def test_ar_payment_returns_updated_receivable(self, client):
+    async def _set_payment_parent(self, app, parent_id, store_id=None):
+        from app.core.dependencies import get_tenant_context
+
+        override = app.dependency_overrides[get_tenant_context]
+        generator = override()
+        ctx = await generator.__anext__()
+        parent = MagicMock(
+            id=parent_id, store_id=store_id, invoice_number="INV-1", bill_number="BILL-1"
+        )
+        no_row = MagicMock(
+            scalar_one_or_none=MagicMock(return_value=None)
+        )
+        parent_row = MagicMock(
+            scalar_one_or_none=MagicMock(return_value=parent)
+        )
+        ctx.session.execute = AsyncMock(
+            side_effect=[parent_row, no_row, no_row, no_row]
+        )
+
+    async def test_ar_payment_returns_updated_receivable(self, client, app):
         from app.accounting import routes as accounting
+
+        ar_id = str(uuid4())
+        await self._set_payment_parent(app, UUID(ar_id))
 
         rpc_patch, journal_patch = self._payment_patch(
             {
-                "id": "ar-1",
+                "id": str(uuid4()),
                 "invoice_number": "INV-1",
                 "amount": 1000,
                 "amount_paid": 400,
@@ -1028,8 +1054,9 @@ class TestRecordPayments:
         )
         with rpc_patch as record, journal_patch as journal:
             resp = await client.post(
-                f"{self.AR}/ar-1/payment",
+                f"{self.AR}/{ar_id}/payment",
                 json={"amount": 400, "payment_date": "2026-10-04"},
+                headers={"Idempotency-Key": "ar-key-1"},
             )
 
         assert resp.status_code == 200
@@ -1037,38 +1064,110 @@ class TestRecordPayments:
         assert body["status"] == "partial"
         assert body["balance"] == 600
         assert body["payment_id"] == "pay-1"
+        assert body["journal_id"]
         assert record.await_args.kwargs["amount"] == 400
+        assert record.await_args.kwargs["idempotency_key"] == "ar-key-1"
+        assert len(record.await_args.kwargs["request_fingerprint"]) == 64
         assert journal.await_count == 1
 
-    async def test_ar_payment_records_who_took_it(self, client):
+    async def test_payment_requires_idempotency_key(self, client):
+        response = await client.post(
+            f"{self.AR}/{uuid4()}/payment",
+            json={"amount": 100, "payment_date": "2026-10-04"},
+        )
+        assert response.status_code == 422
+
+    async def test_ar_payment_replay_does_not_post_another_journal(
+        self, client, app
+    ):
+        ar_id = str(uuid4())
+        await self._set_payment_parent(app, UUID(ar_id))
+        rpc_patch, journal_patch = self._payment_patch(
+            {
+                "id": ar_id,
+                "payment_id": "original-payment",
+                "journal_id": "original-journal",
+                "replayed": True,
+            }
+        )
+
+        with rpc_patch, journal_patch as journal:
+            response = await client.post(
+                f"{self.AR}/{ar_id}/payment",
+                json={"amount": 100, "payment_date": "2026-10-04"},
+                headers={"Idempotency-Key": "same-request"},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["payment_id"] == "original-payment"
+        assert response.json()["data"]["journal_id"] == "original-journal"
+        assert journal.await_count == 0
+
+    async def test_ar_payment_key_reuse_with_changed_request_conflicts(
+        self, client, app
+    ):
+        ar_id = str(uuid4())
+        await self._set_payment_parent(app, UUID(ar_id))
+        rpc_patch, journal_patch = self._payment_patch(
+            {
+                "error": (
+                    "Idempotency-Key has already been used with a different request"
+                )
+            }
+        )
+
+        with rpc_patch, journal_patch as journal:
+            response = await client.post(
+                f"{self.AR}/{ar_id}/payment",
+                json={"amount": 100, "payment_date": "2026-10-04"},
+                headers={"Idempotency-Key": "same-key"},
+            )
+
+        assert response.status_code == 409
+        assert journal.await_count == 0
+
+    async def test_ar_payment_records_who_took_it(self, client, app):
         from app.accounting import routes as accounting
 
-        rpc_patch, journal_patch = self._payment_patch({"id": "ar-1", "payment_id": "p"})
+        ar_id = str(uuid4())
+        await self._set_payment_parent(app, UUID(ar_id))
+
+        rpc_patch, journal_patch = self._payment_patch(
+            {"id": str(uuid4()), "payment_id": "p"}
+        )
         with rpc_patch as record, journal_patch:
             await client.post(
-                f"{self.AR}/ar-1/payment",
+                f"{self.AR}/{ar_id}/payment",
                 json={"amount": 100, "payment_date": "2026-10-04"},
+                headers={"Idempotency-Key": "ar-key-2"},
             )
         assert record.await_args.kwargs["recorded_by"] is not None
 
-    async def test_refused_payment_is_a_400_and_posts_no_journal(self, client):
+    async def test_refused_payment_is_a_400_and_posts_no_journal(self, client, app):
         from app.accounting import routes as accounting
+
+        ar_id = str(uuid4())
+        await self._set_payment_parent(app, UUID(ar_id))
 
         rpc_patch, journal_patch = self._payment_patch(
             {"error": "Payment amount exceeds the remaining balance of 0.00"}
         )
         with rpc_patch, journal_patch as journal:
             resp = await client.post(
-                f"{self.AR}/ar-1/payment",
+                f"{self.AR}/{ar_id}/payment",
                 json={"amount": 500, "payment_date": "2026-10-04"},
+                headers={"Idempotency-Key": "ar-key-refused"},
             )
 
         assert resp.status_code == 400
         assert "exceeds" in resp.json()["detail"]
         assert journal.await_count == 0
 
-    async def test_ap_payment_refusal_is_a_400(self, client):
+    async def test_ap_payment_refusal_is_a_400(self, client, app):
         from app.accounting import routes as accounting
+
+        ap_id = str(uuid4())
+        await self._set_payment_parent(app, UUID(ap_id))
 
         with (
             patch.object(
@@ -1079,8 +1178,9 @@ class TestRecordPayments:
             patch.object(accounting, "_post_payment_journal", new=AsyncMock()) as journal,
         ):
             resp = await client.post(
-                f"{self.AP}/ap-1/payment",
+                f"{self.AP}/{ap_id}/payment",
                 json={"amount": 100, "payment_date": "2026-10-04"},
+                headers={"Idempotency-Key": "ap-key-refused"},
             )
 
         assert resp.status_code == 400
@@ -1153,6 +1253,9 @@ class TestPaymentRpcMapping:
                     "out_tenant_id": uuid4(),
                     "amount_paid": 400,
                     "out_payment_id": uuid4(),
+                    "out_journal_id": uuid4(),
+                    "out_store_id": None,
+                    "out_replayed": False,
                     "out_error": None,
                 }
             ]
@@ -1163,13 +1266,20 @@ class TestPaymentRpcMapping:
                 amount=400,
                 payment_date="2026-10-04",
                 recorded_by=str(uuid4()),
+                idempotency_key="key",
+                request_fingerprint="a" * 64,
+                store_id=None,
             )
 
         assert "id" in row and "tenant_id" in row
         assert "out_payment_id" not in row and "out_error" not in row
         assert row["payment_id"] is not None
+        assert row["journal_id"] is not None
+        assert row["replayed"] is False
         assert row["error"] is None
         assert mock_call.call_args.kwargs["p_recorded_by"] is not None
+        assert mock_call.call_args.kwargs["p_idempotency_key"] == "key"
+        assert mock_call.call_args.kwargs["p_request_fingerprint"] == "a" * 64
 
     async def test_ar_payment_forwards_notes(self):
         from app.accounting import rpc
@@ -1183,6 +1293,9 @@ class TestPaymentRpcMapping:
                 amount=100,
                 payment_date="2026-10-04",
                 notes="part payment",
+                idempotency_key="key",
+                request_fingerprint="b" * 64,
+                store_id=None,
             )
         assert mock_call.call_args.kwargs["p_notes"] == "part payment"
         assert mock_call.call_args.kwargs["p_recorded_by"] is None

@@ -26,6 +26,7 @@ from app.billing.models import (
     SubscriptionPlan,
     TransactionFeeTier,
 )
+from app.billing.subscription_notifications import notify_debt_cap_reached
 from app.billing.subscriptions import get_tenant_subscription
 
 
@@ -198,6 +199,7 @@ async def _settle_fee(
     if sub.accrued_debt + remainder > sub.debt_cap:
         raise ValueError("fee_balance_exceeded")
 
+    previous_debt = sub.accrued_debt
     sub.accrued_debt = money(sub.accrued_debt + remainder)
 
     # Ledger: charge for the full fee.
@@ -245,6 +247,12 @@ async def _settle_fee(
                 actor_id=actor_id,
                 billing_period_id=billing_period_id,
             )
+        )
+
+    if previous_debt < sub.debt_cap <= sub.accrued_debt:
+        event_reference = str(billable_transaction_id or reference or "unknown")
+        await notify_debt_cap_reached(
+            session, sub, event_reference=event_reference
         )
 
     await session.flush()

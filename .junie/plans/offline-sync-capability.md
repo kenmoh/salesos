@@ -5,254 +5,116 @@ sessionId: session-261114-191205-1vjw
 # Requirements
 
 ### Delivery Plan
-### ✓ Step 1: Extend backend sync endpoints
-### ✓ Step 2: Build mobile offline data layer
-### ✓ Step 3: Implement mobile sync engine
-### ✓ Step 4: Build web offline layer
-### ✓ Step 5: Wire up mobile API client
-### ✓ Step 6: End-to-end sync validation
-### ✓ Step 7: Integrate into root layouts
-### * Step 8: Test web offline sync
+### ✓ Step 1: Pause mobile client sync entry points
+Mobile no longer starts sync or sends client sync requests, while all offline code remains in place.
+- Comment out sync hook and status bar wiring in `sell_moh_app/src/app/_layout.tsx`.
+- Comment out calls to sync endpoints and offline queue producers in `sell_moh_app/src/sync/engine.ts` and any other active client call sites.
+- Confirm online REST workflows still work and the app makes no `/sync/*` requests after login or reconnect.
+
+### ✓ Step 2: Keep web client sync inactive and verify no requests
+Web remains in normal online mode, with no active sync calls and the reusable implementation preserved.
+- Keep `sellmoh-admin/src/routes/__root.tsx` disconnected from sync and inspect all hook and engine consumers.
+- Comment out sync endpoint requests and offline queue producers in `sellmoh-admin/src/lib/sync/engine.ts` and any other active call sites.
+- Confirm online REST workflows still work and the app makes no `/sync/*` requests after login or reconnect.
 
 ### Overview
-Add full offline capabilities to the SellMoh application (Expo mobile + TanStack Start web admin) so users can create, read, update, and delete data without an internet connection. Changes sync automatically when connectivity is restored.
+Temporarily pause client initiated offline sync in the Expo mobile app and TanStack Start web admin until user feedback is collected. Preserve the existing client code and backend sync capability for a later, deliberate rollout.
 
 ### Goals
-- **Mobile (Expo)**: Full offline POS operations — create sales, manage inventory, view products and customers without internet.
-- **Web (TanStack Start)**: Cache previously loaded data for offline viewing; queue writes for later sync.
-- **Backend**: Extend existing sync endpoints to support full CRUD operations with conflict resolution.
+- Stop the clients from calling offline sync endpoints or presenting offline sync as active.
+- Keep existing online API workflows working as they do now.
+- Preserve sync modules, local databases, queued data, dependencies, and backend endpoints.
 
 ### Scope
 
 **In Scope:**
-- Local data storage on mobile (SQLite via expo-sqlite) and web (IndexedDB via Dexie)
-- Offline-first data access layer for core entities: Sales, Products, Inventory, Customers, Stores
-- Automatic background sync when connectivity is restored
-- Conflict resolution using "last write wins" strategy
-- Backend extensions for bulk data download and sync state tracking
-- Sync status UI indicators
+- Comment out active mobile sync startup and status UI wiring.
+- Inspect both clients for any other active sync triggers or calls, and comment out those call sites without deleting their code.
+- Confirm the web client remains disconnected from sync. Its current root route has no sync startup wiring.
+- Validate that normal online API operations still work and neither client calls sync endpoints.
 
 **Out of Scope:**
-- Real-time collaboration between multiple offline devices
-- File/image uploads offline (images can be queued but not uploaded until online)
-- Accounting journal entries offline (read-only access to existing data)
-- Reporting offline (requires server-side aggregation)
-
-### User Stories
-1. As a cashier, I want to create sales and look up products when the internet is down, so I can continue serving customers.
-2. As a store manager, I want to update inventory counts offline and have them sync automatically, so stock levels stay accurate.
-3. As an admin, I want to see which data is synced and which is pending, so I know the state of my business data.
-4. As a mobile user, I want the app to work seamlessly whether I'm online or offline without needing to press a sync button.
+- Reworking offline sales, documents, commissions, stock updates, conflict handling, or other dependent writes.
+- Changing backend sync endpoints, schemas, services, database tables, or migrations.
+- Deleting sync code, local databases, queued operations, or installed dependencies.
+- Clearing existing local data or pending queue items.
+- Expanding offline support before collecting user feedback.
 
 ### Functional Requirements
-- **Offline Data Access**: All core entities (sales, products, inventory, customers, stores) are available from local storage
-- **Offline Writes**: Create, update, delete operations queue changes locally when offline
-- **Auto-Sync**: Changes sync automatically in the background when connectivity is detected
-- **Conflict Resolution**: Last write wins — the most recent timestamp prevails
-- **Sync Status**: UI shows sync state (synced, syncing, pending changes, offline)
-- **Initial Sync**: On first launch, download a full snapshot of business data
-
-### Non-Functional Requirements
-- Local database size should not exceed 100MB for typical usage
-- Sync should complete within 30 seconds for normal data volumes (<1000 pending changes)
-- No data loss during sync conflicts — all changes are preserved with server state winning on timestamp ties
+- Client application flows make no requests to sync endpoints while the pause is in effect.
+- On mobile, comment out the root layout's sync hook, initial sync effect, and sync status bar, plus endpoint calls and offline queue producers in `src/sync/engine.ts` and any other reachable client call sites.
+- On web, retain the current inactive root route and comment out sync endpoint calls, offline queue producers, and any active hook, timer, reconnect, or manual trigger found during inspection.
+- Keep the disabled code in place as comments; do not remove or rewrite the sync implementation modules.
+- Do not enqueue new offline operations while sync is paused.
+- Normal online reads and writes continue through their existing REST API paths.
+- Do not display a sync status indicator that suggests offline sync is currently enabled.
+- Leave local database contents and already queued operations untouched. Review any retained queue before reactivating sync in a future rollout.
 
 
 # Technical Design
 
 ### Current Implementation
 
-**Backend (FastAPI, `salesos/`):**
-- Existing sync infrastructure in `app/stores/routes_sync.py`:
-  - `POST /api/v1/sync/events` — batch submit client events (`SyncBatch` with `SyncEvent` list)
-  - `GET /api/v1/sync/pending` — fetch server-side pending events since a timestamp
-  - `POST /api/v1/sync/trigger` — trigger event reconciliation worker
-- Event processing in `app/common/services.py`:
-  - `process_sync_batch()` — queues events with deduplication via `client_id`
-  - `get_pending_events()` — returns server-generated events not yet seen by client
-- Schema: `SyncEvent { event_type: str, payload: dict }`, `SyncBatch { events: list[SyncEvent] }`
-- Core API domains: sales, inventory, customers, stores, products, cart, payments, accounting
-
-**What's missing:**
-- No bulk data download endpoint for initial sync
-- No sync state tracking (last sync cursor per device)
-- Client apps have no offline storage or sync logic
-
-### Key Decisions
-
-1. **Mobile storage**: `expo-sqlite` with a custom ORM layer for structured local data
-2. **Web storage**: `Dexie.js` (IndexedDB wrapper) for consistent API across entities
-3. **Sync pattern**: Operational Transform-style event queue — client generates events locally, batches them on sync, server processes and returns conflicts
-4. **Conflict resolution**: Last write wins based on `client_ts` timestamp in events
-5. **Initial sync**: New backend endpoint returns full data snapshot; client replaces local database
-6. **Incremental sync**: Client sends pending events, receives server events since last cursor
-
-### Architecture Overview
-
-```
-graph LR
-    A[Expo Mobile App] -->|SQLite| B[(Local DB)]
-    A -->|Sync Events| C[Sync Engine]
-    D[TanStack Web] -->|IndexedDB| E[(Local DB)]
-    D -->|Sync Events| C
-    C -->|POST /sync/events| F[FastAPI Backend]
-    C -->|GET /sync/pending| F
-    C -->|GET /sync/snapshot| F
-    F -->|Process| G[(PostgreSQL)]
-    G -->|Events| C
-```
+- Mobile `src/app/_layout.tsx` imports `SyncStatusBar` and `useSync`, invokes initial sync after login, and mounts the status bar.
+- Mobile `src/hooks/useSyncStatus.ts` starts background sync; `src/sync/engine.ts` calls `/sync/snapshot`, `/sync/full`, and `/sync/cursor`.
+- Web `src/routes/__root.tsx` currently has no sync hook or status bar wiring. The reusable `src/hooks/useSync.ts` and `src/lib/sync/engine.ts` still contain callable background and endpoint sync paths.
+- The FastAPI sync endpoints and their supporting backend code remain available. This task does not change them.
 
 ### Proposed Changes
 
-#### Backend Changes (`salesos/`)
+#### Mobile (`sell_moh_app/`)
 
-**1. New sync endpoints in `app/stores/routes_sync.py`:**
-- `GET /api/v1/sync/snapshot` — full data snapshot for initial sync (products, inventory, customers, stores, sales)
-- `POST /api/v1/sync/full` — comprehensive sync: client sends pending events + last cursor, server returns processed results + server events
-- `PUT /api/v1/sync/cursor` — update last sync cursor for a device/session
+- In `src/app/_layout.tsx`, comment out the `useSync` and `SyncStatusBar` integration, including the login triggered initial sync effect and status bar rendering.
+- In `src/sync/engine.ts`, comment out client requests to sync endpoints and any automatic sync triggers; inspect consumers of `useSync`, `queueEvent`, and sync engine functions and comment out offline queue producers.
+- Preserve normal online REST paths and keep the sync hook, engine, database, repositories, and local queue code in place. Do not clear queued operations or local data.
 
-**2. New service functions in `app/common/services.py`:**
-- `get_data_snapshot()` — returns paginated full data for all syncable entities
-- `update_sync_cursor()` — stores last sync position per device
-- `resolve_conflicts()` — applies last-write-wins logic during event processing
+#### Web (`sellmoh-admin/`)
 
-**3. New schemas in `app/auth/schemas/schema.py` and `responses.py`:**
-- `SyncSnapshotRequest` / `SyncSnapshotResult`
-- `FullSyncRequest` / `FullSyncResult`
-- `SyncCursor` with device_id, last_cursor, updated_at
+- Keep `src/routes/__root.tsx` disconnected from sync; it currently has no sync startup or status bar wiring.
+- In `src/lib/sync/engine.ts`, comment out client requests to sync endpoints and any automatic triggers; inspect consumers of `useSync`, `queueEvent`, and sync engine functions and comment out offline queue producers.
+- Preserve normal online REST paths and keep the sync hook, engine, database, repositories, and local queue code in place. Do not clear queued operations or local data.
 
-#### Mobile App Changes (`sell_moh_app/`)
+#### Shared behavior
 
-**1. Local Database Layer:**
-- SQLite schema mirroring core entities (sales, products, inventory, customers, stores)
-- Repository pattern for each entity with offline-first reads
-- Event queue table for pending outbound changes
-
-**2. Sync Engine:**
-- Connectivity monitor using `expo-network`
-- Background sync worker that batches and sends pending events
-- Conflict resolution handler (last write wins)
-- Initial sync flow on first launch
-
-**3. API Client Layer:**
-- Wrapper around REST calls that routes through local DB
-- Automatic event generation on CRUD operations
-- Retry logic with exponential backoff for failed syncs
-
-**4. UI Components:**
-- Sync status indicator (online/offline/pending changes)
-- "Pull to sync" gesture support
-- Offline banner when no connectivity
-
-#### Web Admin Changes (`sellmoh-admin/`)
-
-**1. Local Storage Layer:**
-- Dexie.js database with tables for core entities
-- Cache layer for TanStack Query that persists to IndexedDB
-
-**2. Sync Integration:**
-- TanStack Query persistence plugin for offline cache
-- Background sync worker using `navigator.onLine`
-- Event queue for pending mutations
-
-**3. UI Components:**
-- Sync status in header/navigation
-- Offline mode banner
-- Pending changes indicator
-
-### Data Models
-
-**Local Database Tables (Mobile SQLite / Web IndexedDB):**
-
-```
-entities:
-  - id (UUID, primary key)
-  - entity_type (sale | product | customer | inventory | store)
-  - data (JSON)
-  - version (integer, incremented on each update)
-  - created_at (timestamp)
-  - updated_at (timestamp)
-  - deleted (boolean soft delete)
-
-sync_queue:
-  - id (auto-increment)
-  - client_id (UUID, unique per operation)
-  - event_type (string)
-  - payload (JSON)
-  - client_ts (timestamp)
-  - status (pending | syncing | synced | failed)
-  - retry_count (integer)
-  - created_at (timestamp)
-
-sync_metadata:
-  - key (string, primary key)
-  - value (string)
-  - updated_at (timestamp)
-```
-
-**Sync Event Types:**
-- `sale.created`, `sale.voided`, `sale.returned`
-- `product.created`, `product.updated`, `product.deleted`
-- `inventory.adjusted`, `inventory.transferred`
-- `customer.created`, `customer.updated`
-- `store.created`, `store.updated`
+- Preserve ordinary API client calls used by online business workflows.
+- Do not change backend routes, sync endpoint contracts, migrations, or dependencies.
+- Do not show sync status UI while client sync is paused.
+- Before sync is reactivated later, review retained queue items so old operations are not replayed without user review.
 
 ### File Structure
 
-**Backend (`salesos/`):**
-- Modified: `app/stores/routes_sync.py` — add new endpoints
-- Modified: `app/common/services.py` — add snapshot and cursor services
-- Modified: `app/auth/schemas/schema.py` — add request schemas
-- Modified: `app/auth/schemas/responses.py` — add response schemas
-
 **Mobile (`sell_moh_app/`):**
-- New: `src/database/` — SQLite setup and schema
-- New: `src/database/repositories/` — entity repositories
-- New: `src/sync/` — sync engine, connectivity monitor, conflict resolver
-- New: `src/hooks/useSyncStatus.ts` — sync state hook
-- Modified: API service layer to route through local DB
+- Comment out active wiring in `src/app/_layout.tsx` and any other sync call sites found during inspection.
+- Preserve `src/sync/engine.ts`, `src/hooks/useSyncStatus.ts`, database files, and repositories.
 
 **Web (`sellmoh-admin/`):**
-- New: `src/lib/db/` — Dexie setup and schemas
-- New: `src/lib/sync/` — sync worker and queue
-- New: `src/hooks/useSync.ts` — sync status hook
-- Modified: TanStack Query config for persistence
+- Confirm `src/routes/__root.tsx` remains disconnected; comment out any active sync call sites found in the app.
+- Preserve `src/lib/sync/engine.ts`, `src/hooks/useSync.ts`, database files, and repositories.
 
 ### Risks
-- **Data consistency**: Offline periods can lead to stale data. Mitigated by clear UI indicators and auto-sync on reconnect.
-- **Database size**: Large sales histories could bloat local storage. Mitigated by configurable sync window (e.g., last 90 days of sales).
-- **Conflict frequency**: Multiple devices editing same record. Mitigated by last-write-wins with clear audit trail.
-- **Initial sync time**: Full snapshot could be slow on slow connections. Mitigated by progressive loading and compression.
+- **Missed call sites**: A screen or reconnect handler may still call sync directly. Check all hook, engine, queue, and endpoint references in both clients.
+- **Old queued operations**: Pending operations remain stored during the pause. Review them before re-enabling sync to avoid replaying stale work.
 
 
 # Testing
 
 ### Validation Approach
-Testing focuses on the sync flow: offline operations, sync triggers, conflict resolution, and data consistency.
+Confirm both clients remain in their normal online mode, make no requests to offline sync endpoints, and retain the disabled sync implementation without deleting local data or queued operations.
 
 ### Key Scenarios
 
-**Backend:**
-1. **Sync batch processing**: Submit a batch of events, verify they're queued and processed correctly
-2. **Deduplication**: Submit the same `client_id` twice, verify only one is processed
-3. **Data snapshot**: Request full snapshot, verify all entities are returned
-4. **Cursor management**: Set and retrieve sync cursor for a device
-5. **Conflict resolution**: Submit conflicting events, verify last-write-wins behavior
-
 **Mobile (Expo):**
-1. **Offline sale creation**: Create a sale with no network, verify it's in local DB and sync queue
-2. **Auto-sync on reconnect**: Create offline sale, restore network, verify it syncs to server
-3. **Initial sync**: First launch with no local data, verify full snapshot is downloaded
-4. **Conflict scenario**: Modify same product on two devices, verify resolution
+- Start the app, sign in, and reconnect the network; confirm no requests are made to `/sync/snapshot`, `/sync/full`, `/sync/cursor`, or other `/sync/*` routes.
+- Confirm the sync status bar is not displayed and no new offline operations are enqueued while sync is paused.
+- Exercise an existing online business action and confirm its normal REST API request still works.
+- Confirm sync modules and local database contents are preserved.
 
 **Web (TanStack Start):**
-1. **Offline cache**: Load data online, go offline, verify cached data is accessible
-2. **Mutation queue**: Create data offline, verify it queues and syncs on reconnect
-3. **TanStack Query persistence**: Verify queries are restored from IndexedDB
+- Load the app, sign in, and reconnect the network; confirm no sync endpoint requests occur.
+- Confirm the root route remains disconnected, all active sync request call sites are commented out, and no new offline operations are enqueued.
+- Exercise an existing online business action and confirm its normal REST API request still works.
+- Confirm sync modules and IndexedDB contents are preserved.
 
 ### Edge Cases
-- Network drops mid-sync (partial batch) — retry with deduplication
-- Local database corruption — fallback to re-download from server
-- Very large sync queue (1000+ events) — batch processing with progress tracking
-- Server schema changes while client is offline — version checking and migration
-- Concurrent edits on same entity from multiple devices — last-write-wins with audit log
+- A less obvious screen or reconnect listener calls the sync engine directly; inspect and disable every reachable call site.
+- Pending queued operations remain stored during the pause and must not be submitted until a future reactivation is explicitly planned.

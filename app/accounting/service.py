@@ -24,7 +24,7 @@ Abbreviations Used in This Module
     reliable event publishing (ensures events are published exactly once).
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
 from app.common.events.outbox import OutboxWrite
@@ -174,6 +174,7 @@ def plan_create_journal(
         reference_type=command.reference_type,
         status="draft",
         store_id=command.store_id,
+        accounting_date=command.accounting_date or datetime.now(UTC).date(),
     )
 
     entries = []
@@ -405,6 +406,9 @@ def plan_record_ar_payment(
         reference_id=ar_id,
         reference_type="ar_payment",
         status="draft",
+        accounting_date=command.payment_date.date()
+        if hasattr(command.payment_date, "date")
+        else command.payment_date,
     )
 
     # Debit: Cash (we received money)
@@ -543,6 +547,9 @@ def plan_record_ap_payment(
         reference_id=ap_id,
         reference_type="ap_payment",
         status="draft",
+        accounting_date=command.payment_date.date()
+        if hasattr(command.payment_date, "date")
+        else command.payment_date,
     )
 
     # Debit: Accounts Payable (we owe less)
@@ -665,6 +672,9 @@ def plan_create_expense(
         reference_type="expense",
         status="draft",
         store_id=command.store_id,
+        accounting_date=command.expense_date.date()
+        if hasattr(command.expense_date, "date")
+        else command.expense_date,
     )
 
     # Debit: Expense account (increases expense)
@@ -732,6 +742,7 @@ def plan_sale_journal(
     payment_method: str = "cash",
     store_id: UUID | None = None,
     settled: bool = True,
+    sale_date: datetime | date | None = None,
 ) -> tuple[Journal, list[JournalEntry]]:
     """Plan automatic journal entries for a completed sale.
 
@@ -787,6 +798,11 @@ def plan_sale_journal(
         reference_type="sale",
         status="draft",
         store_id=store_id,
+        accounting_date=(
+            sale_date.date()
+            if isinstance(sale_date, datetime)
+            else sale_date or datetime.now(UTC).date()
+        ),
     )
 
     entries: list[JournalEntry] = []

@@ -34,6 +34,7 @@ celery_app.conf.update(
         "app.worker.tasks.task_refresh_analytics_mvs": {"queue": "analytics"},
         "app.worker.tasks.task_cleanup_in_app_notifications": {"queue": "notifications"},
         "app.worker.tasks.task_generate_billing_invoices": {"queue": "billing"},
+        "app.worker.tasks.task_send_subscription_reminders": {"queue": "notifications"},
     },
     # Beat schedule for periodic tasks
     beat_schedule={
@@ -60,6 +61,10 @@ celery_app.conf.update(
         "generate-billing-invoices": {
             "task": "app.worker.tasks.task_generate_billing_invoices",
             "schedule": crontab(minute=0, hour=0),  # Daily at midnight UTC
+        },
+        "send-subscription-reminders": {
+            "task": "app.worker.tasks.task_send_subscription_reminders",
+            "schedule": crontab(minute=5, hour=0),  # Daily at 00:05 UTC
         },
     },
 )
